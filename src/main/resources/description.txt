@@ -1,0 +1,90 @@
+TODOS ->
+
+1. add code for new strategy of top gainers and losers - DONE
+2. Need to verify if 2nd dip level buy is happening or not -> DONE
+3. Open Positions need to show strategy as well in dashboard -> DONE
+4. if any position is in loss at 3:05 PM, convert them to holdings -> DONE
+5. Put check of total capital and open positions count overall -> DONE
+6. when program starts pick current holdings and see if there are open orders to sell these holdings
+    at profit of 1% or not, if not, place target orders for each holding to sell them at 1% profit and at day's
+    start if holding is at profit of 1% profit sell it at it's current market price. -> DONE
+7. introduce one section in dashboard for holdings -> DONE
+8. For Paper Trade also I want to implement full Holdings cycle -> DONE
+9. Closed Trades are also wiping out after dashboard refresh. only open positions  and P&L numbers are persisting -> DONE
+10. All Trades history wipes out after reload the browser so it needs to maintain somewhere so that it can be reloaded -> DONE
+11. highlight stocks near target -> DONE
+12. pnl numbers need to be 2 digits only -> DONE
+14. broadcast only changed symbol -> DONE
+15. Set Correct Order Type in Order Service for Real Trading SELL Order -> INTRADAY for positions and normal for holdings -> DONE
+16. Trade Cut-Off time - 3:15 PM so after that No Trades should happen. -> DONE
+17. At end of day -> loss positions should be converted to Holdings and Profitable positions should be sold-off. -> DONE
+18. Holdings capital should also be calculated while calculating how much capital is used -> DONE
+19. Closed Trades profit should also be adjusted towards MAX_CAPITAl -> DONE
+20. Separately maintain Total P&L and today's P&L -> DONE
+21. Holdings are not getting removed even after sold out -> DONE
+22. Strategy P&L will restore on next day from previous day -> DONE
+23. on page reload open positions load slowly one by one and takes 5-10 seconds total to load all open positions -> DONE
+24. Improve exit strategy -> DONE
+        24 A. If it's holding then put target price of 0.3% so that we can release the capital -> DONE
+25. put checks in holdings and positions in such way that for same symbol two entries are not present and new entry
+            will be adjusted with older entry for qty and price -> DONE
+26. New Improved Dip Accumulation strategy - buy only when dipping gets slower -> DONE
+27. In Holdings add strategy -> DONE
+28. When we are rebuying the dip in holdings and if target is set for that holding in today's morning this target, adjust this target
+    with the new average buy price and qty. -> DONE
+29. capital might be stuck at some places and when a buy signal is generated but we might not be able to act on it because
+    TMPV was very down today and we had it's holdings but it's rebuy order came very late -> P2
+29. Give 5 Lakhs each to each strategy and then track stock level buy and sell strategy wise which means a stock can be bought and sold
+    simultaneously across multiple strategies. -> DONE
+30. Remove baseDipAccumulator completely and keep code separately in each strategy -> DONE
+31. when an open position gets sold, it still keeps on showing in open positions, only after page refresh it removes from open position section. -> DONE
+32. sometimes when multiple buy signal comes at same moment -> capital limit per strategy is exceeded. -> P1
+33. Tick data need to set for each symbol at the start, so that sell price can be set accordingly. -> DONE
+34. Instrument Token need to fetch in morning and populate the Nifty500 enum list -> DONE
+35. No Rate Limiter error should come, make it much safer -> DONE
+36. Fetch Margin from the broker at a fixed interval and accordingly set strategy wise capital -> DONE
+37. Test if Holdings method is working or not - they should show in dashboard -> DONE
+38. Build a method which runs at 11/12/1/2 and updates target order like this -> 0.8 / 0.6 / 0.4 / 0.2 -> DONE
+39. Sold Holdings are not going away from holdings section -> DONE
+40. somehow capital used checks are being bypassed and trades are going ahead -> DONE
+41. HOLDINGS treatment is set -> DONE
+42. Reconciliation treatment is set -> DONE
+43. Sell webhook were not processing -> DONE
+44. holdings were getting orders placed for their target in reconciliation flow -> DONE
+45. At same second 2 orders for same stock is going out -> DONE
+46. we need to check if putting SL is really beneficial
+44. we need to check if trailing SL and updating target is really beneficial
+45. If a stock has hit it's upper circuit, let's not buy it. -> DONE
+46. while setting target order if we get this error -> "Your order price is higher than the current [upper circuit limit]" -> Do not set target order again. -> DONE
+47. In StockSelectionService when we set top gainer/losers ->
+    at that time check exited trades for today if a symbol is exited today skipp adding that in top gainer/losers. -> DONE
+48. revisit entry type analytics logic ->
+    A. Add entry type in these sections in dashboard -> open positions, closed trades, all trades history, holdings -> DONE
+
+Collecting Data Points for Entry Analytics and Stock Selection ==>
+
+1. When a stock which is bought today if it's get sold -> for selling do not add new row it in existing row of buy event -> just have a new column and put "closed";
+2. There should be column like buyPrice and sellPrice which will be used accordingly.
+3. Add buyTime and sellTime as well in GMT + 5:30 format. no need to save utc timestamp because we are saving GMT+5:30 time.
+4. EMA20 and EMA50 columns are not getting any data. they should have some data at the time of buy entry
+5. recheck once if these columns are correctly getting calculated -> relativeStrength, dayLow, distanceFromDayLow, openingRangeHigh, openingRangeLow,
+	buyAboveOpeningRangeHigh, yesterdayHigh, buyAboveYesterdayHigh
+6. No need of two columns -> isHolding	and convertedToHolding
+
+
+
+
+
+
+Recommended Next Coding Order
+Build in THIS order:
+1. PendingOrder entity
+2. BrokerWebhookEvent
+3. WebhookController
+4. OrderLifecycleManager
+5. CompletionProcessor
+6. Idempotency checks
+7. Reconciliation polling
+
+That is the safest path toward production-grade execution architecture.
+

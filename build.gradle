@@ -1,0 +1,67 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '2.7.14'
+    id 'io.spring.dependency-management' version '1.1.4'
+}
+
+group = 'com.kitetrader'
+version = '2.0.0'
+description = 'Kite Auto Trader Pro'
+
+java {
+    sourceCompatibility = '11'
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Web
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    implementation 'com.opencsv:opencsv:5.12.0'
+    // Scheduling
+    implementation 'org.springframework.boot:spring-boot-starter'
+
+    // JPA + H2 Database (switch to PostgreSQL for prod)
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    runtimeOnly 'com.h2database:h2'
+
+    // WebSocket client for Kite streaming
+    implementation 'org.springframework.boot:spring-boot-starter-websocket'
+
+    // JSON
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // Thymeleaf
+    implementation 'org.springframework.boot:spring-boot-starter-thymeleaf'
+
+    // Apache CSV for backtesting export
+    implementation 'org.apache.commons:commons-csv:1.10.0'
+
+    implementation 'com.zerodhatech.kiteconnect:kiteconnect:3.5.1'
+
+    // Test
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+bootJar {
+    archiveFileName = "${project.name}-${project.version}.jar"
+}
+

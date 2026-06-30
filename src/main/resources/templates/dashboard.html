@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Kite Pro Trader Live Dashboard</title>
+    <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:Segoe UI,sans-serif;background:#080808;color:#ddd;padding:20px;max-width:1400px;margin:auto}
+        h1{color:#00d4aa;margin-bottom:18px}
+        .card{background:#111;border:1px solid #1e1e1e;border-radius:10px;padding:18px;margin-bottom:16px}
+        h3{font-size:12px;color:#666;margin-bottom:12px;text-transform:uppercase}
+        table{width:100%;border-collapse:collapse}
+        th,td{padding:10px;border-bottom:1px solid #1a1a1a;text-align:left}
+        th{color:#555;font-size:11px}
+        .green{color:#00d4aa}
+        .red{color:#ff5555}
+        .orange{color:#ff9933}
+        .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+        .kpi{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px;padding:16px}
+        .label{font-size:11px;color:#555}
+        .value{font-size:24px;font-weight:700;margin-top:6px}
+        .strat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+        .strat{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:6px;padding:10px}
+        .small{font-size:11px;color:#777}
+        .near-target{background: rgba(255, 215, 0, 0.08);border-left: 4px solid gold;}
+        .near-target td{color: #ffd700 !important;font-weight: 600;}
+        .scrollable-table{max-height:400px;overflow-y:auto;overflow-x:hidden}
+        .scrollable-table::-webkit-scrollbar{width:8px}
+        .scrollable-table::-webkit-scrollbar-track{background:#0d0d0d}
+        .scrollable-table::-webkit-scrollbar-thumb{background:#333;border-radius:4px}
+        .scrollable-table::-webkit-scrollbar-thumb:hover{background:#444}
+
+        /* Control Buttons Container - Horizontal Layout */
+        .control-buttons-container{position:fixed;top:20px;right:20px;z-index:1000;display:flex;gap:12px;align-items:center}
+
+        /* Kill Switch Button Styles */
+        .kill-switch-btn{
+            padding:12px 24px;
+            font-size:14px;
+            font-weight:700;
+            border:none;
+            border-radius:8px;
+            cursor:pointer;
+            transition:all 0.3s ease;
+            box-shadow:0 4px 12px rgba(0,0,0,0.3);
+        }
+        .kill-switch-btn.inactive{
+            background:#00d4aa;
+            color:#000;
+        }
+        .kill-switch-btn.inactive:hover{
+            background:#00ffcc;
+            transform:translateY(-2px);
+            box-shadow:0 6px 16px rgba(0,212,170,0.4);
+        }
+        .kill-switch-btn.active{
+            background:#ff5555;
+            color:#fff;
+            animation:pulse 2s infinite;
+        }
+        .kill-switch-btn.active:hover{
+            background:#ff3333;
+            transform:translateY(-2px);
+            box-shadow:0 6px 16px rgba(255,85,85,0.4);
+        }
+        @keyframes pulse{
+            0%,100%{box-shadow:0 4px 12px rgba(255,85,85,0.3)}
+            50%{box-shadow:0 4px 20px rgba(255,85,85,0.6)}
+        }
+
+        /* Product Toggle Button Styles */
+        .product-toggle-btn{
+            padding:10px 20px;
+            font-size:13px;
+            font-weight:600;
+            border:none;
+            border-radius:6px;
+            cursor:pointer;
+            transition:all 0.3s ease;
+            box-shadow:0 3px 10px rgba(0,0,0,0.3);
+            min-width:110px;
+        }
+        .product-toggle-btn.enabled{
+            background:#00d4aa;
+            color:#000;
+        }
+        .product-toggle-btn.enabled:hover{
+            background:#00ffcc;
+            transform:translateY(-1px);
+            box-shadow:0 5px 14px rgba(0,212,170,0.4);
+        }
+        .product-toggle-btn.disabled{
+            background:#ff9933;
+            color:#fff;
+        }
+        .product-toggle-btn.disabled:hover{
+            background:#ffaa55;
+            transform:translateY(-1px);
+            box-shadow:0 5px 14px rgba(255,153,51,0.4);
+        }
+
+        /* Stock Filter Styles */
+        .filter-panel{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px;padding:16px;margin-bottom:20px}
+        .filter-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+        .filter-title{color:#00d4aa;font-size:16px;font-weight:600}
+        .filter-controls{display:flex;gap:8px}
+        .filter-btn{padding:8px 16px;font-size:12px;font-weight:600;border:none;border-radius:5px;cursor:pointer;transition:all 0.2s}
+        .filter-btn.primary{background:#00d4aa;color:#000}
+        .filter-btn.primary:hover{background:#00ffcc}
+        .filter-btn.secondary{background:#333;color:#ddd}
+        .filter-btn.secondary:hover{background:#444}
+        .filter-btn.danger{background:#ff5555;color:#fff}
+        .filter-btn.danger:hover{background:#ff3333}
+        .filter-condition{background:#111;border:1px solid#222;border-radius:6px;padding:12px;margin-bottom:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+        .filter-select,.filter-input{background:#1a1a1a;color:#ddd;border:1px solid #333;border-radius:4px;padding:8px;font-size:12px}
+        .filter-select:focus,.filter-input:focus{outline:none;border-color:#00d4aa}
+        .filter-add-btn{background:#222;color:#00d4aa;border:1px dashed#00d4aa;padding:10px;border-radius:6px;cursor:pointer;text-align:center;font-size:12px;margin-bottom:8px}
+        .filter-add-btn:hover{background:#2a2a2a}
+        .filter-options{display:flex;gap:16px;margin-top:12px;flex-wrap:wrap;align-items:center}
+        .filter-option{display:flex;align-items:center;gap:8px}
+        .filter-option label{color:#999;font-size:12px}
+        .filter-status{padding:4px 12px;border-radius:4px;font-size:11px;font-weight:600}
+        .filter-status.active{background:#00d4aa;color:#000}
+        .filter-status.inactive{background:#333;color:#999}
+    </style>
+</head>
+<body>
+
+<!-- Control Buttons - Kill Switch, MIS, CNC -->
+<div class="control-buttons-container">
+    <button id="killSwitchBtn" class="kill-switch-btn inactive" onclick="toggleKillSwitch()">
+        ✅ Trading Active
+    </button>
+    <button id="misToggleBtn" class="product-toggle-btn enabled" onclick="toggleMis()">
+        MIS ON
+    </button>
+    <button id="cncToggleBtn" class="product-toggle-btn disabled" onclick="toggleCnc()">
+        CNC OFF
+    </button>
+</div>
+
+<h1>🤖 Kite Pro Trader (Paper Trading Live)</h1>
+
+<!-- Stock Filter Panel -->
+<div class="filter-panel">
+    <div class="filter-header">
+        <div style="display:flex;align-items:center;gap:12px">
+            <span class="filter-title">📊 Stock Selection Filters</span>
+            <span id="filterStatus" class="filter-status inactive">DISABLED</span>
+        </div>
+        <div class="filter-controls">
+            <button class="filter-btn primary" onclick="applyFilters()">Apply Filters</button>
+            <button class="filter-btn secondary" onclick="loadFilterConfig()">Refresh</button>
+            <button class="filter-btn danger" onclick="clearAllFilters()">Clear All</button>
+        </div>
+    </div>
+
+    <div id="filterConditions"></div>
+
+    <div class="filter-add-btn" onclick="addFilterCondition()">
+        ➕ Add Filter Condition
+    </div>
+
+    <div class="filter-options">
+        <div class="filter-option">
+            <label>Combine with:</label>
+            <select id="combineOperator" class="filter-select">
+                <option value="AND">AND (All must match)</option>
+                <option value="OR">OR (Any can match)</option>
+            </select>
+        </div>
+        <div class="filter-option">
+            <label>Apply to:</label>
+            <select id="applyTo" class="filter-select">
+                <option value="BOTH">Both Gainers & Losers</option>
+                <option value="GAINERS">Gainers Only</option>
+                <option value="LOSERS">Losers Only</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<div class="grid-4" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="kpi">
+        <div class="label">Today's P&L</div>
+        <div class="value" id="todaysPnl">0</div>
+    </div>
+
+    <div class="kpi">
+        <div class="label">Total Realized P&L</div>
+        <div class="value" id="totalPnl">0</div>
+    </div>
+
+    <div class="kpi">
+        <div class="label">Open Positions</div>
+        <div class="value" id="openCount">0</div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Strategy P&L</h3>
+    <div class="strat-grid" id="strategyCards"></div>
+</div>
+
+<div class="card">
+    <h3>Strategy Capital Usage (Dynamic Limits from Available Funds)</h3>
+    <div class="strat-grid" id="strategyCapitalCards"></div>
+</div>
+
+<div class="card">
+    <h3>Live Open Positions</h3>
+    <table id="openPosTable">
+        <tr>
+            <th>Symbol</th>
+            <th>Strategy</th>
+            <th>Entry Type</th>
+            <th>Entry</th>
+            <th>Last</th>
+            <th>Qty</th>
+            <th>Unrealized</th>
+            <th>SL</th>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <h3>Entry Type Performance Analytics</h3>
+    <div class="strat-grid" id="entryTypeAnalytics" style="grid-template-columns: repeat(4, 1fr);"></div>
+</div>
+
+<div class="card">
+    <h3>Holdings</h3>
+    <table id="holdingsTable">
+        <tr>
+            <th>Symbol</th>
+            <th>Strategy</th>
+            <th>Entry Type</th>
+            <th>Entry</th>
+            <th>Last</th>
+            <th>Qty</th>
+            <th>P&L</th>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <h3>Closed Trades (Realized)</h3>
+    <div class="scrollable-table">
+        <table id="closedTradeTable">
+            <tr>
+                <th>Date & Time</th>
+                <th>Symbol</th>
+                <th>Strategy</th>
+                <th>Entry Type</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>Qty</th>
+                <th>P&L</th>
+            </tr>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <h3>All Trade History</h3>
+    <div class="scrollable-table">
+        <table id="historyTable">
+            <tr>
+                <th>Date & Time</th>
+                <th>Type</th>
+                <th>Symbol</th>
+                <th>Strategy</th>
+                <th>Entry Type</th>
+                <th>Price</th>
+                <th>Qty</th>
+                <th>P&L</th>
+            </tr>
+        </table>
+    </div>
+</div>
+
+<script>
+    const ws = new WebSocket("wss://" + window.location.host + "/live");
+
+    const openPositions={};
+    const strategyPnL={};
+    const holdings = {};
+
+    // Throttle UI updates to reduce DOM manipulation
+    let renderPending = false;
+    const RENDER_THROTTLE_MS = 500; // Update UI max once per 500ms
+
+    function throttledRender() {
+        if (renderPending) return;
+        renderPending = true;
+        setTimeout(() => {
+            renderOpenPositions();
+            renderHoldings();
+            renderPending = false;
+        }, RENDER_THROTTLE_MS);
+    }
+
+    function isNearTarget(last, target){
+    if(!target || target === 0) return false;
+    let diff = Math.abs(target - last) / target;
+    return diff <= 0.0005; // 0.05% threshold (you can tune)
+}
+
+    function addHistory(type,msg){
+     let row=`<tr>
+     <td>${new Date().toLocaleTimeString()}</td>
+     <td>${type}</td>
+     <td>${msg}</td>
+     </tr>`;
+     document.getElementById("historyTable").innerHTML+=row;
+    }
+
+    function renderOpenPositions(){
+     let html=`
+     <tr>
+     <th>Symbol</th>
+     <th>Strategy</th>
+     <th>Entry Type</th>
+     <th>Entry</th>
+     <th>Last</th>
+     <th>Qty</th>
+     <th>Unrealized</th>
+     <th>SL</th>
+     </tr>`;
+
+     let count=0;
+     let capitalUsed = 0;
+
+     for(let s in openPositions){
+       let p=openPositions[s];
+       count++;
+       capitalUsed += p.entry * p.qty;
+       let pnlClass=(p.unrealized>=0)?'green':'red';
+       let nearTarget = isNearTarget(p.last, p.target);
+       let highlightClass = nearTarget ? 'near-target' : '';
+
+       // Format entry type for display
+       let entryTypeDisplay = p.entryType ? formatEntryType(p.entryType) : '-';
+       let entryTypeClass = getEntryTypeClass(p.entryType);
+
+       html+=`
+       <tr class='${highlightClass}'>
+       <td>${p.symbol}</td>
+       <td>${p.strategy}</td>
+       <td><span class="${entryTypeClass}">${entryTypeDisplay}</span></td>
+       <td>${p.entry}</td>
+       <td>${p.last}</td>
+       <td>${p.qty}</td>
+       <td class='${pnlClass}'>${p.unrealized}</td>
+       <td>${p.sl || '-'}</td>
+       </tr>`;
+     }
+
+     document.getElementById("openPosTable").innerHTML=html;
+
+     // Total count includes INTRADAY positions + HOLDINGS
+     let totalCount = count + Object.keys(holdings).length;
+     document.getElementById("openCount").innerText=totalCount;
+    }
+
+    function renderHoldings(){
+         let html=`
+         <tr>
+         <th>Symbol</th>
+         <th>Strategy</th>
+         <th>Entry Type</th>
+         <th>Entry</th>
+         <th>Last</th>
+         <th>Qty</th>
+         <th>P&L</th>
+         </tr>`;
+
+         let holdingsCapital = 0;
+
+         for(let key in holdings){
+           let h=holdings[key];
+           holdingsCapital += h.entry * h.qty;
+           let pnlClass=(h.pnl>=0)?'green':'red';
+           let nearTarget = isNearTarget(h.last, h.target);
+           let highlightClass = nearTarget ? 'near-target' : '';
+
+           // Format entry type for display
+           let entryTypeDisplay = h.entryType ? formatEntryType(h.entryType) : '-';
+           let entryTypeClass = getEntryTypeClass(h.entryType);
+
+           html+=`
+           <tr class='${highlightClass}'>
+           <td>${h.symbol}</td>
+           <td><span class="strategy-badge">${h.strategy}</span></td>
+           <td><span class="${entryTypeClass}">${entryTypeDisplay}</span></td>
+           <td>${h.entry}</td>
+           <td>${h.last}</td>
+           <td>${h.qty}</td>
+           <td class='${pnlClass}'>${h.pnl}</td>
+           </tr>`;
+         }
+
+    document.getElementById("holdingsTable").innerHTML=html;
+}
+
+    function formatEntryType(type) {
+        if (!type) return '-';
+        const typeMap = {
+            'TOP_GAINER': '📈 Gainer',
+            'TOP_LOSER': '📉 Loser',
+            'ACCUMULATION': '🔄 Avg',
+            'UNKNOWN': '❓'
+        };
+        return typeMap[type] || type;
+    }
+
+    function getEntryTypeClass(type) {
+        if (!type) return '';
+        const classMap = {
+            'TOP_GAINER': 'green',
+            'TOP_LOSER': 'red',
+            'ACCUMULATION': 'orange',
+            'UNKNOWN': ''
+        };
+        return classMap[type] || '';
+    }
+
+    function renderStrategyCards(){
+     let html='';
+     for(let s in strategyPnL){
+       let v=strategyPnL[s];
+       let cls=v>=0?'green':'red';
+       html+=`
+       <div class='strat'>
+       <div class='small'>${s}</div>
+       <div class='${cls}'>${v}</div>
+       </div>`;
+     }
+     document.getElementById('strategyCards').innerHTML=html;
+    }
+
+    function renderStrategyCapitalCards(strategies, holdingsCapital){
+     let html='';
+
+     // Add Holdings capital card first (separate from strategies)
+     if (holdingsCapital > 0) {
+       html+=`
+       <div class='strat'>
+       <div class='small'>Holdings</div>
+       <div class='value' style='font-size:16px; margin:4px 0;'>₹${(holdingsCapital/100000).toFixed(1)}L</div>
+       <div class='small' style='color:#666'>Long-term positions</div>
+       </div>`;
+     }
+
+     // Add strategy cards (intraday only)
+     strategies.forEach(item => {
+       let used = item.capital;
+       let maxCapital = item.maxCapital || 1000000; // Use maxCapital from backend, fallback to 10L
+       let remaining = maxCapital - used;
+       let usedPct = ((used / maxCapital) * 100).toFixed(1);
+       let cls = usedPct > 90 ? 'red' : (usedPct > 70 ? 'orange' : 'green');
+
+       html+=`
+       <div class='strat'>
+       <div class='small'>${item.strategy}</div>
+       <div class='value' style='font-size:16px; margin:4px 0;'>₹${(used/100000).toFixed(1)}L</div>
+       <div class='small ${cls}'>${usedPct}% used</div>
+       <div class='small' style='color:#666'>Rem: ₹${(remaining/100000).toFixed(1)}L / Max: ₹${(maxCapital/100000).toFixed(1)}L</div>
+       </div>`;
+     });
+
+     document.getElementById('strategyCapitalCards').innerHTML=html;
+    }
+
+    function renderEntryTypeAnalytics(analytics) {
+        let html = '';
+
+        // Define order for display
+        const entryTypes = ['TOP_GAINER', 'TOP_LOSER', 'ACCUMULATION', 'UNKNOWN'];
+
+        entryTypes.forEach(type => {
+            let stats = analytics[type];
+            if (!stats) return; // Skip if no data for this type
+
+            let pnlClass = stats.totalPnL >= 0 ? 'green' : 'red';
+            let winRateClass = stats.winRate >= 50 ? 'green' : (stats.winRate >= 40 ? 'orange' : 'red');
+            let typeIcon = formatEntryType(type);
+
+            // Calculate open positions (buy completed - trades closed - converted to holdings)
+            let openedCount = stats.buyOrdersCompleted || 0;
+            let closedCount = stats.tradesClosed || 0;
+            let convertedCount = stats.convertedToHoldings || 0;
+            let conversionRate = stats.conversionRate || 0;
+            let openCount = openedCount - closedCount - convertedCount;
+
+            // Conversion rate color coding
+            let conversionClass = conversionRate >= 50 ? 'red' : (conversionRate >= 30 ? 'orange' : 'green');
+
+            html += `
+            <div class='strat'>
+                <div class='small' style='font-weight:600; margin-bottom:8px;'>${typeIcon}</div>
+
+                <div class='${pnlClass}' style='font-size:18px; font-weight:700; margin:4px 0;'>
+                    ₹${(stats.totalPnL/1000).toFixed(1)}k
+                </div>
+
+                <div class='small' style='margin-top:6px;'>
+                    <span class='${winRateClass}'>Win: ${stats.winRate.toFixed(1)}%</span>
+                    <span style='color:#666'> (${stats.wins}/${closedCount})</span>
+                </div>
+
+                <div class='small' style='margin-top:4px; color:#888;'>
+                    📊 Opened: <span style='color:#00d4aa;'>${openedCount}</span> |
+                    Closed: <span style='color:#ff9933;'>${closedCount}</span>
+                </div>
+
+                <div class='small' style='margin-top:2px; color:#888;'>
+                    🔄 Converted: <span class='${conversionClass}'>${convertedCount}</span>
+                    <span style='color:#666'> (${conversionRate.toFixed(1)}%)</span>
+                </div>
+
+                <div class='small' style='margin-top:2px; color:#888;'>
+                    🔓 Open: <span style='color:#00d4aa;'>${openCount}</span> |
+                    Avg: <span class='${pnlClass}'>₹${stats.avgPnL.toFixed(0)}</span>
+                </div>
+            </div>`;
+        });
+
+        document.getElementById('entryTypeAnalytics').innerHTML = html;
+    }
+
+     function resetDashboard(){
+
+        // clear in-memory state
+        for(let k in openPositions) delete openPositions[k];
+        for(let k in strategyPnL) delete strategyPnL[k];
+        for(let k in holdings) delete holdings[k];
+
+        // Clear live position tables
+        document.getElementById("holdingsTable").innerHTML = `
+        <tr>
+            <th>Symbol</th>
+            <th>Strategy</th>
+            <th>Entry Type</th>
+            <th>Entry</th>
+            <th>Last</th>
+            <th>Qty</th>
+            <th>P&L</th>
+        </tr>`;
+
+        document.getElementById("openPosTable").innerHTML = "";
+
+        // Clear historical tables (will be repopulated by snapshot)
+        document.getElementById("closedTradeTable").innerHTML = `
+        <tr>
+            <th>Date & Time</th>
+            <th>Symbol</th>
+            <th>Strategy</th>
+            <th>Entry Type</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th>Qty</th>
+            <th>P&L</th>
+        </tr>`;
+
+        document.getElementById("historyTable").innerHTML = `
+        <tr>
+            <th>Date & Time</th>
+            <th>Type</th>
+            <th>Symbol</th>
+            <th>Strategy</th>
+            <th>Entry Type</th>
+            <th>Price</th>
+            <th>Qty</th>
+            <th>P&L</th>
+        </tr>`;
+
+        // reset KPIs
+        document.getElementById("todaysPnl").innerText = 0;
+        document.getElementById("totalPnl").innerText = 0;
+        document.getElementById("openCount").innerText = 0;
+        document.getElementById("strategyCards").innerHTML = "";
+
+        console.log("✅ Dashboard reset - waiting for snapshot data...");
+    }
+
+
+    ws.onopen=function(){
+     console.log('websocket connected');
+     resetDashboard();
+    }
+
+    ws.onmessage=function(event){
+     let msg=JSON.parse(event.data);
+
+     // Log important snapshot messages
+     if(msg.type==='TRADE' || msg.type==='EVENT' || msg.type==='PNL' ||
+        msg.type==='TODAYS_PNL' || msg.type==='STRATEGY_PNL'){
+         console.log('📥 Received:', msg.type, msg);
+     }
+
+     // Handle batch position snapshot (faster loading on reconnect)
+     if(msg.type==='POSITIONS_SNAPSHOT'){
+       msg.positions.forEach(function(position) {
+         openPositions[position.symbol + "_" + position.strategy] = position;
+       });
+       renderOpenPositions();  // Single render for all positions
+       return;
+     }
+
+     // Handle batch holdings snapshot (faster loading on reconnect)
+     if(msg.type==='HOLDINGS_SNAPSHOT'){
+       msg.positions.forEach(function(holding) {
+         let key = holding.symbol + "_" + holding.strategy;
+         holdings[key] = {
+           symbol: holding.symbol,
+           strategy: holding.strategy,
+           entry: holding.entry,
+           last: holding.last,
+           qty: holding.qty,
+           pnl: holding.pnl,
+           target: holding.target,
+           entryType: holding.entryType
+         };
+       });
+       renderHoldings();  // Single render for all holdings
+       return;
+     }
+
+     // Individual position update (during trading)
+     if(msg.type==='POSITION'){
+       openPositions[msg.symbol + "_" + msg.strategy]=msg;
+       throttledRender();  // Use throttled render
+     }
+
+     // Individual holding update (during trading)
+     if(msg.type==='HOLDING'){
+      let key = msg.symbol + "_" + msg.strategy;
+      holdings[key] = {
+      symbol: msg.symbol,
+      strategy: msg.strategy,
+      entry: msg.entry,
+      last: msg.last,
+      qty: msg.qty,
+      pnl: msg.pnl,
+      target: msg.target,
+      entryType: msg.entryType
+    };
+      throttledRender();  // Use throttled render
+    }
+
+     if(msg.type==='HOLDING_REMOVED'){
+       let key = msg.symbol + "_" + msg.strategy;
+       delete holdings[key];
+       renderHoldings();  // Immediate render for removal
+     }
+
+     // Handle SELL events - remove from open positions
+     // Only add to closed trades if this is a real-time event (has entry/exit)
+     // Snapshot events only have 'price' and are already covered by TRADE messages
+     if(msg.type==='EVENT' && msg.etype==='SELL' && msg.entry !== undefined && msg.exit !== undefined){
+       let cls=(msg.pnl>=0)?'green':'red';
+       let date = new Date(msg.time);
+       let dateTimeStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+
+       // Format entry type for display
+       let entryTypeDisplay = msg.entryType ? formatEntryType(msg.entryType) : '-';
+       let entryTypeClass = getEntryTypeClass(msg.entryType);
+
+       let row=`
+       <tr>
+       <td>${dateTimeStr}</td>
+       <td>${msg.symbol}</td>
+       <td>${msg.strategy}</td>
+       <td><span class="${entryTypeClass}">${entryTypeDisplay}</span></td>
+       <td>${msg.entry}</td>
+       <td>${msg.exit}</td>
+       <td>${msg.qty}</td>
+       <td class='${cls}'>${msg.pnl}</td>
+       </tr>`;
+       document.getElementById('closedTradeTable').innerHTML+=row;
+
+       // Remove from open positions immediately
+       delete openPositions[msg.symbol+"_"+msg.strategy];
+       renderOpenPositions();
+     }
+
+     // Legacy handler for TRADE messages (ONLY for historical snapshot on page load)
+     if(msg.type==='TRADE'){
+       let cls=(msg.pnl>=0)?'green':'red';
+       let date = new Date(msg.time);
+       let dateTimeStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+
+       // Format entry type for display
+       let entryTypeDisplay = msg.entryType ? formatEntryType(msg.entryType) : '-';
+       let entryTypeClass = getEntryTypeClass(msg.entryType);
+
+       let row=`
+       <tr>
+       <td>${dateTimeStr}</td>
+       <td>${msg.symbol}</td>
+       <td>${msg.strategy}</td>
+       <td><span class="${entryTypeClass}">${entryTypeDisplay}</span></td>
+       <td>${msg.entry}</td>
+       <td>${msg.exit}</td>
+       <td>${msg.qty}</td>
+       <td class='${cls}'>${msg.pnl}</td>
+       </tr>`;
+       document.getElementById('closedTradeTable').innerHTML+=row;
+
+       // DO NOT delete from openPositions - historical trades are already closed
+       // DO NOT call renderOpenPositions() - this is historical data only
+     }
+
+     if(msg.type==='EVENT'){
+
+         let cls = msg.etype === 'BUY' ? 'green' : 'red';
+         let date = new Date(msg.time);
+         let dateTimeStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+
+         // Format entry type for display
+         let entryTypeDisplay = msg.entryType ? formatEntryType(msg.entryType) : '-';
+         let entryTypeClass = getEntryTypeClass(msg.entryType);
+
+         let row=`
+         <tr>
+         <td>${dateTimeStr}</td>
+         <td class='${cls}'>${msg.etype}</td>
+         <td>${msg.symbol}</td>
+         <td>${msg.strategy}</td>
+         <td><span class="${entryTypeClass}">${entryTypeDisplay}</span></td>
+         <td>${msg.price}</td>
+         <td>${msg.qty}</td>
+         <td>${msg.pnl || '-'}</td>
+         </tr>`;
+
+         document.getElementById("historyTable").innerHTML+=row;
+    }
+
+     // LOG messages are ignored - they clutter the trade history
+     // if(msg.type==='LOG'){
+     //   addHistory('LOG',msg.message);
+     // }
+
+     if(msg.type==='PNL'){
+       document.getElementById('totalPnl').innerText=msg.value;
+     }
+
+     if(msg.type==='TODAYS_PNL'){
+       document.getElementById('todaysPnl').innerText=msg.value;
+     }
+
+     // RISK messages no longer used - we show capital remaining instead
+     // if(msg.type==='RISK'){
+     //   document.getElementById('drawdown').innerText=msg.drawdown;
+     // }
+
+     if(msg.type==='STRATEGY_PNL'){
+       strategyPnL[msg.strategy]=msg.pnl;
+       renderStrategyCards();
+     }
+
+     if(msg.type==='TRAIL'){
+       addHistory('TRAIL',`${msg.symbol} SL moved to ${msg.sl}`);
+     }
+
+     // Handle capital used snapshot (on reconnect/refresh)
+     if(msg.type==='CAPITAL_USED'){
+       // Update strategy capital cards
+       if (msg.strategies) {
+         renderStrategyCapitalCards(msg.strategies, msg.holdings || 0);
+       }
+     }
+
+     // Handle entry type analytics (snapshot and updates)
+     if(msg.type==='ENTRY_TYPE_ANALYTICS'){
+       console.log('📊 Entry Type Analytics:', msg.analytics);
+       if (msg.analytics) {
+         renderEntryTypeAnalytics(msg.analytics);
+       }
+     }
+
+     // Handle kill switch status updates
+     if(msg.type==='KILL_SWITCH'){
+       console.log('🛑 Kill Switch Status:', msg.message);
+       updateKillSwitchUI(msg.message === 'active');
+     }
+
+     // Handle product toggle status updates (MIS/CNC)
+     if(msg.type==='PRODUCT_TOGGLE'){
+       console.log('🔄 Product Toggle:', msg.strategy, msg.message);
+       if(msg.strategy === 'MIS') {
+         updateMisUI(msg.message === 'enabled');
+       } else if(msg.strategy === 'CNC') {
+         updateCncUI(msg.message === 'enabled');
+       }
+     }
+    };
+
+    ws.onerror=function(e){
+     console.error('ws error',e);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  KILL SWITCH FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle kill switch via REST API
+     */
+    function toggleKillSwitch() {
+        const btn = document.getElementById('killSwitchBtn');
+        btn.disabled = true;
+
+        fetch('/api/killswitch/toggle', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log('Kill switch toggled:', data);
+            updateKillSwitchUI(data.active);
+            btn.disabled = false;
+        })
+        .catch(error => {
+            console.error('Error toggling kill switch:', error);
+            btn.disabled = false;
+            alert('Failed to toggle kill switch. Please try again.');
+        });
+    }
+
+    /**
+     * Update kill switch button UI based on state
+     */
+    function updateKillSwitchUI(isActive) {
+        const btn = document.getElementById('killSwitchBtn');
+        if (isActive) {
+            btn.className = 'kill-switch-btn active';
+            btn.innerHTML = '🛑 KILL SWITCH ACTIVE';
+        } else {
+            btn.className = 'kill-switch-btn inactive';
+            btn.innerHTML = '✅ Trading Active';
+        }
+    }
+
+    /**
+     * Fetch initial kill switch status on page load
+     */
+    function fetchKillSwitchStatus() {
+        fetch('/api/killswitch/status')
+        .then(response => response.json())
+        .then(data => {
+            updateKillSwitchUI(data.active);
+        })
+        .catch(error => {
+            console.error('Error fetching kill switch status:', error);
+        });
+    }
+
+    // Fetch kill switch status when page loads
+    fetchKillSwitchStatus();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  PRODUCT TOGGLE FUNCTIONS (MIS/CNC)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle MIS buy orders via REST API
+     */
+    function toggleMis() {
+        const btn = document.getElementById('misToggleBtn');
+        btn.disabled = true;
+
+        fetch('/api/product/mis/toggle', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log('MIS toggled:', data);
+            updateMisUI(data.enabled);
+            btn.disabled = false;
+        })
+        .catch(error => {
+            console.error('Error toggling MIS:', error);
+            btn.disabled = false;
+            alert('Failed to toggle MIS. Please try again.');
+        });
+    }
+
+    /**
+     * Toggle CNC buy orders via REST API
+     */
+    function toggleCnc() {
+        const btn = document.getElementById('cncToggleBtn');
+        btn.disabled = true;
+
+        fetch('/api/product/cnc/toggle', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log('CNC toggled:', data);
+            updateCncUI(data.enabled);
+            btn.disabled = false;
+        })
+        .catch(error => {
+            console.error('Error toggling CNC:', error);
+            btn.disabled = false;
+            alert('Failed to toggle CNC. Please try again.');
+        });
+    }
+
+    /**
+     * Update MIS button UI based on state
+     */
+    function updateMisUI(isEnabled) {
+        const btn = document.getElementById('misToggleBtn');
+        if (isEnabled) {
+            btn.className = 'product-toggle-btn enabled';
+            btn.innerHTML = 'MIS ON';
+        } else {
+            btn.className = 'product-toggle-btn disabled';
+            btn.innerHTML = 'MIS OFF';
+        }
+    }
+
+    /**
+     * Update CNC button UI based on state
+     */
+    function updateCncUI(isEnabled) {
+        const btn = document.getElementById('cncToggleBtn');
+        if (isEnabled) {
+            btn.className = 'product-toggle-btn enabled';
+            btn.innerHTML = 'CNC ON';
+        } else {
+            btn.className = 'product-toggle-btn disabled';
+            btn.innerHTML = 'CNC OFF';
+        }
+    }
+
+    /**
+     * Fetch initial product toggle status on page load
+     */
+    function fetchProductStatus() {
+        fetch('/api/product/status')
+        .then(response => response.json())
+        .then(data => {
+            updateMisUI(data.misEnabled);
+            updateCncUI(data.cncEnabled);
+        })
+        .catch(error => {
+            console.error('Error fetching product status:', error);
+        });
+    }
+
+    // Fetch product status when page loads
+    fetchProductStatus();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  STOCK FILTER FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    let filterFields = {numeric: [], boolean: []};
+    let filterConditionsData = [];
+
+    /**
+     * Load available filter fields from API
+     */
+    function loadFilterFields() {
+        fetch('/api/filters/fields')
+            .then(response => response.json())
+            .then(data => {
+                filterFields = data;
+                console.log('✅ Filter fields loaded:', data);
+                // Re-render conditions if any exist
+                if (filterConditionsData.length > 0) {
+                    renderFilterConditions();
+                }
+            })
+            .catch(error => {
+                console.error('❌ Error loading filter fields:', error);
+                filterFields = {numericFields: [], booleanFields: []};
+            });
+    }
+
+    /**
+     * Load current filter configuration from API
+     */
+    function loadFilterConfig() {
+        fetch('/api/filters/config')
+            .then(response => response.json())
+            .then(config => {
+                filterConditionsData = config.conditions || [];
+                document.getElementById('combineOperator').value = config.combineOperator || 'AND';
+                document.getElementById('applyTo').value = config.applyTo || 'BOTH';
+                updateFilterStatus(config.enabled);
+                renderFilterConditions();
+            })
+            .catch(error => console.error('Error loading filter config:', error));
+    }
+
+    /**
+     * Update filter status badge
+     */
+    function updateFilterStatus(enabled) {
+        const badge = document.getElementById('filterStatus');
+        if (enabled) {
+            badge.className = 'filter-status active';
+            badge.textContent = 'ACTIVE';
+        } else {
+            badge.className = 'filter-status inactive';
+            badge.textContent = 'DISABLED';
+        }
+    }
+
+    /**
+     * Render all filter conditions in UI
+     */
+    function renderFilterConditions() {
+        const container = document.getElementById('filterConditions');
+        container.innerHTML = '';
+
+        // Check if filter fields are loaded
+        if (!filterFields.numericFields || !filterFields.booleanFields) {
+            container.innerHTML = '<div style="color:#999;padding:10px;text-align:center">Loading filter fields...</div>';
+            return;
+        }
+
+        filterConditionsData.forEach((condition, index) => {
+            const div = document.createElement('div');
+            div.className = 'filter-condition';
+
+            const isBooleanField = filterFields.booleanFields.some(f => f.key === condition.field);
+
+            div.innerHTML = `
+                <select class="filter-select" onchange="updateConditionField(${index}, this.value)">
+                    <option value="">Select Field...</option>
+                    <optgroup label="Numeric Fields">
+                        ${filterFields.numericFields.map(f =>
+                            `<option value="${f.key}" ${condition.field === f.key ? 'selected' : ''}>${f.label}</option>`
+                        ).join('')}
+                    </optgroup>
+                    <optgroup label="Boolean Fields">
+                        ${filterFields.booleanFields.map(f =>
+                            `<option value="${f.key}" ${condition.field === f.key ? 'selected' : ''}>${f.label}</option>`
+                        ).join('')}
+                    </optgroup>
+                </select>
+                ${isBooleanField ? `
+                    <select class="filter-select" onchange="updateConditionBoolValue(${index}, this.value)">
+                        <option value="true" ${condition.booleanValue === true ? 'selected' : ''}>Yes / True</option>
+                        <option value="false" ${condition.booleanValue === false ? 'selected' : ''}>No / False</option>
+                    </select>
+                ` : `
+                    <select class="filter-select" onchange="updateConditionOperator(${index}, this.value)">
+                        <option value=">" ${condition.operator === '>' ? 'selected' : ''}>&gt;</option>
+                        <option value=">=" ${condition.operator === '>=' ? 'selected' : ''}>&gt;=</option>
+                        <option value="<" ${condition.operator === '<' ? 'selected' : ''}>&lt;</option>
+                        <option value="<=" ${condition.operator === '<=' ? 'selected' : ''}>&lt;=</option>
+                        <option value="==" ${condition.operator === '==' ? 'selected' : ''}>=</option>
+                        <option value="!=" ${condition.operator === '!=' ? 'selected' : ''}>!=</option>
+                    </select>
+                    <input type="number" step="any" class="filter-input" style="width:120px"
+                           value="${condition.value || ''}"
+                           onchange="updateConditionValue(${index}, this.value)"
+                           placeholder="Value">
+                `}
+                <button class="filter-btn danger" style="padding:6px 12px" onclick="removeCondition(${index})">Remove</button>
+            `;
+
+            container.appendChild(div);
+        });
+    }
+
+    /**
+     * Add a new empty filter condition
+     */
+    function addFilterCondition() {
+        // Check if filter fields are loaded
+        if (!filterFields.numericFields || filterFields.numericFields.length === 0) {
+            console.log('Filter fields not loaded yet, loading now...');
+            loadFilterFields();
+            setTimeout(() => {
+                addFilterCondition(); // Retry after fields are loaded
+            }, 500);
+            return;
+        }
+
+        filterConditionsData.push({
+            field: '',
+            operator: '>',
+            value: null,
+            booleanValue: null
+        });
+        renderFilterConditions();
+    }
+
+    /**
+     * Remove a filter condition
+     */
+    function removeCondition(index) {
+        filterConditionsData.splice(index, 1);
+        renderFilterConditions();
+    }
+
+    /**
+     * Update condition field
+     */
+    function updateConditionField(index, field) {
+        filterConditionsData[index].field = field;
+        const isBooleanField = filterFields.booleanFields.some(f => f.key === field);
+        if (isBooleanField) {
+            filterConditionsData[index].booleanValue = true;
+            filterConditionsData[index].operator = null;
+            filterConditionsData[index].value = null;
+        } else {
+            filterConditionsData[index].operator = '>';
+            filterConditionsData[index].value = 0;
+            filterConditionsData[index].booleanValue = null;
+        }
+        renderFilterConditions();
+    }
+
+    /**
+     * Update condition operator
+     */
+    function updateConditionOperator(index, operator) {
+        filterConditionsData[index].operator = operator;
+    }
+
+    /**
+     * Update condition value
+     */
+    function updateConditionValue(index, value) {
+        filterConditionsData[index].value = parseFloat(value);
+    }
+
+    /**
+     * Update condition boolean value
+     */
+    function updateConditionBoolValue(index, value) {
+        filterConditionsData[index].booleanValue = value === 'true';
+    }
+
+    /**
+     * Apply filters
+     */
+    function applyFilters() {
+        // Validate conditions
+        const validConditions = filterConditionsData.filter(c => c.field);
+
+        if (validConditions.length === 0) {
+            alert('Please add at least one filter condition');
+            return;
+        }
+
+        const config = {
+            conditions: validConditions,
+            combineOperator: document.getElementById('combineOperator').value,
+            applyTo: document.getElementById('applyTo').value,
+            enabled: true
+        };
+
+        fetch('/api/filters/config', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(config)
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log('Filters applied:', data);
+            updateFilterStatus(true);
+            alert(`✅ Filters applied successfully!\n${data.conditions} conditions active`);
+        })
+        .catch(error => {
+            console.error('Error applying filters:', error);
+            alert('Failed to apply filters. Please try again.');
+        });
+    }
+
+    /**
+     * Clear all filters
+     */
+    function clearAllFilters() {
+        if (!confirm('Are you sure you want to clear all filters?')) {
+            return;
+        }
+
+        fetch('/api/filters/clear', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log('Filters cleared:', data);
+            filterConditionsData = [];
+            renderFilterConditions();
+            updateFilterStatus(false);
+            alert('✅ All filters cleared');
+        })
+        .catch(error => {
+            console.error('Error clearing filters:', error);
+            alert('Failed to clear filters. Please try again.');
+        });
+    }
+
+    // Load filter fields and config when page loads
+    loadFilterFields();
+    // Wait a bit for fields to load before loading config
+    setTimeout(() => {
+        loadFilterConfig();
+    }, 800);
+</script>
+
+</body>
+</html>
