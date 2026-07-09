@@ -33,7 +33,7 @@ public class BroadcastService {
     private final WebSocketBroadcaster broadcaster;
     private final ObjectMapper objectMapper;
     private final PositionManager positionManager; private volatile long lastBroadcastTime = 0;
-    private static final long BROADCAST_THROTTLE_MS = 1000;
+    private static final long BROADCAST_THROTTLE_MS = 50;
 
     // Async executor for non-blocking broadcasts
     private final ExecutorService broadcastExecutor = Executors.newFixedThreadPool(
