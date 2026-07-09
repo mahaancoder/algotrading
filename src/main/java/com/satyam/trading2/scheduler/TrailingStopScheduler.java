@@ -32,7 +32,7 @@ public class TrailingStopScheduler {
      * Runs every 15 minutes: 0, 15, 30, 45 minutes past each hour
      * Only executes after 10:00 AM on weekdays (MON-FRI)
      */
-    @Scheduled(cron = "0 0/15 * * * MON-FRI")
+    @Scheduled(cron = "0 0/5 * * * MON-FRI")
     public void updateTrailingStops() {
         // 🛑 KILL SWITCH CHECK
         if (killSwitchService.isActive()) {
@@ -42,7 +42,7 @@ public class TrailingStopScheduler {
 
         // Only run after 10:00 AM
         LocalTime now = LocalTime.now();
-        if (now.isBefore(LocalTime.of(10, 0))) {
+        if (now.isBefore(LocalTime.of(9, 35))) {
             return;
         }
 
