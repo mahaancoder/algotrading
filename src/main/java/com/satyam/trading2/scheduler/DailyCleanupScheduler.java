@@ -24,7 +24,6 @@ public class DailyCleanupScheduler {
     
     // Files to clean up daily
     private static final String[] FILES_TO_CLEAN = {
-        "app.log",
         "pending_order.csv",
         "buy_signal.csv",
         "dip_states.csv"
