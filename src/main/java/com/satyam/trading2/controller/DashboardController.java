@@ -8,6 +8,7 @@ import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.Trade;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.infrastructure.messaging.BroadcastService;
+import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.service.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +39,9 @@ public class DashboardController {
 
     @Autowired
     private StockFilterService stockFilterService;
+
+    @Autowired
+    private RiskManager riskManager;
 
     @Value("${trading.paper.mode:false}")
     private boolean paperMode;
@@ -76,6 +80,40 @@ public class DashboardController {
         model.addAttribute("regime", "BULL");
 
         return "dashboard";
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  RESERVED CAPITAL DIAGNOSTICS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Get current reserved capital snapshot (strategy + symbol)
+     */
+    @GetMapping("/api/risk/reserved-capital")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> getReservedCapital() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("totalReservedStrategy", riskManager.getTotalReservedCapital());
+        response.put("totalReservedSymbol", riskManager.getTotalReservedCapitalBySymbol());
+        response.put("reservedByStrategy", riskManager.getReservedCapitalPerStrategySnapshot());
+        response.put("timestamp", System.currentTimeMillis());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Emergency button: release ALL reserved capital (local reservations only).
+     * WARNING: This does NOT cancel broker orders.
+     */
+    @PostMapping("/api/risk/release-all-reserved")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> releaseAllReserved() {
+        riskManager.releaseAllReservedCapital();
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("message", "All reserved capital cleared (strategy + symbol)");
+        response.put("timestamp", System.currentTimeMillis());
+        return ResponseEntity.ok(response);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -134,7 +172,7 @@ public class DashboardController {
     }
 
     /**
-     * Toggle CNC buy orders and broadcast the new state to all connected clients
+     * Toggle CNC buy orders and broadcast the new state to all connected WebSocket clients
      */
     @PostMapping("/api/product/cnc/toggle")
     @ResponseBody
