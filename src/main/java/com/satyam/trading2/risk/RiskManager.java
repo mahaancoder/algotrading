@@ -7,9 +7,9 @@ import com.satyam.trading2.scheduler.MarginFetchScheduler;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import org.hibernate.hql.internal.ast.tree.ResolvableNode;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -62,24 +62,6 @@ public class RiskManager {
 
     /**
      * ===== CRITICAL: Thread-safe risk check with symbol-level locking =====
-     * This method checks ALL risk conditions and is synchronized per symbol to prevent race conditions.
-     *
-     * Race condition scenario this prevents:
-     * - Thread 1: Checks symbol capital (0) → passes → reserves 25K
-     * - Thread 2: Checks symbol capital (0, because Thread 1 hasn't reserved yet) → passes → reserves 25K
-     * - Result: 50K reserved for same symbol when limit should be enforced atomically
-     *
-     * With symbol-level locking:
-     * - Thread 1: Acquires lock → checks symbol capital (0) → passes → Thread 2 waits
-     * - Thread 2: Acquires lock → checks symbol capital (25K reserved) → passes or rejects based on actual state
-     *
-     * @param symbol Trading symbol
-     * @param strategy Strategy name
-     * @param actualCapital Capital required for this order
-     * @param entryPrice Entry price for this order
-     * @param state DipState for accumulation tracking (can be null)
-     * @param isHolding Whether this is a holding (CNC) or intraday (MIS) order
-     * @return RiskCheckResult indicating if the order is safe to proceed
      */
     public RiskCheckResult checkSignalSafety(String symbol, String strategy, double actualCapital, double entryPrice, DipState state, boolean isHolding) {
 
@@ -195,13 +177,6 @@ public class RiskManager {
 
     /**
      * ===== ATOMIC: Reserve capital for a specific symbol with symbol-level locking =====
-     * Uses per-symbol lock to ensure check-and-reserve is atomic.
-     * This prevents race conditions where two threads both check and see available capital,
-     * then both reserve, exceeding the limit.
-     *
-     * @param symbol The trading symbol
-     * @param capitalAmount Amount to reserve
-     * @return true if reservation successful, false if would exceed MAX_CAPITAL_PER_SYMBOL limit
      */
     public boolean reserveCapitalForSymbol(String symbol, double capitalAmount) {
         // ===== SYMBOL-LEVEL LOCK: Same lock used in checkSignalSafety =====
@@ -236,11 +211,6 @@ public class RiskManager {
 
     /**
      * ===== ATOMIC: Release reserved capital for a symbol with symbol-level locking =====
-     * Uses per-symbol lock for consistency with reserveCapitalForSymbol.
-     * Called when an order fails, is cancelled, or completes (webhook processed).
-     *
-     * @param symbol The trading symbol
-     * @param capitalAmount Amount to release
      */
     public void releaseCapitalForSymbol(String symbol, double capitalAmount) {
         // ===== SYMBOL-LEVEL LOCK: Same lock used in checkSignalSafety and reserveCapitalForSymbol =====
@@ -261,7 +231,33 @@ public class RiskManager {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Dashboard diagnostics helpers
+    // ─────────────────────────────────────────────────────────────────────────────
 
+    /** Total reserved capital across all strategies */
+    public double getTotalReservedCapital() {
+        return reservedCapitalPerStrategy.values().stream().mapToDouble(Double::doubleValue).sum();
+    }
+
+    /** Total reserved capital across all symbols */
+    public double getTotalReservedCapitalBySymbol() {
+        return reservedCapitalPerSymbol.values().stream().mapToDouble(Double::doubleValue).sum();
+    }
+
+    /** Snapshot reserved capital per strategy */
+    public Map<String, Double> getReservedCapitalPerStrategySnapshot() {
+        return new HashMap<>(reservedCapitalPerStrategy);
+    }
+
+    /**
+     * Emergency: release ALL reserved capital.
+     * Note: This does NOT cancel any broker-side orders. It only clears local reservations.
+     */
+    public synchronized void releaseAllReservedCapital() {
+        reservedCapitalPerStrategy.clear();
+        reservedCapitalPerSymbol.clear();
+        System.out.println("🧹 [RiskManager] Released ALL reserved capital (strategy + symbol maps cleared)");
+    }
 
 }
-
