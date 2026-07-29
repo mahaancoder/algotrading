@@ -39,7 +39,7 @@ public class StockSelectionService {
 
         LocalTime now = LocalTime.now();
         LocalTime startTime = LocalTime.of(9, 5);
-        LocalTime endTime = LocalTime.of(15, 0);
+        LocalTime endTime = LocalTime.of(15, 15);
 
         if (now.isBefore(startTime) || now.isAfter(endTime)) {
             return;
@@ -125,9 +125,9 @@ public class StockSelectionService {
         selectedGainers.addAll(newGainers);
 
         // ===== DETAILED LOGGING =====
-//        if (!selectedLosers.isEmpty() || !selectedGainers.isEmpty()) {
+        if (!selectedLosers.isEmpty() || !selectedGainers.isEmpty()) {
 ////            System.out.println("\n" + "=".repeat(80));
-////            System.out.println("📊 STOCK SELECTION UPDATE - " + new java.util.Date());
+            System.out.println("📊 STOCK SELECTION UPDATE - " + new java.util.Date());
 ////            System.out.println("📈 EMA Filter Active: Price > 20 EMA > 50 EMA (Losers only)");
 ////            System.out.println("🟢 Candle Filter Active: Last 2 candles must be green");
 ////            System.out.printf("💪 Relative Strength Filter: 5-day return > Nifty (%.2f%%)\n", relativeStrengthService.getNiftyFiveDayReturn());
@@ -135,19 +135,19 @@ public class StockSelectionService {
 ////            System.out.println("=".repeat(80));
 //
 //            // Print Top Losers
-//            if (!topLosers.isEmpty()) {
-////                System.out.println("\n🔻 TOP " + topLosers.size() + " LOSERS (sorted by biggest loss, 2 green candles + EMA + 5d return qualified):");
-////                System.out.println("-".repeat(100));
-//                for (int i = 0; i < topLosers.size(); i++) {
-//                    StockChange stock = topLosers.get(i);
+            if (!topLosers.isEmpty()) {
+                System.out.println("\n🔻 TOP " + topLosers.size() + " LOSERS (sorted by biggest loss, 2 green candles + EMA + 5d return qualified):");
+                System.out.println("-".repeat(100));
+                for (int i = 0; i < topLosers.size(); i++) {
+                    StockChange stock = topLosers.get(i);
 ////                    EMAService.EMAData emaData = emaService.getEMAData(stock.getSymbol());
 ////                    Double fiveDayReturn = relativeStrengthService.getFiveDayReturn(stock.getSymbol());
 //
-////                    System.out.printf("  %2d. %-15s %6.2f%%",
-////                                    (i + 1),
-////                                    stock.getSymbol(),
-////                                    stock.getChange());
-//
+                    System.out.printf("  %2d. %-15s %6.2f%%",
+                                    (i + 1),
+                                    stock.getSymbol(),
+                                    stock.getChange());
+
 ////                    if (emaData != null) {
 ////                        System.out.printf("  | Price: %.2f | 20EMA: %.2f | 50EMA: %.2f",
 ////                                        emaData.currentPrice,
@@ -158,26 +158,25 @@ public class StockSelectionService {
 ////                    if (fiveDayReturn != null) {
 ////                        System.out.printf("  | 5d: %.2f%%", fiveDayReturn);
 ////                    }
-//                    System.out.println();
-//                }
-//            } else {
-//                System.out.println("\n🔻 TOP LOSERS: None (no stocks down ≥ 2%, < -5%, with 2 green candles + EMA + 5d return criteria)");
-//            }
+                    System.out.println();
+                }
+            } else {
+                System.out.println("\n🔻 TOP LOSERS: None (no stocks down ≥ 2%, < -5%, with 2 green candles + EMA + 5d return criteria)");
+            }
 //
 //            // Print Top Gainers
-//            if (!topGainers.isEmpty()) {
-//                System.out.println("\n🔺 TOP " + topGainers.size() + " GAINERS (sorted by biggest gain, 2 green candles + 5d return + VWAP qualified):");
-//                System.out.println("-".repeat(100));
-//                for (int i = 0; i < topGainers.size(); i++) {
-//                    StockChange stock = topGainers.get(i);
-////                    EMAService.EMAData emaData = emaService.getEMAData(stock.getSymbol());
+            if (!topGainers.isEmpty()) {
+                System.out.println("\n🔺 TOP " + topGainers.size() + " GAINERS (sorted by biggest gain, 2 green candles + 5d return + VWAP qualified):");
+                System.out.println("-".repeat(100));
+                for (int i = 0; i < topGainers.size(); i++) {
+                    StockChange stock = topGainers.get(i);
+//                    EMAService.EMAData emaData = emaService.getEMAData(stock.getSymbol());
 ////                    Double fiveDayReturn = relativeStrengthService.getFiveDayReturn(stock.getSymbol());
 ////                    double vwap = candleAggregator.getVwap(stock.getSymbol());
 //
-////                    System.out.printf("  %2d. %-15s %6.2f%%",
-////                                    (i + 1),
-////                                    stock.getSymbol(),
-////                                    stock.getChange());
+                    System.out.printf("  %2d. %-15s %6.2f%%",
+                                    (i + 1),                                    stock.getSymbol(),
+                                    stock.getChange());
 //
 ////                    if (emaData != null) {
 ////                        System.out.printf("  | Price: %.2f | VWAP: %.2f | 20EMA: %.2f | 50EMA: %.2f",
@@ -192,16 +191,16 @@ public class StockSelectionService {
 ////                    if (fiveDayReturn != null) {
 ////                        System.out.printf("  | 5d: %.2f%%", fiveDayReturn);
 ////                    }
-//                    System.out.println();
-//                }
-//            } else {
-//                System.out.println("\n🔺 TOP GAINERS: None (no stocks up ≥ 1% with 2 green candles + 5d return + VWAP criteria)");
-//            }
+                    System.out.println();
+                }
+            } else {
+                System.out.println("\n🔺 TOP GAINERS: None (no stocks up ≥ 1% with 2 green candles + 5d return + VWAP criteria)");
+            }
 //
 //            System.out.println("\n📊 EMA-qualified stocks: " + emaService.getEMAQualifiedCount() + " total");
 //            System.out.println("💪 Stocks outperforming Nifty (5d): " + relativeStrengthService.getOutperformingStockCount() + " total");
 //            System.out.println("=".repeat(80) + "\n");
-//        }
+        }
         
         
     }
