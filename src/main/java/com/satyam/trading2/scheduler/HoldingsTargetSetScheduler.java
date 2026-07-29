@@ -35,18 +35,19 @@ public class HoldingsTargetSetScheduler {
     @Scheduled(cron = "0 05 9 * * MON-FRI")
     public void morningHoldingCheck_905() throws Exception {
         System.out.println("🕐 [9:05 AM] Running Holdings Target Set with 1.0% target");
-        morningHoldingCheckWithTarget(1.01); // 1% target
+        morningHoldingCheckWithTarget(1.003); // 0.3% target
     }
 
     /**
      * Second run at 9:15 AM with 0.3% target
      */
-    @Scheduled(cron = "0 15 9 * * MON-FRI")
+
+ /*   @Scheduled(cron = "0 15 9 * * MON-FRI")
     public void morningHoldingCheck_915() throws Exception {
         System.out.println("🕐 [9:15 AM] Running Holdings Target Set with 0.3% target");
         morningHoldingCheckWithTarget(1.003); // 0.3% target
     }
-
+*/
     /**
      * Common method to check holdings and set targets with specified multiplier
      */
