@@ -33,7 +33,7 @@ public class StaleBuyOrderCancellationScheduler {
      * Runs every 15 minutes: 0, 15, 30, 45 minutes past each hour
      * On weekdays (MON-FRI)
      */
-    @Scheduled(cron = "0 0/3 * * * MON-FRI")
+    @Scheduled(cron = "0 0/2 * * * MON-FRI")
     public void cancelStaleBuyOrders() {
         System.out.println("🔄 [StaleBuyOrder] Running stale BUY order cancellation check...");
 
