@@ -42,7 +42,7 @@ public class TrailingStopScheduler {
 
         // Only run after 10:00 AM
         LocalTime now = LocalTime.now();
-        if (now.isBefore(LocalTime.of(9, 35))) {
+        if (now.isBefore(LocalTime.of(9, 30))) {
             return;
         }
 
