@@ -17,7 +17,7 @@ public class MarginFetchScheduler {
     private static Map<String, Integer> MAX_CAPITAL_PER_STRATEGY = new HashMap<>();
 
 
-    @Scheduled(fixedDelay = 600000)
+    @Scheduled(cron = "0 0/10 9-15 * * *")
     public void setDailyBudgets() {
         try {
             Double availableFunds = brokerService.getMargin();
@@ -60,12 +60,12 @@ public class MarginFetchScheduler {
                 MAX_CAPITAL_PER_STRATEGY.put("Dip-Accumulator-Momentum", (int) momentumCapital);
 
                 // Log every 5 minutes (every 10th call at 30s interval)
-                if (System.currentTimeMillis() % 300000 < 30000) {
+            //    if (System.currentTimeMillis() % 300000 < 30000) {
                     System.out.println("💰 [MarginFetchScheduler] Available Funds: ₹" + String.format("%.0f", availableFunds) +
                                      " | Time Slot: " + timeSlot +
                                      " | Multiplier: " + (momentumMultiplier * 100) + "%" +
                                      " | Momentum Budget: ₹" + String.format("%.0f", momentumCapital));
-                }
+                //}
 //                MAX_CAPITAL_PER_STRATEGY.put("Dip-Accumulator-NoRegime", (int) (momentumCapital * 0.3));
 //                MAX_CAPITAL_PER_STRATEGY.put("Dip-Accumulator-SmartBounce", (int) (momentumCapital * 0.3));
             }
