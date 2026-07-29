@@ -17,7 +17,7 @@ public class MarginFetchScheduler {
     private static Map<String, Integer> MAX_CAPITAL_PER_STRATEGY = new HashMap<>();
 
 
-    @Scheduled(fixedDelay = 900000)
+    @Scheduled(fixedDelay = 600000)
     public void setDailyBudgets() {
         try {
             Double availableFunds = brokerService.getMargin();
