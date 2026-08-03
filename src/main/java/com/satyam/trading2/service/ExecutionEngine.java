@@ -94,7 +94,7 @@ public class ExecutionEngine {
 
         if (!isBuyAllowed()) {
             LocalTime now = LocalTime.now();
-            System.out.println("⏰ [DEBUG] Buy rejected - Current time: " + now + " (expected 09:05 - 15:00)");
+           // System.out.println("⏰ [DEBUG] Buy rejected - Current time: " + now + " (expected 09:05 - 15:00)");
             signalAnalyticsService.recordSignal(signal, false, "Outside buy hours (9:15 AM - 3:00 PM)", capitalRequired);
             return;
         }
@@ -134,31 +134,31 @@ public class ExecutionEngine {
 
         // ===== STEP 1.5: Circuit Limit Check =====
         if (!com.satyam.trading2.helpers.CircuitLimitChecker.isTargetPriceWithinCircuitLimits(symbol, entry, isHolding)) {
-            System.out.println("❌ [executeBuy] REJECTED " + symbol + " - target price would hit upper circuit limit. Entry: " + entry);
+          //  System.out.println("❌ [executeBuy] REJECTED " + symbol + " - target price would hit upper circuit limit. Entry: " + entry);
             signalAnalyticsService.recordSignal(signal, false, "Circuit limit breach - target would hit upper circuit", actualCapital);
             return;
         }
 
         // ===== STEP 1.6: Product Toggle Check (MIS/CNC disabled check) =====
         if (isHolding && !productToggleService.isCncEnabled()) {
-            System.out.println("🛑 [executeBuy] REJECTED " + symbol + " - CNC buy orders are DISABLED");
+          //  System.out.println("🛑 [executeBuy] REJECTED " + symbol + " - CNC buy orders are DISABLED");
             signalAnalyticsService.recordSignal(signal, false, "CNC buy orders disabled - toggle to enable", actualCapital);
             return;
         }
         if (!isHolding && !productToggleService.isMisEnabled()) {
-            System.out.println("🛑 [executeBuy] REJECTED " + symbol + " - MIS buy orders are DISABLED");
+          //  System.out.println("🛑 [executeBuy] REJECTED " + symbol + " - MIS buy orders are DISABLED");
             signalAnalyticsService.recordSignal(signal, false, "MIS buy orders disabled - toggle to enable", actualCapital);
             return;
         }
 
         // ===== STEP 2: Risk Check (fast, in-memory) =====
-        System.out.println("🔍 [executeBuy] Checking signal safety for " + symbol + " | Capital: ₹" +
-                         String.format("%.0f", actualCapital) + " | Product: " + (isHolding ? "CNC" : "MIS") +
-                         " | Strategy: " + strategy);
+       // System.out.println("🔍 [executeBuy] Checking signal safety for " + symbol + " | Capital: ₹" +
+                         //String.format("%.0f", actualCapital) + " | Product: " + (isHolding ? "CNC" : "MIS") +
+                     //    " | Strategy: " + strategy);
 
         RiskManager.RiskCheckResult riskCheck = riskManager.checkSignalSafety(symbol, strategy, actualCapital, entry, state, isHolding);
         if(!riskCheck.isSafe()) {
-            System.out.println("❌ [executeBuy] Risk check FAILED for " + symbol + ": " + riskCheck.getRejectionReason());
+           // System.out.println("❌ [executeBuy] Risk check FAILED for " + symbol + ": " + riskCheck.getRejectionReason());
             signalAnalyticsService.recordSignal(signal, false, riskCheck.getRejectionReason(), actualCapital);
             return;
         }
@@ -166,7 +166,7 @@ public class ExecutionEngine {
 
         // ===== STEP 2.5: RESERVE CAPITAL PER STRATEGY (prevents race conditions) =====
         if (!riskManager.reserveCapital(strategy, actualCapital)) {
-            System.out.println("❌ [executeBuy] Capital reservation FAILED for " + symbol + " - strategy budget would be exceeded. Aborting.");
+          //  System.out.println("❌ [executeBuy] Capital reservation FAILED for " + symbol + " - strategy budget would be exceeded. Aborting.");
             signalAnalyticsService.recordSignal(signal, false, "Insufficient strategy capital - budget exceeded", actualCapital);
             return;
         }
@@ -187,7 +187,7 @@ public class ExecutionEngine {
             String orderId = res.getEntryOrderId();
             // Null check - if order placement failed, don't proceed
             if (orderId == null) {
-                System.out.println("❌ [executeBuy] Order placement FAILED for " + symbol + " - orderId is null. Aborting.");
+                //System.out.println("❌ [executeBuy] Order placement FAILED for " + symbol + " - orderId is null. Aborting.");
                 riskManager.releaseCapital(strategy, actualCapital); // Release strategy reservation
                 riskManager.releaseCapitalForSymbol(symbol, actualCapital); // Release symbol reservation
                 signalAnalyticsService.recordSignal(signal, false, "Order placement failed - orderId is null", actualCapital);
