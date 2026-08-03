@@ -47,7 +47,7 @@ public class ConvertOrSellPositionScheduler {
         );
     }
 
-    @Scheduled(cron = "0 15 15 * * MON-FRI")
+    @Scheduled(cron = "0 05 15 * * MON-FRI")
     public void handle315ExitRule() {
         // 🛑 KILL SWITCH CHECK
         if (executionEngine.getKillSwitchService().isActive()) {
