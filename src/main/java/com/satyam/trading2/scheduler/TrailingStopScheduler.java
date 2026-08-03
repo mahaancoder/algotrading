@@ -36,6 +36,11 @@ public class TrailingStopScheduler {
             return;
         }
 
+        // Stop running after 15:00
+        if (now.isAfter(LocalTime.of(15, 0))) {
+            return;
+        }
+
         double threshold;
         if (!now.isBefore(LocalTime.of(14, 0))) { // >= 14:00
             threshold = 0.05;
