@@ -15,10 +15,6 @@ import java.util.stream.Collectors;
 
 import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 
-/**
- * Scheduler that runs every 15 minutes after 11:00 AM
- * Updates sell orders for profitable INTRADAY positions (profit >= 0.3%) to current LTP
- */
 @Service
 @RequiredArgsConstructor
 public class TrailingStopScheduler {
@@ -28,29 +24,33 @@ public class TrailingStopScheduler {
     private final ReconciliationService reconciliationService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
 
-    /**
-     * Runs every 15 minutes: 0, 15, 30, 45 minutes past each hour
-     * Only executes after 10:00 AM on weekdays (MON-FRI)
-     */
-    @Scheduled(cron = "0 0/5 * * * MON-FRI")
+    @Scheduled(cron = "0 0/1 * * * MON-FRI")
     public void updateTrailingStops() {
-        // 🛑 KILL SWITCH CHECK
         if (killSwitchService.isActive()) {
             System.out.println("🛑 [TrailingStopScheduler] Skipped - Kill switch is ACTIVE");
             return;
         }
 
-        // Only run after 10:00 AM
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 30))) {
             return;
         }
 
-        System.out.println("🔄 [TrailingStop] Running at " + now + " - Checking profitable positions...");
+        double threshold;
+        if (!now.isBefore(LocalTime.of(14, 0))) { // >= 14:00
+            threshold = 0.05;
+        } else if (!now.isBefore(LocalTime.of(13, 0))) { // >= 13:00
+            threshold = 0.1;
+        } else if (!now.isBefore(LocalTime.of(12, 0))) { // >= 12:00
+            threshold = 0.15;
+        } else {
+            threshold = 0.3;
+        }
+
+        System.out.println("🔄 [TrailingStop] Running at " + now + " - threshold: " + threshold + "%");
 
         reconciliationService.syncBrokerPositions(false);
         try {
-            // Get all open INTRADAY positions
             List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.getPositionType() == INTRADAY)
                     .filter(p -> !p.isExitProcessed())
@@ -72,68 +72,61 @@ public class TrailingStopScheduler {
                     String symbol = position.getSymbol();
                     double avgPrice = position.getAveragePrice();
                     int qty = position.getTotalQuantity();
-                    
-                    // Get current LTP from LatestPriceHelper
+
                     double ltp = LatestPriceHelper.getLatestPrice(symbol);
-                    
+
                     if (ltp <= 0) {
                         System.out.println("⚠️ [TrailingStop] " + symbol + ": LTP not available, skipping");
                         skippedCount++;
                         continue;
                     }
 
-                    // Calculate profit percentage
                     double profitPercent = ((ltp - avgPrice) / avgPrice) * 100.0;
 
-                    // Only update if profit >= 0.3%
-                    if (profitPercent < 0.3) {
-                        System.out.println("⏭️ [TrailingStop] " + symbol + ": Profit " + 
-                                         String.format("%.2f", profitPercent) + "% < 0.3%, skipping");
+                    if (profitPercent < threshold) {
+                        System.out.println("⏭️ [TrailingStop] " + symbol + ": Profit " +
+                                String.format("%.2f", profitPercent) + "% < " + threshold + "%, skipping");
                         skippedCount++;
                         continue;
                     }
 
-                    // Update target order to current LTP
                     String oldOrderId = position.getTargetOrderId();
                     String newOrderId = orderServiceV2.updateTargetOrder(
                             symbol,
-                            ltp, // New target = current LTP
+                            ltp,
                             qty,
                             oldOrderId,
-                            false, // isHolding = false (INTRADAY)
+                            false,
                             position.getStrategy()
                     );
 
                     if (newOrderId != null) {
-                        // Update position with new target order ID
                         position.setTargetOrderId(newOrderId);
                         position.setTarget(ltp);
                         positionManager.updatePosition(position);
 
                         updatedCount++;
-                        System.out.println("✅ [TrailingStop] " + symbol + 
-                                         ": Updated target to LTP ₹" + String.format("%.2f", ltp) +
-                                         " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
-                                         "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
+                        System.out.println("✅ [TrailingStop] " + symbol +
+                                ": Updated target to LTP ₹" + String.format("%.2f", ltp) +
+                                " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
+                                "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
                     } else {
                         failedCount++;
                         System.err.println("❌ [TrailingStop] " + symbol + ": Failed to update target order");
                     }
 
-                    // Small delay to avoid rate limiting
                     Thread.sleep(100);
 
                 } catch (Exception e) {
                     failedCount++;
-                    System.err.println("❌ [TrailingStop] Error processing " + position.getSymbol() + 
-                                     ": " + e.getMessage());
+                    System.err.println("❌ [TrailingStop] Error processing " + position.getSymbol() +
+                            ": " + e.getMessage());
                 }
             }
 
-            // Summary
             String summary = String.format(
-                "[TrailingStop] Complete - Updated: %d, Skipped: %d, Failed: %d",
-                updatedCount, skippedCount, failedCount
+                    "[TrailingStop] Complete - Updated: %d, Skipped: %d, Failed: %d",
+                    updatedCount, skippedCount, failedCount
             );
             System.out.println("📊 " + summary);
 
@@ -143,4 +136,3 @@ public class TrailingStopScheduler {
         }
     }
 }
-
