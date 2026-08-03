@@ -460,9 +460,9 @@ public class OrderServiceV2 {
                         HoldingMetadata metadata = holdingMetadataRepository.get(symbol, "Dip-Accumulator-Momentum");
                         if (metadata != null) {
                             metadata.enrichPosition(position);
-                            System.out.println("✅ Enriched holding with metadata: " + symbol +
-                                             " | EntryType: " + position.getEntryType() +
-                                             " | Strategy: " + metadata.getStrategy());
+                            //System.out.println("✅ Enriched holding with metadata: " + symbol +
+                                         //    " | EntryType: " + position.getEntryType() +
+                                          //   " | Strategy: " + metadata.getStrategy());
                         }
 
                         holdings.add(position);
