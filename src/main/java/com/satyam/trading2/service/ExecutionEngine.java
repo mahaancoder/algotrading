@@ -237,7 +237,7 @@ public class ExecutionEngine {
 
 
     private static int calculateQty(TradeSignal signal) {
-        if(now.isBefore(LocalTime.of(9,18)){
+        if(now.isBefore(LocalTime.of(9,17)){
             return Math.max(1, (int) (50000 / signal.getEntryPrice()));
         } 
         else
