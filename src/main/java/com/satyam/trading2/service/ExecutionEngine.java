@@ -53,7 +53,7 @@ public class ExecutionEngine {
     private boolean isOutsideTradingHours() {
         LocalTime now = LocalTime.now();
         LocalTime marketOpen = LocalTime.of(9, 15);
-        LocalTime marketClose = LocalTime.of(15, 30);
+        LocalTime marketClose = LocalTime.of(15, 10);
         return now.isBefore(marketOpen) || now.isAfter(marketClose);
     }
 
@@ -62,7 +62,7 @@ public class ExecutionEngine {
      */
     private boolean isBuyAllowed() {
         LocalTime now = LocalTime.now();
-        LocalTime buyStart = LocalTime.of(9, 5);
+        LocalTime buyStart = LocalTime.of(9, 10);
         LocalTime buyEnd = LocalTime.of(15, 0);
         return !now.isBefore(buyStart) && now.isBefore(buyEnd);
     }
@@ -237,6 +237,10 @@ public class ExecutionEngine {
 
 
     private static int calculateQty(TradeSignal signal) {
+        if(now.isBefore(LocalTime.of(9,18)){
+            return Math.max(1, (int) (50000 / signal.getEntryPrice()));
+        } 
+        else
         return Math.max(1, (int) (25000 / signal.getEntryPrice()));
     }
 
