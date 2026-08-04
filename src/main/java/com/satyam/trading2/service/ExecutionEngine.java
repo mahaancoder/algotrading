@@ -162,7 +162,7 @@ public class ExecutionEngine {
             signalAnalyticsService.recordSignal(signal, false, riskCheck.getRejectionReason(), actualCapital);
             return;
         }
-        System.out.println("✅ [executeBuy] Risk check PASSED for " + symbol);
+        //System.out.println("✅ [executeBuy] Risk check PASSED for " + symbol);
 
         // ===== STEP 2.5: RESERVE CAPITAL PER STRATEGY (prevents race conditions) =====
         if (!riskManager.reserveCapital(strategy, actualCapital)) {
