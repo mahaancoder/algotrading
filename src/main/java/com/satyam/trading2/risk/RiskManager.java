@@ -121,12 +121,12 @@ public class RiskManager {
             double fundsAvailableforTrading = maxCapital - totalCommittedCapital;
 
             if (actualCapital > fundsAvailableforTrading) {
-                System.out.println("🚫 [RiskManager] Strategy capital limit reached for " + strategy +
+                /*System.out.println("🚫 [RiskManager] Strategy capital limit reached for " + strategy +
                                  " | Max: ₹" + String.format("%.0f", maxCapital) +
                                  " | Used: ₹" + String.format("%.0f", strategyCapitalUsed) +
                                  " | Reserved: ₹" + String.format("%.0f", reservedCapital) +
                                  " | Available: ₹" + String.format("%.0f", fundsAvailableforTrading) +
-                                 " | Needed: ₹" + String.format("%.0f", actualCapital));
+                                 " | Needed: ₹" + String.format("%.0f", actualCapital));*/
                 return RiskCheckResult.rejected("Insufficient strategy capital available");
             }
 
@@ -143,20 +143,20 @@ public class RiskManager {
         double fundsAvailableforTrading = maxCapital - totalCommittedCapital;
 
         if (capitalAmount > fundsAvailableforTrading) {
-            System.out.println("🚫 [RiskManager] Cannot reserve ₹" + String.format("%.0f", capitalAmount) +
+           /* System.out.println("🚫 [RiskManager] Cannot reserve ₹" + String.format("%.0f", capitalAmount) +
                              " for " + strategy + " - would exceed budget" +
                              " | Max: ₹" + String.format("%.0f", maxCapital) +
                              " | Used: ₹" + String.format("%.0f", strategyCapitalUsed) +
                              " | Reserved: ₹" + String.format("%.0f", reservedCapital) +
-                             " | Available: ₹" + String.format("%.0f", fundsAvailableforTrading));
+                             " | Available: ₹" + String.format("%.0f", fundsAvailableforTrading));*/
             return false;
         }
 
         reservedCapitalPerStrategy.merge(strategy, capitalAmount, Double::sum);
-        System.out.println("✅ [RiskManager] Reserved ₹" + String.format("%.0f", capitalAmount) +
+       /* System.out.println("✅ [RiskManager] Reserved ₹" + String.format("%.0f", capitalAmount) +
                          " for " + strategy +
                          " | Total reserved now: ₹" + String.format("%.0f", reservedCapitalPerStrategy.get(strategy)) +
-                         " | Remaining budget: ₹" + String.format("%.0f", fundsAvailableforTrading - capitalAmount));
+                         " | Remaining budget: ₹" + String.format("%.0f", fundsAvailableforTrading - capitalAmount));*/
         return true;
     }
 
@@ -199,11 +199,11 @@ public class RiskManager {
             reservedCapitalPerSymbol.merge(symbol, capitalAmount, Double::sum);
 
             // ===== DEBUG LOG: Track reservations to diagnose race conditions =====
-            System.out.println("✅ [RiskManager] Reserved ₹" + String.format("%.0f", capitalAmount) +
+           /* System.out.println("✅ [RiskManager] Reserved ₹" + String.format("%.0f", capitalAmount) +
                              " for " + symbol + " | Total reserved: ₹" +
                              String.format("%.0f", reservedCapitalPerSymbol.get(symbol)) +
                              " | Total committed (positions + reserved): ₹" +
-                             String.format("%.0f", totalCommittedForSymbol + capitalAmount));
+                             String.format("%.0f", totalCommittedForSymbol + capitalAmount));*/
 
             return true;
         }
@@ -225,9 +225,9 @@ public class RiskManager {
             }
 
             // ===== DEBUG LOG: Track releases to diagnose race conditions =====
-            System.out.println("🔓 [RiskManager] Released ₹" + String.format("%.0f", capitalAmount) +
+          /*  System.out.println("🔓 [RiskManager] Released ₹" + String.format("%.0f", capitalAmount) +
                              " for " + symbol + " | Remaining reserved: ₹" +
-                             String.format("%.0f", newReserved));
+                             String.format("%.0f", newReserved));*/
         }
     }
 
