@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ProductToggleService {
 
     private final AtomicBoolean misEnabled = new AtomicBoolean(true);   // MIS enabled by default
-    private final AtomicBoolean cncEnabled = new AtomicBoolean(false);  // CNC disabled by default - only MIS buys allowed
+    private final AtomicBoolean cncEnabled = new AtomicBoolean(true);  // CNC enabled by default - only MIS buys allowed
     
     /**
      * Check if MIS (intraday) buy orders are enabled
