@@ -37,7 +37,7 @@ public class TrailingStopScheduler {
         }
 
         // Stop running after 15:00
-        if (now.isAfter(LocalTime.of(15, 0))) {
+        if (now.isAfter(LocalTime.of(15, 3))) {
             return;
         }
 
