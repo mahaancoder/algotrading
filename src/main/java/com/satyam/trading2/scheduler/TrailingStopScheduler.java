@@ -24,7 +24,7 @@ public class TrailingStopScheduler {
     private final ReconciliationService reconciliationService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
 
-    @Scheduled(cron = "0 0/1 * * * MON-FRI")
+    @Scheduled(cron = "0/20 * * * * MON-FRI")
     public void updateTrailingStops() {
         if (killSwitchService.isActive()) {
             System.out.println("🛑 [TrailingStopScheduler] Skipped - Kill switch is ACTIVE");
@@ -32,7 +32,7 @@ public class TrailingStopScheduler {
         }
 
         LocalTime now = LocalTime.now();
-        if (now.isBefore(LocalTime.of(9, 30))) {
+        if (now.isBefore(LocalTime.of(9, 25))) {
             return;
         }
 
