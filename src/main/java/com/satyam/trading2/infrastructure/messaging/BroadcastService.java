@@ -127,6 +127,18 @@ public class BroadcastService {
     }
 
     /**
+     * Broadcast a change to the dashboard-selected default broker.
+     */
+    public void broadcastDefaultBroker(String broker) {
+        try {
+            String json = "{\"type\":\"DEFAULT_BROKER\",\"broker\":\"" + broker + "\"}";
+            broadcaster.broadcast(json);
+        } catch (Exception e) {
+            log.error("Failed to broadcast default broker", e);
+        }
+    }
+
+    /**
      * Broadcast risk data
      */
     public void broadcastRisk(Map<String, Object> riskData) {

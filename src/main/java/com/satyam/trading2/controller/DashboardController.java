@@ -3,7 +3,6 @@ package com.satyam.trading2.controller;
 
 import com.satyam.trading2.config.KiteAuthService;
 import com.satyam.trading2.config.KiteConfig;
-import com.satyam.trading2.datamodel.FilterConfig;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.Trade;
 import com.satyam.trading2.domain.service.PositionManager;
@@ -38,10 +37,10 @@ public class DashboardController {
     private BrokerToggleService brokerToggleService;
 
     @Autowired
-    private BroadcastService broadcastService;
+    private DefaultBrokerService defaultBrokerService;
 
     @Autowired
-    private StockFilterService stockFilterService;
+    private BroadcastService broadcastService;
 
     @Autowired
     private RiskManager riskManager;
@@ -239,6 +238,38 @@ public class DashboardController {
         return ResponseEntity.ok(response);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //  DEFAULT BROKER API (fallback route when no group filter matches)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    @GetMapping("/api/broker/default")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> getDefaultBroker() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("broker", defaultBrokerService.getDefaultRoute().name());
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/api/broker/default")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> setDefaultBroker(@RequestParam String broker) {
+        com.satyam.trading2.broker.ExecutionRoute route;
+        try {
+            route = defaultBrokerService.setDefaultRoute(broker);
+        } catch (IllegalArgumentException e) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("success", false);
+            err.put("message", "Unknown broker: " + broker);
+            return ResponseEntity.badRequest().body(err);
+        }
+        broadcastService.broadcastDefaultBroker(route.name());
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("broker", route.name());
+        response.put("message", "Default broker set to " + route.name());
+        return ResponseEntity.ok(response);
+    }
+
     /**
      * Diagnostic endpoint: Get opening range statistics
      * Shows how many stocks have opening range data calculated
@@ -273,100 +304,6 @@ public class DashboardController {
         stats.put("sampleStocksWithoutData", samplesWithoutData);
 
         return ResponseEntity.ok(stats);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    //  STOCK FILTER MANAGEMENT
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /**
-     * Get current filter configuration
-     */
-    @GetMapping("/api/filters/config")
-    @ResponseBody
-    public ResponseEntity<FilterConfig> getFilterConfig() {
-        return ResponseEntity.ok(stockFilterService.getFilterConfig());
-    }
-
-    /**
-     * Update filter configuration
-     * Request body should contain FilterConfig with conditions, combineOperator, enabled, applyTo
-     */
-    @PostMapping("/api/filters/config")
-    @ResponseBody
-    public ResponseEntity<Map<String, String>> updateFilterConfig(@RequestBody FilterConfig config) {
-        stockFilterService.updateFilterConfig(config);
-
-        Map<String, String> response = new HashMap<>();
-        response.put("status", "success");
-        response.put("message", "Filter configuration updated successfully");
-        response.put("enabled", String.valueOf(config.isEnabled()));
-        response.put("conditions", String.valueOf(config.getConditions().size()));
-
-        return ResponseEntity.ok(response);
-    }
-
-    /**
-     * Clear all filters (disable filtering)
-     */
-    @PostMapping("/api/filters/clear")
-    @ResponseBody
-    public ResponseEntity<Map<String, String>> clearFilters() {
-        stockFilterService.clearFilters();
-
-        Map<String, String> response = new HashMap<>();
-        response.put("status", "success");
-        response.put("message", "All filters cleared");
-
-        return ResponseEntity.ok(response);
-    }
-
-    /**
-     * Get list of available filter fields
-     * Returns all numeric and boolean fields from TradeEntryMetrics that can be used in filters
-     */
-    @GetMapping("/api/filters/fields")
-    @ResponseBody
-    public ResponseEntity<Map<String, Object>> getFilterFields() {
-        Map<String, Object> response = new HashMap<>();
-
-        // Numeric fields
-        List<Map<String, String>> numericFields = new ArrayList<>();
-        addField(numericFields, "gapPercent", "Gap %", "Percentage gap from previous close");
-        addField(numericFields, "distanceFromOpenPrice", "Distance from Open %", "Distance from today's open price");
-        addField(numericFields, "distanceFromVwap", "Distance from VWAP %", "Distance from VWAP");
-        addField(numericFields, "volumeRatio", "Volume Ratio", "Current volume / Average volume");
-        addField(numericFields, "stock5DayReturn", "Stock 5-Day Return %", "Stock's 5-day return");
-        addField(numericFields, "nifty5DayReturn", "Nifty 5-Day Return %", "Nifty's 5-day return");
-        addField(numericFields, "relativeStrength", "Relative Strength", "Stock return - Nifty return");
-        addField(numericFields, "distanceFromDayLow", "Distance from Day Low %", "Distance from day's low");
-        addField(numericFields, "atrPercent", "ATR %", "ATR as percentage of price");
-        addField(numericFields, "ema20", "20 EMA", "20-period EMA value");
-        addField(numericFields, "ema50", "50 EMA", "50-period EMA value");
-
-        // Boolean fields
-        List<Map<String, String>> booleanFields = new ArrayList<>();
-        addField(booleanFields, "aboveEma20", "Above 20 EMA", "Price above 20 EMA");
-        addField(booleanFields, "aboveEma50", "Above 50 EMA", "Price above 50 EMA");
-        addField(booleanFields, "twoGreenCandles", "Two Green Candles", "Last 2 candles are green");
-        addField(booleanFields, "buyAboveOpeningRangeHigh", "Above Opening Range High", "Price above opening range high");
-        addField(booleanFields, "buyAboveYesterdayHigh", "Above Yesterday High", "Price above yesterday's high");
-
-        response.put("numericFields", numericFields);
-        response.put("booleanFields", booleanFields);
-        response.put("operators", List.of(">", ">=", "<", "<=", "==", "!="));
-        response.put("combineOperators", List.of("AND", "OR"));
-        response.put("applyToOptions", List.of("GAINERS", "LOSERS", "BOTH"));
-
-        return ResponseEntity.ok(response);
-    }
-
-    private void addField(List<Map<String, String>> list, String key, String label, String description) {
-        Map<String, String> field = new HashMap<>();
-        field.put("key", key);
-        field.put("label", label);
-        field.put("description", description);
-        list.add(field);
     }
 
 }

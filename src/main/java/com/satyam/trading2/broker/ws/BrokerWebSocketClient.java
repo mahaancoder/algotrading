@@ -68,6 +68,40 @@ public abstract class BrokerWebSocketClient {
     protected abstract String getBrokerName();
 
     // ─────────────────────────────────────────────────────────────────────
+    // Hooks for subclasses (default no-op)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Called after the socket opens and the connect payload has been sent.
+     * Subclasses can start keepalive timers, etc. Default: no-op.
+     */
+    protected void onConnected() {
+        // no-op by default
+    }
+
+    /**
+     * Called when the socket closes or errors (before any reconnect).
+     * Subclasses can stop keepalive timers, etc. Default: no-op.
+     */
+    protected void onDisconnected() {
+        // no-op by default
+    }
+
+    /**
+     * Send a text frame on the current WebSocket. Safe to call from subclass
+     * keepalive/subscribe logic. No-op if the socket isn't connected.
+     */
+    protected void sendMessage(String text) {
+        WebSocket ws = webSocket;
+        if (ws == null || text == null || text.isEmpty()) return;
+        try {
+            ws.sendText(text, true);
+        } catch (Exception e) {
+            log.debug("[{}WS] sendMessage failed: {}", getBrokerName(), e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Lifecycle
     // ─────────────────────────────────────────────────────────────────────
 
@@ -82,6 +116,11 @@ public abstract class BrokerWebSocketClient {
 
     public void stop() {
         running.set(false);
+        try {
+            onDisconnected();
+        } catch (Exception e) {
+            log.debug("[{}WS] onDisconnected hook error: {}", getBrokerName(), e.getMessage());
+        }
         if (webSocket != null) {
             try {
                 webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "shutdown");
@@ -115,6 +154,11 @@ public abstract class BrokerWebSocketClient {
                         if (payload != null && !payload.isEmpty()) {
                             ws.sendText(payload, true);
                             log.info("[{}WS] Sent connect payload", getBrokerName());
+                        }
+                        try {
+                            onConnected();
+                        } catch (Exception e) {
+                            log.debug("[{}WS] onConnected hook error: {}", getBrokerName(), e.getMessage());
                         }
                     })
                     .exceptionally(ex -> {
@@ -200,6 +244,7 @@ public abstract class BrokerWebSocketClient {
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
             log.warn("[{}WS] Closed: code={} reason={}", getBrokerName(), statusCode, reason);
+            notifyDisconnected();
             if (running.get()) {
                 scheduleReconnect();
             }
@@ -209,8 +254,17 @@ public abstract class BrokerWebSocketClient {
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
             log.error("[{}WS] Error: {}", getBrokerName(), error.getMessage(), error);
+            notifyDisconnected();
             if (running.get()) {
                 scheduleReconnect();
+            }
+        }
+
+        private void notifyDisconnected() {
+            try {
+                onDisconnected();
+            } catch (Exception e) {
+                log.debug("[{}WS] onDisconnected hook error: {}", getBrokerName(), e.getMessage());
             }
         }
     }

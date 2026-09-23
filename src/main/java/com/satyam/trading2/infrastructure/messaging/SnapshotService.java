@@ -13,8 +13,10 @@ import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.scheduler.MarginFetchScheduler;
 import com.satyam.trading2.service.TradeJournalService;
 import com.satyam.trading2.strategy.StrategyEngine;
+import com.satyam.trading2.websocket.WebSocketBroadcaster;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -48,6 +50,7 @@ public class SnapshotService {
     private final StrategyEngine strategyEngine;
     private final RiskManager riskManager;
     private final MarginFetchScheduler marginFetchScheduler;
+    private final WebSocketBroadcaster webSocketBroadcaster;
     private final com.satyam.trading2.service.EntryTypeAnalyticsService entryTypeAnalytics;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
 
@@ -127,8 +130,8 @@ public class SnapshotService {
         // 7. SEND HOLDINGS (batch)
         sendHoldingsBatch(session, allHoldings, latestPriceMap);
 
-        // 8. SEND CAPITAL USED (single message with all data — now with broker breakdown)
-        sendCapitalUsedOptimized(session, allIntradayPositions, allHoldings);
+        // 8. SEND BROKER FUNDS & USAGE (per-broker available margin, holdings, intraday)
+        sendBrokerFundsUsage(session);
 
         // 9. SEND ENTRY TYPE ANALYTICS
         sendEntryTypeAnalyticsOptimized(session);
@@ -331,84 +334,70 @@ public class SnapshotService {
     }
 
     /**
-     * ⚡ OPTIMIZED capital calculation (single pass + pre-loaded data)
-     * Calculates intraday capital, holdings capital, per-strategy capital, and
-     * per-broker capital in ONE pass.
+     * ⚡ Send the "Broker Funds & Usage" snapshot to a single session.
+     * Per broker: available margin (from MarginFetchScheduler), holdings amount,
+     * and amount used in today's open (intraday) positions.
      */
-    private void sendCapitalUsedOptimized(WebSocketSession session, List<Position> intradayPositions,
-                                          List<Position> holdings) throws Exception {
-        // --- Calculate in single pass ---
-        double intradayCapital = 0.0;
-        double holdingsCapital = 0.0;
-        Map<String, Double> strategyCapital = new HashMap<>();
-        Map<String, Double> brokerCapital = new HashMap<>();
+    private void sendBrokerFundsUsage(WebSocketSession session) throws Exception {
+        session.sendMessage(new TextMessage(buildBrokerFundsJson()));
+        log.debug("📤 Sent broker funds & usage");
+    }
 
-        // Initialize all strategies with 0
-        for (String strategyName : strategyEngine.getAllStrategyNames()) {
-            strategyCapital.put(strategyName, 0.0);
+    /**
+     * Broadcast the "Broker Funds & Usage" snapshot to all connected sessions.
+     * Runs periodically so the dashboard reflects the latest available margin
+     * (refreshed by MarginFetchScheduler) plus live holdings/intraday usage.
+     */
+    @Scheduled(fixedDelay = 30000, initialDelay = 15000)
+    public void broadcastBrokerFundsUsage() {
+        try {
+            webSocketBroadcaster.broadcast(buildBrokerFundsJson());
+        } catch (Exception e) {
+            log.debug("Failed to broadcast broker funds usage: {}", e.getMessage());
         }
+    }
 
-        // Initialize all brokers with 0
+    /**
+     * Build the BROKER_FUNDS message: for each broker (KITE / INDSTOCKS /
+     * SHOONYA) report availableMargin, holdings amount, and intraday amount.
+     */
+    private String buildBrokerFundsJson() {
         String[] brokers = {"KITE", "INDSTOCKS", "SHOONYA"};
+        Map<String, Double> availableFunds = marginFetchScheduler.getAllBrokerAvailableFunds();
+
+        Map<String, Double> holdingsByBroker = new HashMap<>();
+        Map<String, Double> intradayByBroker = new HashMap<>();
         for (String b : brokers) {
-            brokerCapital.put(b, 0.0);
+            holdingsByBroker.put(b, 0.0);
+            intradayByBroker.put(b, 0.0);
         }
 
-        // Intraday capital + strategy capital + broker capital (single pass)
-        for (Position p : intradayPositions) {
+        for (Position p : positionManager.getAllIntradayPositions()) {
             if (!p.isOpen()) continue;
             double capital = p.getAveragePrice() * p.getTotalQuantity();
-            intradayCapital += capital;
-            strategyCapital.merge(p.getStrategy(), capital, Double::sum);
-            String posBroker = (p.getBroker() != null) ? p.getBroker() : "KITE";
-            brokerCapital.merge(posBroker, capital, Double::sum);
+            String b = (p.getBroker() != null) ? p.getBroker() : "KITE";
+            intradayByBroker.merge(b, capital, Double::sum);
         }
-
-        // Holdings capital + broker capital (separate loop, small dataset)
-        for (Position p : holdings) {
+        for (Position p : positionManager.getAllHoldings()) {
             if (!p.isOpen()) continue;
             double capital = p.getAveragePrice() * p.getTotalQuantity();
-            holdingsCapital += capital;
-            String posBroker = (p.getBroker() != null) ? p.getBroker() : "KITE";
-            brokerCapital.merge(posBroker, capital, Double::sum);
+            String b = (p.getBroker() != null) ? p.getBroker() : "KITE";
+            holdingsByBroker.merge(b, capital, Double::sum);
         }
 
-        // --- Build strategy JSON ---
-        StringBuilder strategyJson = new StringBuilder("[");
+        StringBuilder sb = new StringBuilder("{\"type\":\"BROKER_FUNDS\",\"brokers\":[");
         boolean first = true;
-
-        for (Map.Entry<String, Double> entry : strategyCapital.entrySet()) {
-            if (!first) strategyJson.append(",");
-            first = false;
-
-            double maxCapital = marginFetchScheduler.getMaxCapitalPerStrategy(entry.getKey());
-            strategyJson.append("{\"strategy\":\"").append(entry.getKey())
-                .append("\",\"capital\":").append(String.format("%.2f", entry.getValue()))
-                .append(",\"maxCapital\":").append(String.format("%.2f", maxCapital))
-                .append("}");
-        }
-        strategyJson.append("]");
-
-        // --- Build broker capital JSON ---
-        StringBuilder brokerJson = new StringBuilder("[");
-        first = true;
         for (String b : brokers) {
-            if (!first) brokerJson.append(",");
+            if (!first) sb.append(",");
             first = false;
-            double cap = brokerCapital.getOrDefault(b, 0.0);
-            brokerJson.append("{\"broker\":\"").append(b)
-                .append("\",\"capital\":").append(String.format("%.2f", cap))
-                .append("}");
+            sb.append("{\"broker\":\"").append(b).append("\"")
+              .append(",\"availableMargin\":").append(String.format("%.2f", availableFunds.getOrDefault(b, 0.0)))
+              .append(",\"holdings\":").append(String.format("%.2f", holdingsByBroker.getOrDefault(b, 0.0)))
+              .append(",\"intraday\":").append(String.format("%.2f", intradayByBroker.getOrDefault(b, 0.0)))
+              .append("}");
         }
-        brokerJson.append("]");
-
-        String json = "{\"type\":\"CAPITAL_USED\",\"intraday\":" + String.format("%.2f", intradayCapital)
-            + ",\"holdings\":" + String.format("%.2f", holdingsCapital)
-            + ",\"strategies\":" + strategyJson.toString()
-            + ",\"brokers\":" + brokerJson.toString() + "}";
-
-        session.sendMessage(new TextMessage(json));
-        log.debug("📤 Sent capital: intraday={}, holdings={}, brokers={}", intradayCapital, holdingsCapital, brokerCapital);
+        sb.append("]}");
+        return sb.toString();
     }
 
     /**

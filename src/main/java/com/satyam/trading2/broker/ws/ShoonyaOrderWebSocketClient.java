@@ -8,22 +8,39 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Shoonya order-update WebSocket client.
  *
  * Connect handshake: send {"t":"a","uid":"...","actid":"...","source":"API",
- * "accesstoken":"..."} on open. Wait for {"t":"ak","s":"Ok"} ack.
+ * "accesstoken":"..."} on open. The server acks with {"t":"ak","s":"OK"}
+ * (OAuth flow) or {"t":"ck","s":"OK"} (legacy).
  *
- * Order updates arrive automatically as {"t":"om", ...} frames — no separate
- * subscribe needed. Fields: norenordno, status, reporttype, fillshares, avgprc.
+ * After the ack we must (1) send a keepalive heartbeat {"t":"h"} every ~3s —
+ * without it the Noren server drops the socket abnormally (close 1006) — and
+ * (2) subscribe to order updates {"t":"o","actid":"..."}. Order updates then
+ * arrive as {"t":"om", ...} frames. Fields: norenordno, status, reporttype,
+ * fillshares, avgprc.
  *
  * We map status + reporttype → BrokerOrderStatus and dispatch via the listener.
  */
 @Slf4j
 public class ShoonyaOrderWebSocketClient extends BrokerWebSocketClient {
 
+    private static final long HEARTBEAT_INTERVAL_SECONDS = 3;
+
     private final ShoonyaConfig config;
+    private final ScheduledExecutorService heartbeatExecutor =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "shoonya-ws-heartbeat");
+                t.setDaemon(true);
+                return t;
+            });
+    private volatile ScheduledFuture<?> heartbeatTask;
 
     public ShoonyaOrderWebSocketClient(ShoonyaConfig config, BrokerOrderEventListener listener) {
         super(config.getWsUrl(), listener);
@@ -62,14 +79,21 @@ public class ShoonyaOrderWebSocketClient extends BrokerWebSocketClient {
             String type = msg.has("t") ? msg.get("t").asText() : "";
 
             switch (type) {
-                case "ak":
-                    // Connect acknowledgment
+                case "ak":  // OAuth-flow connect ack
+                case "ck":  // legacy connect ack
+                    // Success value is "OK" per Noren docs; accept any case.
                     String s = msg.has("s") ? msg.get("s").asText() : "";
-                    if ("Ok".equals(s)) {
-                        log.info("[SHOONYAWS] Connect acknowledged — order updates will arrive automatically");
+                    if ("OK".equalsIgnoreCase(s)) {
+                        log.info("[SHOONYAWS] Connect acknowledged (t={}) — starting heartbeat + subscribing to order updates", type);
+                        startHeartbeat();
+                        subscribeOrderUpdates();
                     } else {
-                        log.error("[SHOONYAWS] Connect rejected: s={}", s);
+                        log.error("[SHOONYAWS] Connect rejected (t={} s={}) | raw: {}", type, s, text);
                     }
+                    return;
+
+                case "ok":  // order-subscription ack
+                    log.info("[SHOONYAWS] Order feed subscribed — updates will arrive as 'om' frames");
                     return;
 
                 case "om":
@@ -81,12 +105,59 @@ public class ShoonyaOrderWebSocketClient extends BrokerWebSocketClient {
                     return;
 
                 default:
-                    // Ignore other message types (ticks, pings, etc.)
+                    // Ignore other message types (heartbeat echoes, ticks, etc.)
                     log.debug("[SHOONYAWS] Ignoring message type: {}", type);
             }
         } catch (Exception e) {
             log.error("[SHOONYAWS] Parse error: {} | raw: {}", e.getMessage(), text);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Keepalive heartbeat + order-feed subscription
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Send the order-feed subscription frame ({"t":"o","actid":"..."}).
+     * The server replies with an "ok" ack, after which "om" order updates flow.
+     */
+    private void subscribeOrderUpdates() {
+        Map<String, String> sub = new HashMap<>();
+        sub.put("t", "o");
+        sub.put("actid", config.getActid());
+        try {
+            sendMessage(objectMapper.writeValueAsString(sub));
+        } catch (Exception e) {
+            log.error("[SHOONYAWS] Failed to serialize order-subscribe payload: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Start the {"t":"h"} keepalive. Noren drops the socket abnormally
+     * (close 1006) if no heartbeat arrives within a few seconds.
+     */
+    private synchronized void startHeartbeat() {
+        stopHeartbeat();
+        heartbeatTask = heartbeatExecutor.scheduleAtFixedRate(() -> {
+            try {
+                sendMessage("{\"t\":\"h\"}");
+            } catch (Exception e) {
+                log.debug("[SHOONYAWS] Heartbeat send failed: {}", e.getMessage());
+            }
+        }, HEARTBEAT_INTERVAL_SECONDS, HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
+    }
+
+    private synchronized void stopHeartbeat() {
+        if (heartbeatTask != null) {
+            heartbeatTask.cancel(false);
+            heartbeatTask = null;
+        }
+    }
+
+    @Override
+    protected void onDisconnected() {
+        // Stop the heartbeat when the socket drops; it restarts on the next ack.
+        stopHeartbeat();
     }
 
     /**

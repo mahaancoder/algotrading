@@ -18,6 +18,7 @@ import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.risk.Exits;
 import com.satyam.trading2.risk.RiskManager;
+import com.satyam.trading2.service.DefaultBrokerService;
 import com.satyam.trading2.service.DipAccumulatorService;
 import com.satyam.trading2.service.KillSwitchService;
 import com.satyam.trading2.service.ProductToggleService;
@@ -70,6 +71,7 @@ public class OrderExecutionService {
     private final KillSwitchService killSwitchService;
     private final ProductToggleService productToggleService;
     private final BrokerToggleService brokerToggleService;
+    private final DefaultBrokerService defaultBrokerService;
 
     // Shared lock map — same pattern as ExecutionEngine, used to serialize
     // signal processing, order completion, and reconciliation per symbol+strategy.
@@ -272,6 +274,22 @@ public class OrderExecutionService {
     private ExecutionRoute determineBrokerRoute(TradeSignal signal, String symbol, String strategy) {
         FilterResult filterResult = filterEngine.evaluate(signal);
         ExecutionRoute preferredRoute = filterResult.getExecutionRoute();
+
+        // DEFAULT BROKER OVERRIDE: when the signal matched NEITHER group filter,
+        // the route defaults to KITE. Allow the operator to pick a different
+        // default broker (INDSTOCKS/SHOONYA) from the dashboard for the day.
+        // Group1/Group2 matches are untouched — this only replaces the KITE
+        // fallback, and only if the chosen default is enabled + available.
+        if (preferredRoute == ExecutionRoute.KITE) {
+            ExecutionRoute configuredDefault = defaultBrokerService.getDefaultRoute();
+            if (configuredDefault != ExecutionRoute.KITE
+                    && brokerRouter.isAvailable(configuredDefault)
+                    && brokerToggleService.isEnabled(configuredDefault)) {
+                log.debug("[OrderExecutionService] {} matched no group — using dashboard default broker {}",
+                        symbol, configuredDefault);
+                preferredRoute = configuredDefault;
+            }
+        }
 
         // Stickiness: check if a position already exists at any broker
         Position existing = findExistingPositionAcrossBrokers(symbol, strategy);

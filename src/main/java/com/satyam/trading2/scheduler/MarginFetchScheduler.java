@@ -140,4 +140,17 @@ public class MarginFetchScheduler {
         String b = broker != null ? broker : "KITE";
         return brokerAvailableFunds.getOrDefault(b, 0.0);
     }
+
+    /**
+     * Snapshot of the latest available funds for every known broker
+     * (KITE / INDSTOCKS / SHOONYA). Brokers whose funds haven't been fetched
+     * yet report 0.0. Used by the dashboard's "Broker Funds & Usage" section.
+     */
+    public Map<String, Double> getAllBrokerAvailableFunds() {
+        Map<String, Double> out = new java.util.LinkedHashMap<>();
+        for (String b : new String[]{"KITE", "INDSTOCKS", "SHOONYA"}) {
+            out.put(b, brokerAvailableFunds.getOrDefault(b, 0.0));
+        }
+        return out;
+    }
 }

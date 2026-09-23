@@ -99,30 +99,6 @@
             box-shadow:0 5px 14px rgba(255,153,51,0.4);
         }
 
-        /* Stock Filter Styles */
-        .filter-panel{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px;padding:16px;margin-bottom:20px}
-        .filter-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-        .filter-title{color:#00d4aa;font-size:16px;font-weight:600}
-        .filter-controls{display:flex;gap:8px}
-        .filter-btn{padding:8px 16px;font-size:12px;font-weight:600;border:none;border-radius:5px;cursor:pointer;transition:all 0.2s}
-        .filter-btn.primary{background:#00d4aa;color:#000}
-        .filter-btn.primary:hover{background:#00ffcc}
-        .filter-btn.secondary{background:#333;color:#ddd}
-        .filter-btn.secondary:hover{background:#444}
-        .filter-btn.danger{background:#ff5555;color:#fff}
-        .filter-btn.danger:hover{background:#ff3333}
-        .filter-condition{background:#111;border:1px solid#222;border-radius:6px;padding:12px;margin-bottom:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-        .filter-select,.filter-input{background:#1a1a1a;color:#ddd;border:1px solid #333;border-radius:4px;padding:8px;font-size:12px}
-        .filter-select:focus,.filter-input:focus{outline:none;border-color:#00d4aa}
-        .filter-add-btn{background:#222;color:#00d4aa;border:1px dashed#00d4aa;padding:10px;border-radius:6px;cursor:pointer;text-align:center;font-size:12px;margin-bottom:8px}
-        .filter-add-btn:hover{background:#2a2a2a}
-        .filter-options{display:flex;gap:16px;margin-top:12px;flex-wrap:wrap;align-items:center}
-        .filter-option{display:flex;align-items:center;gap:8px}
-        .filter-option label{color:#999;font-size:12px}
-        .filter-status{padding:4px 12px;border-radius:4px;font-size:11px;font-weight:600}
-        .filter-status.active{background:#00d4aa;color:#000}
-        .filter-status.inactive{background:#333;color:#999}
-
         /* Broker toggle buttons */
         .broker-toggle-btn{
             padding:10px 20px;
@@ -140,6 +116,12 @@
         .broker-toggle-btn.disabled{background:#ff5555;color:#fff}
         .broker-toggle-btn.disabled:hover{background:#ff3333;transform:translateY(-1px)}
         .broker-toggle-btn.kite-locked{background:#333;color:#666;cursor:not-allowed;opacity:0.6}
+
+        /* Default broker selector */
+        .default-broker-box{display:flex;align-items:center;gap:8px;padding:6px 12px;background:#1a1a1a;border:1px solid #333;border-radius:6px}
+        .default-broker-box label{color:#999;font-size:12px;font-weight:600}
+        .default-broker-select{background:#0d0d0d;color:#00d4aa;border:1px solid #444;border-radius:4px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer}
+        .default-broker-select:hover{border-color:#00d4aa}
 
         /* Reserved capital button */
         .reserved-btn{padding:8px 14px;font-size:12px;font-weight:700;border:none;border-radius:6px;cursor:pointer;transition:all 0.2px}
@@ -188,6 +170,14 @@
     <button id="shoonyaToggleBtn" class="broker-toggle-btn enabled" onclick="toggleBroker('SHOONYA')">
         SHOONYA ON
     </button>
+    <div class="default-broker-box">
+        <label for="defaultBrokerSelect">Default Broker</label>
+        <select id="defaultBrokerSelect" class="default-broker-select" onchange="setDefaultBroker(this.value)">
+            <option value="KITE">KITE</option>
+            <option value="INDSTOCKS">INDSTOCKS</option>
+            <option value="SHOONYA">SHOONYA</option>
+        </select>
+    </div>
 </div>
 
 <h1>🤖 Kite Pro Trader (Paper Trading Live)</h1>
@@ -203,45 +193,6 @@
 
 <!-- TAB: LIVE TRADING -->
 <div id="tab-live" class="tab-content active">
-
-<!-- Stock Filter Panel -->
-<div class="filter-panel">
-    <div class="filter-header">
-        <div style="display:flex;align-items:center;gap:12px">
-            <span class="filter-title">📊 Stock Selection Filters</span>
-            <span id="filterStatus" class="filter-status inactive">DISABLED</span>
-        </div>
-        <div class="filter-controls">
-            <button class="filter-btn primary" onclick="applyFilters()">Apply Filters</button>
-            <button class="filter-btn secondary" onclick="loadFilterConfig()">Refresh</button>
-            <button class="filter-btn danger" onclick="clearAllFilters()">Clear All</button>
-        </div>
-    </div>
-
-    <div id="filterConditions"></div>
-
-    <div class="filter-add-btn" onclick="addFilterCondition()">
-        ➕ Add Filter Condition
-    </div>
-
-    <div class="filter-options">
-        <div class="filter-option">
-            <label>Combine with:</label>
-            <select id="combineOperator" class="filter-select">
-                <option value="AND">AND (All must match)</option>
-                <option value="OR">OR (Any can match)</option>
-            </select>
-        </div>
-        <div class="filter-option">
-            <label>Apply to:</label>
-            <select id="applyTo" class="filter-select">
-                <option value="BOTH">Both Gainers & Losers</option>
-                <option value="GAINERS">Gainers Only</option>
-                <option value="LOSERS">Losers Only</option>
-            </select>
-        </div>
-    </div>
-</div>
 
 <div class="grid-4" style="grid-template-columns: repeat(3, 1fr);">
     <div class="kpi">
@@ -268,10 +219,8 @@
 </div>
 
 <div class="card">
-    <h3>Strategy Capital Usage (Dynamic Limits from Available Funds)</h3>
-    <div class="strat-grid" id="strategyCapitalCards"></div>
-    <h3 style="margin-top:16px;">Broker Capital Usage</h3>
-    <div class="broker-pnl-grid" id="brokerCapitalCards"></div>
+    <h3>Broker Funds &amp; Usage</h3>
+    <div class="broker-pnl-grid" id="brokerFundsCards"></div>
 </div>
 
 <div class="card">
@@ -661,51 +610,25 @@
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Render: Strategy Capital + Broker Capital cards
+    // Render: Broker Funds & Usage cards (available margin, holdings, intraday)
     // ─────────────────────────────────────────────────────────────────────
-    function renderStrategyCapitalCards(strategies, holdingsCapital){
-        let html='';
-        if (holdingsCapital > 0) {
-            html+=`
-            <div class='strat'>
-                <div class='small'>Holdings</div>
-                <div class='value' style='font-size:16px; margin:4px 0;'>₹${(holdingsCapital/100000).toFixed(1)}L</div>
-                <div class='small' style='color:#666'>Long-term positions</div>
-            </div>`;
-        }
-
-        strategies.forEach(item => {
-            let used = item.capital;
-            let maxCapital = item.maxCapital || 1000000;
-            let remaining = maxCapital - used;
-            let usedPct = ((used / maxCapital) * 100).toFixed(1);
-            let cls = usedPct > 90 ? 'red' : (usedPct > 70 ? 'orange' : 'green');
-
-            html+=`
-            <div class='strat'>
-                <div class='small'>${item.strategy}</div>
-                <div class='value' style='font-size:16px; margin:4px 0;'>₹${(used/100000).toFixed(1)}L</div>
-                <div class='small ${cls}'>${usedPct}% used</div>
-                <div class='small' style='color:#666'>Rem: ₹${(remaining/100000).toFixed(1)}L / Max: ₹${(maxCapital/100000).toFixed(1)}L</div>
-            </div>`;
-        });
-
-        document.getElementById('strategyCapitalCards').innerHTML=html;
-    }
-
-    function renderBrokerCapitalCards(brokers){
+    function renderBrokerFundsCards(brokers){
         let html='';
         if(!brokers) return;
         brokers.forEach(item => {
-            let used = item.capital || 0;
+            let avail = item.availableMargin || 0;
+            let holdingsAmt = item.holdings || 0;
+            let intraday = item.intraday || 0;
             html+=`
             <div class='strat'>
                 <div class='small'>${brokerBadge(item.broker)}</div>
-                <div class='value' style='font-size:16px; margin:4px 0;'>₹${(used/100000).toFixed(1)}L</div>
-                <div class='small' style='color:#666'>Capital in use</div>
+                <div class='value' style='font-size:16px; margin:4px 0;'>₹${(avail/100000).toFixed(2)}L</div>
+                <div class='small green'>Available margin</div>
+                <div class='small' style='color:#666;margin-top:6px'>Holdings: ₹${(holdingsAmt/100000).toFixed(2)}L</div>
+                <div class='small' style='color:#666'>Open positions: ₹${(intraday/100000).toFixed(2)}L</div>
             </div>`;
         });
-        document.getElementById('brokerCapitalCards').innerHTML=html;
+        document.getElementById('brokerFundsCards').innerHTML=html;
     }
 
     function renderReservedCapitalCards(data) {
@@ -793,7 +716,7 @@
         document.getElementById("openCount").innerText = 0;
         document.getElementById("strategyCards").innerHTML = "";
         document.getElementById("brokerPnlCards").innerHTML = "";
-        document.getElementById("brokerCapitalCards").innerHTML = "";
+        document.getElementById("brokerFundsCards").innerHTML = "";
         console.log("✅ Dashboard reset - waiting for snapshot data...");
     }
 
@@ -844,13 +767,8 @@
             renderBrokerPnLCards();
         }
 
-        if(msg.type==='CAPITAL_USED'){
-            if (msg.strategies) {
-                renderStrategyCapitalCards(msg.strategies, msg.holdings || 0);
-            }
-            if (msg.brokers) {
-                renderBrokerCapitalCards(msg.brokers);
-            }
+        if(msg.type==='BROKER_FUNDS'){
+            renderBrokerFundsCards(msg.brokers);
         }
 
         if(msg.type==='CLOSED_TRADES'){
@@ -897,6 +815,12 @@
         if(msg.type==='BROKER_TOGGLE'){
             if(msg.broker && msg.broker !== 'KITE') {
                 updateBrokerToggleUI(msg.broker, msg.enabled);
+            }
+        }
+
+        if(msg.type==='DEFAULT_BROKER'){
+            if(msg.broker) {
+                updateDefaultBrokerUI(msg.broker);
             }
         }
 
@@ -1095,215 +1019,47 @@
 
     fetchBrokerStatus();
 
-    // Keep filter panel behavior from original version
-    let filterFields = {numeric: [], boolean: []};
-    let filterConditionsData = [];
+    // ─────────────────────────────────────────────────────────────────────
+    // Default Broker Selector (fallback route when no group filter matches)
+    // ─────────────────────────────────────────────────────────────────────
+    function setDefaultBroker(brokerName) {
+        const sel = document.getElementById('defaultBrokerSelect');
+        if (sel) sel.disabled = true;
 
-    function loadFilterFields() {
-        fetch('/api/filters/fields')
-            .then(response => response.json())
-            .then(data => {
-                filterFields = data;
-                if (filterConditionsData.length > 0) {
-                    renderFilterConditions();
-                }
-            })
-            .catch(error => {
-                console.error('❌ Error loading filter fields:', error);
-                filterFields = {numericFields: [], booleanFields: []};
-            });
-    }
-
-    function loadFilterConfig() {
-        fetch('/api/filters/config')
-            .then(response => response.json())
-            .then(config => {
-                filterConditionsData = config.conditions || [];
-                document.getElementById('combineOperator').value = config.combineOperator || 'AND';
-                document.getElementById('applyTo').value = config.applyTo || 'BOTH';
-                updateFilterStatus(config.enabled);
-                renderFilterConditions();
-            })
-            .catch(error => console.error('Error loading filter config:', error));
-    }
-
-    function updateFilterStatus(enabled) {
-        const badge = document.getElementById('filterStatus');
-        if (enabled) {
-            badge.className = 'filter-status active';
-            badge.textContent = 'ACTIVE';
-        } else {
-            badge.className = 'filter-status inactive';
-            badge.textContent = 'DISABLED';
-        }
-    }
-
-    function renderFilterConditions() {
-        const container = document.getElementById('filterConditions');
-        container.innerHTML = '';
-
-        if (!filterFields.numericFields || !filterFields.booleanFields) {
-            container.innerHTML = '<div style="color:#999;padding:10px;text-align:center">Loading filter fields...</div>';
-            return;
-        }
-
-        filterConditionsData.forEach((condition, index) => {
-            const div = document.createElement('div');
-            div.className = 'filter-condition';
-
-            const isBooleanField = filterFields.booleanFields.some(f => f.key === condition.field);
-
-            div.innerHTML = `
-                <select class="filter-select" onchange="updateConditionField(${index}, this.value)">
-                    <option value="">Select Field...</option>
-                    <optgroup label="Numeric Fields">
-                        ${filterFields.numericFields.map(f =>
-                            `<option value="${f.key}" ${condition.field === f.key ? 'selected' : ''}>${f.label}</option>`
-                        ).join('')}
-                    </optgroup>
-                    <optgroup label="Boolean Fields">
-                        ${filterFields.booleanFields.map(f =>
-                            `<option value="${f.key}" ${condition.field === f.key ? 'selected' : ''}>${f.label}</option>`
-                        ).join('')}
-                    </optgroup>
-                </select>
-                ${isBooleanField ? `
-                    <select class="filter-select" onchange="updateConditionBoolValue(${index}, this.value)">
-                        <option value="true" ${condition.booleanValue === true ? 'selected' : ''}>Yes / True</option>
-                        <option value="false" ${condition.booleanValue === false ? 'selected' : ''}>No / False</option>
-                    </select>
-                ` : `
-                    <select class="filter-select" onchange="updateConditionOperator(${index}, this.value)">
-                        <option value=">" ${condition.operator === '>' ? 'selected' : ''}>&gt;</option>
-                        <option value=">=" ${condition.operator === '>=' ? 'selected' : ''}>&gt;=</option>
-                        <option value="<" ${condition.operator === '<' ? 'selected' : ''}>&lt;</option>
-                        <option value="<=" ${condition.operator === '<=' ? 'selected' : ''}>&lt;=</option>
-                        <option value="==" ${condition.operator === '==' ? 'selected' : ''}>=</option>
-                        <option value="!=" ${condition.operator === '!=' ? 'selected' : ''}>!=</option>
-                    </select>
-                    <input type="number" step="any" class="filter-input" style="width:120px"
-                           value="${condition.value || ''}"
-                           onchange="updateConditionValue(${index}, this.value)"
-                           placeholder="Value">
-                `}
-                <button class="filter-btn danger" style="padding:6px 12px" onclick="removeCondition(${index})">Remove</button>
-            `;
-
-            container.appendChild(div);
-        });
-    }
-
-    function addFilterCondition() {
-        if (!filterFields.numericFields || filterFields.numericFields.length === 0) {
-            loadFilterFields();
-            setTimeout(() => {
-                addFilterCondition();
-            }, 500);
-            return;
-        }
-
-        filterConditionsData.push({
-            field: '',
-            operator: '>',
-            value: null,
-            booleanValue: null
-        });
-        renderFilterConditions();
-    }
-
-    function removeCondition(index) {
-        filterConditionsData.splice(index, 1);
-        renderFilterConditions();
-    }
-
-    function updateConditionField(index, field) {
-        filterConditionsData[index].field = field;
-        const isBooleanField = filterFields.booleanFields.some(f => f.key === field);
-        if (isBooleanField) {
-            filterConditionsData[index].booleanValue = true;
-            filterConditionsData[index].operator = null;
-            filterConditionsData[index].value = null;
-        } else {
-            filterConditionsData[index].operator = '>';
-            filterConditionsData[index].value = 0;
-            filterConditionsData[index].booleanValue = null;
-        }
-        renderFilterConditions();
-    }
-
-    function updateConditionOperator(index, operator) {
-        filterConditionsData[index].operator = operator;
-    }
-
-    function updateConditionValue(index, value) {
-        filterConditionsData[index].value = parseFloat(value);
-    }
-
-    function updateConditionBoolValue(index, value) {
-        filterConditionsData[index].booleanValue = value === 'true';
-    }
-
-    function applyFilters() {
-        const validConditions = filterConditionsData.filter(c => c.field);
-
-        if (validConditions.length === 0) {
-            alert('Please add at least one filter condition');
-            return;
-        }
-
-        const config = {
-            conditions: validConditions,
-            combineOperator: document.getElementById('combineOperator').value,
-            applyTo: document.getElementById('applyTo').value,
-            enabled: true
-        };
-
-        fetch('/api/filters/config', {
+        fetch('/api/broker/default?broker=' + brokerName, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(config)
+            headers: { 'Content-Type': 'application/json' }
         })
         .then(response => response.json())
         .then(data => {
-            updateFilterStatus(true);
-            alert(`✅ Filters applied successfully!\n${data.conditions} conditions active`);
+            if (data.broker) updateDefaultBrokerUI(data.broker);
+            if (sel) sel.disabled = false;
         })
         .catch(error => {
-            console.error('Error applying filters:', error);
-            alert('Failed to apply filters. Please try again.');
+            console.error('Error setting default broker ' + brokerName + ':', error);
+            if (sel) sel.disabled = false;
+            alert('Failed to set default broker. Please try again.');
+            fetchDefaultBroker();
         });
     }
 
-    function clearAllFilters() {
-        if (!confirm('Are you sure you want to clear all filters?')) {
-            return;
-        }
+    function updateDefaultBrokerUI(broker) {
+        const sel = document.getElementById('defaultBrokerSelect');
+        if (sel) sel.value = broker;
+    }
 
-        fetch('/api/filters/clear', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        })
+    function fetchDefaultBroker() {
+        fetch('/api/broker/default')
         .then(response => response.json())
         .then(data => {
-            filterConditionsData = [];
-            renderFilterConditions();
-            updateFilterStatus(false);
-            alert('✅ All filters cleared');
+            if (data.broker) updateDefaultBrokerUI(data.broker);
         })
         .catch(error => {
-            console.error('Error clearing filters:', error);
-            alert('Failed to clear filters. Please try again.');
+            console.error('Error fetching default broker:', error);
         });
     }
 
-    loadFilterFields();
-    setTimeout(() => {
-        loadFilterConfig();
-    }, 800);
+    fetchDefaultBroker();
 </script>
 
 </body>
