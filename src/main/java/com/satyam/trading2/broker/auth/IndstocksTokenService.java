@@ -93,15 +93,23 @@ public class IndstocksTokenService {
             JsonNode json = objectMapper.readTree(response.body());
             String status = json.has("status") ? json.get("status").asText() : "";
 
-            if ("success".equals(status)) {
-                JsonNode data = json.get("data");
-                String token = data != null && data.has("token") ? data.get("token").asText() : null;
-                if (token != null && !token.isEmpty()) {
-                    indstocksConfig.setAccessToken(token);
-                    log.info("[IndstocksTokenService] Access token generated successfully via TOTP");
-                    return true;
-                }
+            // The token may be returned either at the top level ({"token": "...",
+            // "expires_in": ...}) or nested under data ({"status":"success",
+            // "data":{"token":"..."}}). Accept both shapes.
+            String token = null;
+            if (json.has("token") && !json.get("token").asText().isEmpty()) {
+                token = json.get("token").asText();
+            } else if ("success".equals(status) && json.get("data") != null
+                    && json.get("data").has("token")) {
+                token = json.get("data").get("token").asText();
             }
+
+            if (token != null && !token.isEmpty()) {
+                indstocksConfig.setAccessToken(token);
+                log.info("[IndstocksTokenService] Access token generated successfully via TOTP");
+                return true;
+            }
+
             lastError = "API responded status=" + (status.isEmpty() ? "?" : status)
                     + " (HTTP " + response.statusCode() + "): " + response.body();
             log.error("[IndstocksTokenService] Token generation failed: status={} httpCode={} body={}",

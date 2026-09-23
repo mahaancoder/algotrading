@@ -9,7 +9,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HashMap;
@@ -94,8 +93,11 @@ public class ShoonyaOAuthService {
             payload.put("code", authCode);
             payload.put("appkey", checksum);
 
+            // Shoonya's NorenWClientAPI expects the raw JSON as the jData form value
+            // (NOT URL-encoded). URL-encoding it makes the server reject it with
+            // "Invalid Input : jData is not valid json object".
             String jData = objectMapper.writeValueAsString(payload);
-            String body = "jData=" + urlEncode(jData);
+            String body = "jData=" + jData;
 
             java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
                     .uri(URI.create(shoonyaConfig.getBaseUrl() + "GenAcsTok"))
@@ -149,9 +151,5 @@ public class ShoonyaOAuthService {
         } catch (Exception e) {
             throw new RuntimeException("SHA-256 failed", e);
         }
-    }
-
-    private static String urlEncode(String s) {
-        return URLEncoder.encode(s, StandardCharsets.UTF_8);
     }
 }

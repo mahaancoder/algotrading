@@ -48,13 +48,13 @@ public class TrailingStopScheduler {
 
         double threshold;
         if (!now.isBefore(LocalTime.of(14, 0))) { // >= 14:00
-            threshold = 0.05;
+            threshold = 0.2;
         } else if (!now.isBefore(LocalTime.of(13, 0))) { // >= 13:00
-            threshold = 0.1;
+            threshold = 0.25;
         } else if (!now.isBefore(LocalTime.of(12, 0))) { // >= 12:00
-            threshold = 0.15;
-        } else {
             threshold = 0.3;
+        } else {
+            threshold = 0.4;
         }
 
         System.out.println("🔄 [TrailingStop] Running at " + now + " - threshold: " + threshold + "%");
