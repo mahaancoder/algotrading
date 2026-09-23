@@ -11,6 +11,8 @@ import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.service.DipAccumulatorService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -37,9 +39,19 @@ import java.io.IOException;
 @RequiredArgsConstructor
 public class BrokerOrderEventProcessor {
 
-    private final OrderCompletionProcessor orderCompletionProcessor;
+    // Lazy injections break the bean-creation cycle that runs through the
+    // broker registry:
+    //   riskManager → marginFetchScheduler → brokerRouter → (broker) →
+    //   brokerOrderEventProcessor → {orderCompletionProcessor, riskManager}.
+    // Both collaborators are only used at runtime (order-status handling),
+    // never during construction, so lazy proxies are safe.
+    @Lazy
+    @Autowired
+    private OrderCompletionProcessor orderCompletionProcessor;
     private final PendingOrderRepository pendingOrderRepository;
-    private final RiskManager riskManager;
+    @Lazy
+    @Autowired
+    private RiskManager riskManager;
     private final DipAccumulatorService dipAccumulatorService;
 
     public void process(BrokerOrderEvent event) throws IOException {

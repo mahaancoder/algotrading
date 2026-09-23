@@ -39,24 +39,36 @@ public class IndstocksTokenService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofMillis(1000))
+            .connectTimeout(Duration.ofMillis(5000))
             .build();
+
+    // Human-readable reason for the last generateToken() failure, surfaced to the UI.
+    private volatile String lastError;
+
+    /** @return the reason the last generateToken() call failed, or null if none. */
+    public String getLastError() {
+        return lastError;
+    }
 
     /**
      * Generate an access token via TOTP and set it on the config.
      * @return true if token was generated successfully
      */
     public boolean generateToken() {
+        lastError = null;
         if (indstocksConfig.getApiKey() == null || indstocksConfig.getApiKey().isEmpty()) {
+            lastError = "No api.key configured";
             log.warn("[IndstocksTokenService] No api.key configured — skipping TOTP token generation. "
                     + "Set the token manually via the dashboard if needed.");
             return false;
         }
         if (indstocksConfig.getMpin() == null || indstocksConfig.getMpin().isEmpty()) {
+            lastError = "No mpin configured";
             log.warn("[IndstocksTokenService] No mpin configured — skipping TOTP token generation");
             return false;
         }
         if (indstocksConfig.getTotpSecret() == null || indstocksConfig.getTotpSecret().isEmpty()) {
+            lastError = "No totp.secret configured";
             log.warn("[IndstocksTokenService] No totp.secret configured — skipping TOTP token generation");
             return false;
         }
@@ -90,10 +102,14 @@ public class IndstocksTokenService {
                     return true;
                 }
             }
-            log.error("[IndstocksTokenService] Token generation failed: status={} body={}",
-                    status, response.body());
+            lastError = "API responded status=" + (status.isEmpty() ? "?" : status)
+                    + " (HTTP " + response.statusCode() + "): " + response.body();
+            log.error("[IndstocksTokenService] Token generation failed: status={} httpCode={} body={}",
+                    status, response.statusCode(), response.body());
             return false;
         } catch (Exception e) {
+            lastError = e.getClass().getSimpleName()
+                    + (e.getMessage() != null ? ": " + e.getMessage() : "");
             log.error("[IndstocksTokenService] Token generation exception: {}", e.getMessage(), e);
             return false;
         }

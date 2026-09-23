@@ -103,16 +103,45 @@
 <a href="/" class="btn-dashboard">📊 Go to Dashboard</a>
 
 <script>
-    // On page load: check if we're returning from Shoonya redirect with ?code=...
+    // On page load: handle redirects back from broker OAuth callbacks.
     (function() {
         const params = new URLSearchParams(window.location.search);
+        const shoonya = params.get('shoonya');
+        const kite = params.get('kite');
         const code = params.get('code');
+        let cleaned = false;
+
+        if (shoonya === 'success') {
+            showMessage('Shoonya login successful! Order updates started.', 'success');
+            updateStatus('SHOONYA', true);
+            cleaned = true;
+        } else if (shoonya === 'failed') {
+            const reason = params.get('reason');
+            showMessage('Shoonya login failed: ' + (reason || 'please try again.'), 'error');
+            cleaned = true;
+        } else if (shoonya === 'disabled') {
+            showMessage('Shoonya is not enabled.', 'error');
+            cleaned = true;
+        }
+
+        if (kite === 'success') {
+            showMessage('Kite login successful! Trading is starting in the background.', 'success');
+            updateStatus('KITE', true);
+            cleaned = true;
+        } else if (kite === 'failed') {
+            showMessage('Kite login failed. Please try again.', 'error');
+            cleaned = true;
+        }
+
+        // Fallback: Shoonya redirected straight to the login page with ?code=...
         if (code) {
-            // Show auth code section pre-filled
             document.getElementById('shoonyaAuthSection').style.display = 'block';
             document.getElementById('shoonyaAuthCode').value = code;
             showMessage('Shoonya auth code received. Click "Exchange Code" to complete login.', 'success');
-            // Clean URL
+            cleaned = true;
+        }
+
+        if (cleaned) {
             window.history.replaceState({}, document.title, window.location.pathname);
         }
     })();
@@ -150,22 +179,11 @@
         window.location.href = '/auth/shoonya';
     }
 
-    async function exchangeShoonyaCode() {
+    function exchangeShoonyaCode() {
         const code = document.getElementById('shoonyaAuthCode').value.trim();
         if (!code) { showMessage('Please paste the auth code first.', 'error'); return; }
-        try {
-            const res = await fetch('/auth/shoonya/callback?code=' + encodeURIComponent(code));
-            const data = await res.json();
-            if (data.success) {
-                showMessage('Shoonya login successful! Order updates started.', 'success');
-                updateStatus('SHOONYA', true);
-                document.getElementById('shoonyaAuthSection').style.display = 'none';
-            } else {
-                showMessage('Shoonya login failed: ' + (data.message || 'unknown error'), 'error');
-            }
-        } catch (e) {
-            showMessage('Error: ' + e.message, 'error');
-        }
+        // The callback exchanges the code and redirects back to /auth/login?shoonya=...
+        window.location.href = '/auth/shoonya/callback?code=' + encodeURIComponent(code);
     }
 
     async function loginIndstocks() {
