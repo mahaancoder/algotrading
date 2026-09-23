@@ -23,6 +23,8 @@ import org.springframework.web.bind.annotation.ResponseBody;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Controller
 public class AuthController {
@@ -50,6 +52,16 @@ public class AuthController {
 
     @Autowired
     private TradingOrchestrator tradingOrchestrator;
+
+    // Runs the heavy TradingOrchestrator.start() off the HTTP request thread so
+    // the Kite OAuth callback can redirect to the dashboard immediately instead
+    // of blocking until startup (instrument fetch, holdings sync, ticker) finishes.
+    private final ExecutorService startupExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r);
+        t.setName("orchestrator-startup");
+        t.setDaemon(true);
+        return t;
+    });
 
     public AuthController(KiteAuthService authService, KiteConfig kiteConfig) {
         this.authService = authService;
@@ -83,7 +95,16 @@ public class AuthController {
         if ("success".equals(status) && requestToken != null) {
             boolean success = authService.exchangeToken(requestToken);
             if (success) {
-                tradingOrchestrator.start();
+                // Start trading asynchronously so the redirect happens right away.
+                // The access token is already stored by exchangeToken() above, so
+                // there is no need to block the callback on the full startup.
+                startupExecutor.submit(() -> {
+                    try {
+                        tradingOrchestrator.start();
+                    } catch (Exception e) {
+                        log.error("[AuthController] TradingOrchestrator.start() failed: {}", e.getMessage(), e);
+                    }
+                });
                 return "redirect:/auth/login?kite=success";
             }
         }
@@ -114,14 +135,15 @@ public class AuthController {
         return "redirect:" + url;
     }
 
+    // Shoonya redirects the browser here (its registered redirect URI) with ?code=...
+    // Perform the token exchange and redirect back to the login page so the user
+    // lands on the login screen with the broker showing authenticated (like Kite),
+    // instead of seeing raw JSON.
     @GetMapping("/auth/shoonya/callback")
-    @ResponseBody
-    public ResponseEntity<Map<String, Object>> shoonyaCallback(@RequestParam("code") String authCode) {
-        Map<String, Object> response = new HashMap<>();
+    public String shoonyaCallback(@RequestParam("code") String authCode) {
         if (shoonyaOAuthService.isEmpty()) {
-            response.put("success", false);
-            response.put("message", "Shoonya not enabled");
-            return ResponseEntity.badRequest().body(response);
+            log.warn("[AuthController] Shoonya not enabled — cannot exchange code");
+            return "redirect:/auth/login?shoonya=disabled";
         }
         boolean success = shoonyaOAuthService.get().exchangeAuthCode(authCode);
         if (success) {
@@ -134,13 +156,13 @@ public class AuthController {
                     log.error("[AuthController] Failed to start Shoonya order updates: {}", e.getMessage());
                 }
             });
-            response.put("success", true);
-            response.put("message", "Shoonya authenticated successfully");
-        } else {
-            response.put("success", false);
-            response.put("message", "Token exchange failed");
+            return "redirect:/auth/login?shoonya=success";
         }
-        return ResponseEntity.ok(response);
+        String reason = shoonyaOAuthService.get().getLastError();
+        String encoded = java.net.URLEncoder.encode(
+                reason != null && !reason.isEmpty() ? reason : "Token exchange failed",
+                java.nio.charset.StandardCharsets.UTF_8);
+        return "redirect:/auth/login?shoonya=failed&reason=" + encoded;
     }
 
     @PostMapping("/auth/shoonya/logout")
@@ -188,8 +210,11 @@ public class AuthController {
             response.put("success", true);
             response.put("message", "INDstocks authenticated, instruments loaded, order updates started");
         } else {
+            String reason = indstocksTokenService.get().getLastError();
             response.put("success", false);
-            response.put("message", "TOTP token generation failed — check api.key, mpin, totp.secret in config");
+            response.put("message", "TOTP token generation failed: "
+                    + (reason != null && !reason.isEmpty() ? reason
+                        : "check api.key, mpin, totp.secret in config"));
         }
         return ResponseEntity.ok(response);
     }

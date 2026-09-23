@@ -41,6 +41,14 @@ public class ShoonyaOAuthService {
     private final ShoonyaConfig shoonyaConfig;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Human-readable reason for the last exchangeAuthCode() failure, surfaced to the UI.
+    private volatile String lastError;
+
+    /** @return the reason the last exchangeAuthCode() call failed, or null if none. */
+    public String getLastError() {
+        return lastError;
+    }
+
     /**
      * Build the OAuth authorize URL the user should visit in a browser.
      */
@@ -57,15 +65,19 @@ public class ShoonyaOAuthService {
      * @return true if the token was obtained and set successfully
      */
     public boolean exchangeAuthCode(String authCode) {
+        lastError = null;
         if (authCode == null || authCode.isEmpty()) {
+            lastError = "authCode is null/empty";
             log.warn("[ShoonyaOAuthService] authCode is null/empty — cannot exchange");
             return false;
         }
         if (shoonyaConfig.getClientId() == null || shoonyaConfig.getClientId().isEmpty()) {
+            lastError = "No client.id configured";
             log.warn("[ShoonyaOAuthService] No client.id configured — cannot exchange");
             return false;
         }
         if (shoonyaConfig.getSecretCode() == null || shoonyaConfig.getSecretCode().isEmpty()) {
+            lastError = "No secret.code configured";
             log.warn("[ShoonyaOAuthService] No secret.code configured — cannot exchange");
             return false;
         }
@@ -109,10 +121,13 @@ public class ShoonyaOAuthService {
                     return true;
                 }
             }
-            log.error("[ShoonyaOAuthService] Token exchange failed: stat={} emsg={}",
-                    stat, json.has("emsg") ? json.get("emsg").asText() : "unknown");
+            String emsg = json.has("emsg") ? json.get("emsg").asText() : "unknown";
+            lastError = "stat=" + (stat.isEmpty() ? "?" : stat) + ", emsg=" + emsg;
+            log.error("[ShoonyaOAuthService] Token exchange failed: stat={} emsg={}", stat, emsg);
             return false;
         } catch (Exception e) {
+            lastError = e.getClass().getSimpleName()
+                    + (e.getMessage() != null ? ": " + e.getMessage() : "");
             log.error("[ShoonyaOAuthService] Token exchange exception: {}", e.getMessage(), e);
             return false;
         }
