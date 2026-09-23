@@ -157,6 +157,16 @@ public class OrderExecutionService {
             return;
         }
 
+        // ===== STEP 1.7: NO-TRADE VETO FILTER =====
+        // If the signal matches any no-trade rule, block the trade entirely
+        // (regardless of which broker group it would route to).
+        String noTradeReason = filterEngine.getNoTradeRejectionReason(signal);
+        if (noTradeReason != null) {
+            System.out.println("🚫 [NoTradeFilter] " + symbol + " rejected - " + noTradeReason);
+            signalAnalyticsService.recordSignal(signal, false, noTradeReason, actualCapital);
+            return;
+        }
+
         // ===== STEP 2: DETERMINE BROKER FIRST (needed for broker-aware risk check) =====
         ExecutionRoute route = determineBrokerRoute(signal, symbol, strategy);
         if (route == null) {
