@@ -52,7 +52,8 @@ public class TradeMetricsCollector {
         String orderId,
         EntryType entryType,
         boolean isHolding,
-        MarketContext ctx
+        MarketContext ctx,
+        String broker
     ) {
         try {
             // Get previous close
@@ -160,6 +161,7 @@ public class TradeMetricsCollector {
                 .atrTarget((atr * 0.5) + (entryPrice * 1.001))
                 .atrTargetTouched(false)  // Will be set to true if price touches atrTarget
                     .positionType(isHolding? "HOLDING" : "INTRADAY")
+                    .broker(broker != null ? broker : "KITE")
                 .build();
 
             // Store in memory

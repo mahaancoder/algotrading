@@ -105,31 +105,34 @@ public class SnapshotService {
         
         // 1. SEND INTRADAY POSITIONS (batch)
         sendIntradayPositionsBatch(session, allIntradayPositions, latestPriceMap);
-        
-        // 2. SEND CLOSED TRADES (batch JSON)
+
+        // 2. SEND CLOSED TRADES (batch JSON — wrapped in message type)
         sendClosedTradesBatch(session, trades);
-        
+
         // 3. SEND TOTAL REALIZED P&L
         sendTotalPnLBatch(session, trades);
-        
+
         // 4. SEND TODAY'S P&L
         sendTodaysPnLBatch(session);
-        
+
         // 5. SEND STRATEGY P&Ls (batch)
         sendStrategyPnLsBatch(session);
-        
-        // 6. SEND TRADE EVENTS (batch JSON)
+
+        // 5b. SEND BROKER P&Ls (batch)
+        sendBrokerPnLsBatch(session);
+
+        // 6. SEND TRADE EVENTS (batch JSON — wrapped in message type)
         sendTradeEventsBatch(session, events);
-        
+
         // 7. SEND HOLDINGS (batch)
         sendHoldingsBatch(session, allHoldings, latestPriceMap);
-        
-        // 8. SEND CAPITAL USED (single message with all data)
+
+        // 8. SEND CAPITAL USED (single message with all data — now with broker breakdown)
         sendCapitalUsedOptimized(session, allIntradayPositions, allHoldings);
-        
+
         // 9. SEND ENTRY TYPE ANALYTICS
         sendEntryTypeAnalyticsOptimized(session);
-        
+
         // 10. SEND KILL SWITCH STATUS
         sendKillSwitchStatusOptimized(session);
     }
@@ -155,7 +158,7 @@ public class SnapshotService {
     }
 
     /**
-     * ⚡ Send all closed trades in ONE batch (StringBuilder instead of String.format in loop)
+     * ⚡ Send all closed trades in ONE batch wrapped in CLOSED_TRADES message type
      */
     private void sendClosedTradesBatch(WebSocketSession session, List<TradeRecord> trades) throws Exception {
         if (trades.isEmpty()) return;
@@ -167,9 +170,12 @@ public class SnapshotService {
             if (!first) jsonArray.append(",");
             first = false;
 
-            String entryTypeField = t.getEntryType() != null 
-                ? ",\"entryType\":\"" + t.getEntryType().name() + "\"" 
+            String entryTypeField = t.getEntryType() != null
+                ? ",\"entryType\":\"" + t.getEntryType().name() + "\""
                 : "";
+            String brokerField = t.getBroker() != null
+                ? ",\"broker\":\"" + t.getBroker() + "\""
+                : ",\"broker\":\"KITE\"";
 
             // ⚡ Fast JSON building with StringBuilder (no String.format overhead)
             jsonArray.append("{\"type\":\"TRADE\",\"symbol\":\"").append(t.getInstrument())
@@ -180,11 +186,14 @@ public class SnapshotService {
                 .append(",\"pnl\":").append(String.format("%.2f", t.getPnl()))
                 .append(",\"time\":").append(t.getTimestamp())
                 .append(entryTypeField)
+                .append(brokerField)
                 .append("}");
         }
         jsonArray.append("]");
 
-        session.sendMessage(new TextMessage(jsonArray.toString()));
+        // Wrap in CLOSED_TRADES message type so the frontend can handle it
+        String json = "{\"type\":\"CLOSED_TRADES\",\"trades\":" + jsonArray.toString() + "}";
+        session.sendMessage(new TextMessage(json));
         log.debug("📤 Sent {} closed trades", trades.size());
     }
 
@@ -237,7 +246,33 @@ public class SnapshotService {
     }
 
     /**
-     * ⚡ Send all trade events in ONE batch (no per-event messages)
+     * ⚡ Send broker P&Ls as batch (per-broker realized P&L breakdown)
+     */
+    private void sendBrokerPnLsBatch(WebSocketSession session) throws Exception {
+        Map<String, Double> brokerPnLs = pnlCalculator.getAllBrokerPnLs();
+
+        StringBuilder jsonArray = new StringBuilder("[");
+        boolean first = true;
+
+        // Always include all three brokers even if P&L is 0
+        String[] brokers = {"KITE", "INDSTOCKS", "SHOONYA"};
+        for (String broker : brokers) {
+            if (!first) jsonArray.append(",");
+            first = false;
+            double pnl = brokerPnLs.getOrDefault(broker, 0.0);
+            jsonArray.append("{\"type\":\"BROKER_PNL\",\"broker\":\"")
+                .append(broker)
+                .append("\",\"pnl\":").append(String.format("%.2f", pnl))
+                .append("}");
+        }
+        jsonArray.append("]");
+
+        session.sendMessage(new TextMessage(jsonArray.toString()));
+        log.debug("📤 Sent {} broker P&Ls", brokers.length);
+    }
+
+    /**
+     * ⚡ Send all trade events in ONE batch wrapped in TRADE_EVENTS message type
      */
     private void sendTradeEventsBatch(WebSocketSession session, List<TradeEvent> events) throws Exception {
         if (events.isEmpty()) return;
@@ -249,9 +284,12 @@ public class SnapshotService {
             if (!first) jsonArray.append(",");
             first = false;
 
-            String entryTypeField = e.getEntryType() != null 
-                ? ",\"entryType\":\"" + e.getEntryType().name() + "\"" 
+            String entryTypeField = e.getEntryType() != null
+                ? ",\"entryType\":\"" + e.getEntryType().name() + "\""
                 : "";
+            String brokerField = e.getBroker() != null
+                ? ",\"broker\":\"" + e.getBroker() + "\""
+                : ",\"broker\":\"KITE\"";
 
             jsonArray.append("{\"type\":\"EVENT\",\"symbol\":\"").append(e.getSymbol())
                 .append("\",\"strategy\":\"").append(e.getStrategy())
@@ -261,11 +299,14 @@ public class SnapshotService {
                 .append(",\"pnl\":").append(e.getPnl())
                 .append(",\"time\":").append(e.getTime())
                 .append(entryTypeField)
+                .append(brokerField)
                 .append("}");
         }
         jsonArray.append("]");
 
-        session.sendMessage(new TextMessage(jsonArray.toString()));
+        // Wrap in TRADE_EVENTS message type so the frontend can handle it
+        String json = "{\"type\":\"TRADE_EVENTS\",\"events\":" + jsonArray.toString() + "}";
+        session.sendMessage(new TextMessage(json));
         log.debug("📤 Sent {} trade events", events.size());
     }
 
@@ -291,7 +332,8 @@ public class SnapshotService {
 
     /**
      * ⚡ OPTIMIZED capital calculation (single pass + pre-loaded data)
-     * Calculates intraday capital, holdings capital, and per-strategy capital in ONE pass
+     * Calculates intraday capital, holdings capital, per-strategy capital, and
+     * per-broker capital in ONE pass.
      */
     private void sendCapitalUsedOptimized(WebSocketSession session, List<Position> intradayPositions,
                                           List<Position> holdings) throws Exception {
@@ -299,27 +341,39 @@ public class SnapshotService {
         double intradayCapital = 0.0;
         double holdingsCapital = 0.0;
         Map<String, Double> strategyCapital = new HashMap<>();
+        Map<String, Double> brokerCapital = new HashMap<>();
 
         // Initialize all strategies with 0
         for (String strategyName : strategyEngine.getAllStrategyNames()) {
             strategyCapital.put(strategyName, 0.0);
         }
 
-        // Intraday capital + strategy capital (single pass)
+        // Initialize all brokers with 0
+        String[] brokers = {"KITE", "INDSTOCKS", "SHOONYA"};
+        for (String b : brokers) {
+            brokerCapital.put(b, 0.0);
+        }
+
+        // Intraday capital + strategy capital + broker capital (single pass)
         for (Position p : intradayPositions) {
             if (!p.isOpen()) continue;
             double capital = p.getAveragePrice() * p.getTotalQuantity();
             intradayCapital += capital;
             strategyCapital.merge(p.getStrategy(), capital, Double::sum);
+            String posBroker = (p.getBroker() != null) ? p.getBroker() : "KITE";
+            brokerCapital.merge(posBroker, capital, Double::sum);
         }
 
-        // Holdings capital (separate loop, small dataset)
+        // Holdings capital + broker capital (separate loop, small dataset)
         for (Position p : holdings) {
             if (!p.isOpen()) continue;
-            holdingsCapital += p.getAveragePrice() * p.getTotalQuantity();
+            double capital = p.getAveragePrice() * p.getTotalQuantity();
+            holdingsCapital += capital;
+            String posBroker = (p.getBroker() != null) ? p.getBroker() : "KITE";
+            brokerCapital.merge(posBroker, capital, Double::sum);
         }
 
-        // --- Build JSON response with StringBuilder ---
+        // --- Build strategy JSON ---
         StringBuilder strategyJson = new StringBuilder("[");
         boolean first = true;
 
@@ -335,12 +389,26 @@ public class SnapshotService {
         }
         strategyJson.append("]");
 
+        // --- Build broker capital JSON ---
+        StringBuilder brokerJson = new StringBuilder("[");
+        first = true;
+        for (String b : brokers) {
+            if (!first) brokerJson.append(",");
+            first = false;
+            double cap = brokerCapital.getOrDefault(b, 0.0);
+            brokerJson.append("{\"broker\":\"").append(b)
+                .append("\",\"capital\":").append(String.format("%.2f", cap))
+                .append("}");
+        }
+        brokerJson.append("]");
+
         String json = "{\"type\":\"CAPITAL_USED\",\"intraday\":" + String.format("%.2f", intradayCapital)
             + ",\"holdings\":" + String.format("%.2f", holdingsCapital)
-            + ",\"strategies\":" + strategyJson.toString() + "}";
+            + ",\"strategies\":" + strategyJson.toString()
+            + ",\"brokers\":" + brokerJson.toString() + "}";
 
         session.sendMessage(new TextMessage(json));
-        log.debug("📤 Sent capital: intraday={}, holdings={}", intradayCapital, holdingsCapital);
+        log.debug("📤 Sent capital: intraday={}, holdings={}, brokers={}", intradayCapital, holdingsCapital, brokerCapital);
     }
 
     /**

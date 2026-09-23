@@ -14,4 +14,8 @@ public class TradeEvent {
 
     // Analytics: Track entry type for BUY events
     private EntryType entryType;
+
+    // ===== Broker dimension (added in multi-broker refactor) =====
+    // Which broker executed this event. Null for legacy events (treated as KITE).
+    private String broker;
 }

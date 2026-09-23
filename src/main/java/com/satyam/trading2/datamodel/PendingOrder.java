@@ -1,15 +1,37 @@
 package com.satyam.trading2.datamodel;
 
+import com.satyam.trading2.broker.ExecutionRoute;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 
+import java.util.UUID;
+
 @Data
 @RequiredArgsConstructor
 public class PendingOrder {
 
+    // ===== Identity =====
+    // internalOrderId: our own UUID — unique across all brokers, used as the
+    // repository map key. Never collides even if two brokers return the same id.
+    private String internalOrderId;
+
+    // orderId: the broker-assigned order id. Kept for backward compatibility
+    // with existing callers; canonically the same value as brokerOrderId.
+    // New code should prefer brokerOrderId + broker for lookups.
     private String orderId;
+
+    // brokerOrderId: broker-assigned order id (canonical). Unique only within
+    // that broker — always pair with `broker` for a globally unique key.
+    private String brokerOrderId;
+
+    // ===== Broker dimension (added in multi-broker refactor) =====
+    private String broker;               // "KITE", "INDSTOCKS", "SHOONYA"
+    private ExecutionRoute executionRoute;
+    private String signalId;             // TradeSignal id for end-to-end tracing
+
+    // ===== Order details =====
     private String symbol;
     private String strategy;
     private PendingOrderState state;
@@ -76,5 +98,30 @@ public class PendingOrder {
         this.avgPrice = avgPrice;
         this.state = PendingOrderState.PARTIALLY_FILLED;
         this.updatedTime = System.currentTimeMillis();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Backward-compat: keep orderId and brokerOrderId in sync.
+    // Existing callers use getOrderId()/setOrderId(); the broker dimension is
+    // new. Setting either field mirrors to the other so both old and new code
+    // see the same value.
+    // ─────────────────────────────────────────────────────────────────────
+    public void setOrderId(String orderId) {
+        this.orderId = orderId;
+        if (this.brokerOrderId == null) {
+            this.brokerOrderId = orderId;
+        }
+    }
+
+    public void setBrokerOrderId(String brokerOrderId) {
+        this.brokerOrderId = brokerOrderId;
+        if (this.orderId == null) {
+            this.orderId = brokerOrderId;
+        }
+    }
+
+    /** Generate a fresh internal order id (UUID) for a new PendingOrder. */
+    public static String generateInternalOrderId() {
+        return UUID.randomUUID().toString();
     }
 }

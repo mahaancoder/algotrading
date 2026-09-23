@@ -125,7 +125,7 @@ public class HoldingsTargetSetScheduler {
      */
     private void placeTargetForHolding(Position holding, double targetMultiplier) {
         try {
-            // If target already exists, cancel it first to place new one
+            // If primary target already exists, cancel it first to place new one
             if (holding.getTargetOrderId() != null) {
                 System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing target for " + holding.getSymbol() +
                                  " to update with new target (multiplier: " + targetMultiplier + ")");
@@ -135,7 +135,17 @@ public class HoldingsTargetSetScheduler {
                     holding.setTargetPlaced(false);
                 } catch (Exception e) {
                     System.out.println("⚠️ [HoldingsTargetSetScheduler] Failed to cancel existing target: " + e.getMessage());
-                    // Continue anyway - broker might have already cancelled it
+                }
+            }
+            // Also cancel any existing secondary (quick-exit) sell order
+            if (holding.getSecondaryTargetOrderId() != null) {
+                System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing quick-exit sell for " + holding.getSymbol());
+                try {
+                    orderServiceV2.cancelOrder(holding.getSecondaryTargetOrderId());
+                    holding.setSecondaryTargetOrderId(null);
+                    holding.setSecondaryTargetPlaced(false);
+                } catch (Exception e) {
+                    System.out.println("⚠️ [HoldingsTargetSetScheduler] Failed to cancel quick-exit sell: " + e.getMessage());
                 }
             }
 

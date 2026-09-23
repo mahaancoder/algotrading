@@ -62,7 +62,7 @@ public class ExecutionEngine {
      */
     private boolean isBuyAllowed() {
         LocalTime now = LocalTime.now();
-        LocalTime buyStart = LocalTime.of(9, 10);
+        LocalTime buyStart = LocalTime.of(9, 14, 59);
         LocalTime buyEnd = LocalTime.of(15, 0);
         return !now.isBefore(buyStart) && now.isBefore(buyEnd);
     }

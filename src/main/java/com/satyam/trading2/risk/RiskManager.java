@@ -31,6 +31,10 @@ public class RiskManager {
     private final Map<String, Double> reservedCapitalPerStrategy = new ConcurrentHashMap<>();
     private final Map<String, Double> reservedCapitalPerSymbol = new ConcurrentHashMap<>();
 
+    // ===== PER-BROKER reserved capital (Decision #3: per-broker capital tracking) =====
+    // Key: broker::strategy → reserved amount. Lets us enforce per-broker limits.
+    private final Map<String, Double> reservedCapitalPerBrokerStrategy = new ConcurrentHashMap<>();
+
     // ===== PER-SYMBOL LOCKS: Prevent race conditions for concurrent orders on the same symbol =====
     private final Map<String, Object> symbolLocks = new ConcurrentHashMap<>();
 
@@ -62,8 +66,20 @@ public class RiskManager {
 
     /**
      * ===== CRITICAL: Thread-safe risk check with symbol-level locking =====
+     * Legacy overload — defaults to KITE broker. New callers should use the
+     * broker-aware overload below.
      */
     public RiskCheckResult checkSignalSafety(String symbol, String strategy, double actualCapital, double entryPrice, DipState state, boolean isHolding) {
+        return checkSignalSafety(symbol, strategy, actualCapital, entryPrice, state, isHolding, "KITE");
+    }
+
+    /**
+     * ===== Broker-aware risk check with symbol-level locking =====
+     * Checks per-broker strategy capital limit in addition to the global one.
+     */
+    public RiskCheckResult checkSignalSafety(String symbol, String strategy, double actualCapital, double entryPrice, DipState state, boolean isHolding, String broker) {
+
+        String b = broker != null ? broker : "KITE";
 
         // ===== SYMBOL-LEVEL LOCK: Serialize all checks for the same symbol =====
         synchronized (getSymbolLock(symbol)) {
@@ -112,7 +128,21 @@ public class RiskManager {
                 return RiskCheckResult.rejected("Symbol+Strategy exited today - no re-entry");
             }
 
-            // ===== STRATEGY CAPITAL LIMIT: Don't exceed strategy budget =====
+            // ===== PER-BROKER STRATEGY CAPITAL LIMIT =====
+            double brokerStrategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategyAndBroker(strategy, b);
+            String brokerStrategyKey = b + "::" + strategy;
+            double brokerReserved = reservedCapitalPerBrokerStrategy.getOrDefault(brokerStrategyKey, 0.0);
+            double brokerCommitted = brokerStrategyCapitalUsed + brokerReserved;
+
+            double brokerMaxCapital = marginFetchScheduler.getMaxCapitalPerStrategyAndBroker(strategy, b);
+            double brokerFundsAvailable = brokerMaxCapital - brokerCommitted;
+
+            if (actualCapital > brokerFundsAvailable) {
+                return RiskCheckResult.rejected("Insufficient " + b + " broker capital (need ₹"
+                    + String.format("%.0f", actualCapital) + ", avail ₹" + String.format("%.0f", brokerFundsAvailable) + ")");
+            }
+
+            // ===== GLOBAL STRATEGY CAPITAL LIMIT (safety net across all brokers) =====
             double strategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(strategy);
             double reservedCapital = reservedCapitalPerStrategy.getOrDefault(strategy, 0.0);
             double totalCommittedCapital = strategyCapitalUsed + reservedCapital;
@@ -121,13 +151,7 @@ public class RiskManager {
             double fundsAvailableforTrading = maxCapital - totalCommittedCapital;
 
             if (actualCapital > fundsAvailableforTrading) {
-                /*System.out.println("🚫 [RiskManager] Strategy capital limit reached for " + strategy +
-                                 " | Max: ₹" + String.format("%.0f", maxCapital) +
-                                 " | Used: ₹" + String.format("%.0f", strategyCapitalUsed) +
-                                 " | Reserved: ₹" + String.format("%.0f", reservedCapital) +
-                                 " | Available: ₹" + String.format("%.0f", fundsAvailableforTrading) +
-                                 " | Needed: ₹" + String.format("%.0f", actualCapital));*/
-                return RiskCheckResult.rejected("Insufficient strategy capital available");
+                return RiskCheckResult.rejected("Insufficient strategy capital available (global limit)");
             }
 
             return RiskCheckResult.safe();
@@ -135,35 +159,74 @@ public class RiskManager {
     }
 
     public synchronized boolean reserveCapital(String strategy, double capitalAmount) {
-        double strategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(strategy);
-        double reservedCapital = reservedCapitalPerStrategy.getOrDefault(strategy, 0.0);
-        double totalCommittedCapital = strategyCapitalUsed + reservedCapital;
+        return reserveCapital(strategy, capitalAmount, "KITE");
+    }
 
+    /**
+     * Per-broker capital reservation (Decision #3: per-broker capital tracking).
+     * Tracks reserved capital per broker+strategy so each broker's limits are
+     * enforced independently. Also updates the global strategy-level map for
+     * backward-compat with existing dashboard/diagnostic code.
+     */
+    public synchronized boolean reserveCapital(String strategy, double capitalAmount, String broker) {
+        String b = broker != null ? broker : "KITE";
+        String brokerStrategyKey = b + "::" + strategy;
+
+        // Per-broker check
+        double brokerStrategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategyAndBroker(strategy, b);
+        double brokerReserved = reservedCapitalPerBrokerStrategy.getOrDefault(brokerStrategyKey, 0.0);
+        double brokerCommitted = brokerStrategyCapitalUsed + brokerReserved;
+
+        // Max capital per strategy is still global for now (sourced from Kite margin).
+        // TODO: When each broker reports its own funds via BrokerFunds, use per-broker max.
         double maxCapital = marginFetchScheduler.getMaxCapitalPerStrategy(strategy);
-        double fundsAvailableforTrading = maxCapital - totalCommittedCapital;
+        double brokerFundsAvailable = maxCapital - brokerCommitted;
 
-        if (capitalAmount > fundsAvailableforTrading) {
-           /* System.out.println("🚫 [RiskManager] Cannot reserve ₹" + String.format("%.0f", capitalAmount) +
-                             " for " + strategy + " - would exceed budget" +
-                             " | Max: ₹" + String.format("%.0f", maxCapital) +
-                             " | Used: ₹" + String.format("%.0f", strategyCapitalUsed) +
-                             " | Reserved: ₹" + String.format("%.0f", reservedCapital) +
-                             " | Available: ₹" + String.format("%.0f", fundsAvailableforTrading));*/
+        if (capitalAmount > brokerFundsAvailable) {
+            return false;
+        }
+
+        // Update per-broker+strategy map
+        reservedCapitalPerBrokerStrategy.merge(brokerStrategyKey, capitalAmount, Double::sum);
+
+        // Also update the global strategy-level map (backward compat for dashboards)
+        double globalStrategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(strategy);
+        double globalReserved = reservedCapitalPerStrategy.getOrDefault(strategy, 0.0);
+        double globalCommitted = globalStrategyCapitalUsed + globalReserved;
+        double globalFundsAvailable = maxCapital - globalCommitted;
+
+        if (capitalAmount > globalFundsAvailable) {
+            // Roll back the per-broker reservation
+            double cur = reservedCapitalPerBrokerStrategy.getOrDefault(brokerStrategyKey, 0.0);
+            reservedCapitalPerBrokerStrategy.put(brokerStrategyKey, Math.max(0, cur - capitalAmount));
             return false;
         }
 
         reservedCapitalPerStrategy.merge(strategy, capitalAmount, Double::sum);
-       /* System.out.println("✅ [RiskManager] Reserved ₹" + String.format("%.0f", capitalAmount) +
-                         " for " + strategy +
-                         " | Total reserved now: ₹" + String.format("%.0f", reservedCapitalPerStrategy.get(strategy)) +
-                         " | Remaining budget: ₹" + String.format("%.0f", fundsAvailableforTrading - capitalAmount));*/
         return true;
     }
 
     public synchronized void releaseCapital(String strategy, double capitalAmount) {
+        releaseCapital(strategy, capitalAmount, "KITE");
+    }
+
+    /** Per-broker overload — releases from both the per-broker and global maps. */
+    public synchronized void releaseCapital(String strategy, double capitalAmount, String broker) {
+        String b = broker != null ? broker : "KITE";
+        String brokerStrategyKey = b + "::" + strategy;
+
+        // Release per-broker+strategy
+        double brokerCurrent = reservedCapitalPerBrokerStrategy.getOrDefault(brokerStrategyKey, 0.0);
+        double brokerNew = Math.max(0, brokerCurrent - capitalAmount);
+        if (brokerNew == 0) {
+            reservedCapitalPerBrokerStrategy.remove(brokerStrategyKey);
+        } else {
+            reservedCapitalPerBrokerStrategy.put(brokerStrategyKey, brokerNew);
+        }
+
+        // Release global strategy-level
         double currentReserved = reservedCapitalPerStrategy.getOrDefault(strategy, 0.0);
         double newReserved = Math.max(0, currentReserved - capitalAmount);
-
         if (newReserved == 0) {
             reservedCapitalPerStrategy.remove(strategy);
         } else {
@@ -172,7 +235,12 @@ public class RiskManager {
     }
 
     public synchronized void confirmCapitalUsage(String strategy, double capitalAmount) {
-        releaseCapital(strategy, capitalAmount);
+        confirmCapitalUsage(strategy, capitalAmount, "KITE");
+    }
+
+    /** Per-broker overload — confirms usage (releases reservation) for a specific broker. */
+    public synchronized void confirmCapitalUsage(String strategy, double capitalAmount, String broker) {
+        releaseCapital(strategy, capitalAmount, broker);
     }
 
     /**

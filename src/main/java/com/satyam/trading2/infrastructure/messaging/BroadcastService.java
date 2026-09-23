@@ -101,6 +101,32 @@ public class BroadcastService {
     }
 
     /**
+     * Broadcast per-broker P&L (KITE / INDSTOCKS / SHOONYA)
+     */
+    public void broadcastBrokerPnL(String broker, double pnl) {
+        try {
+            String json = "{\"type\":\"BROKER_PNL\",\"broker\":\"" + broker
+                    + "\",\"pnl\":" + String.format("%.2f", pnl) + "}";
+            broadcaster.broadcast(json);
+        } catch (Exception e) {
+            log.error("Failed to broadcast broker P&L", e);
+        }
+    }
+
+    /**
+     * Broadcast broker enable/disable toggle state change
+     */
+    public void broadcastBrokerToggle(String broker, boolean enabled) {
+        try {
+            String json = "{\"type\":\"BROKER_TOGGLE\",\"broker\":\"" + broker
+                    + "\",\"enabled\":" + enabled + "}";
+            broadcaster.broadcast(json);
+        } catch (Exception e) {
+            log.error("Failed to broadcast broker toggle", e);
+        }
+    }
+
+    /**
      * Broadcast risk data
      */
     public void broadcastRisk(Map<String, Object> riskData) {

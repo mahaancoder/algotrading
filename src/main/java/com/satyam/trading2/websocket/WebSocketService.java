@@ -33,6 +33,7 @@ public class WebSocketService {
     private final MarketContextBuilder marketContextBuilder;
     private final StrategyEngine strategyEngine;
     private final ExecutionEngine executionEngine;
+    private final com.satyam.trading2.execution.OrderExecutionService orderExecutionService;
     private final BroadcastService broadcastService;
     private final TradeMetricsCollector tradeMetricsCollector;
     private final com.satyam.trading2.domain.service.PositionManager positionManager;
@@ -99,7 +100,8 @@ public class WebSocketService {
 
                     if (signals != null && !signals.isEmpty()) {
                         for (TradeSignal signal : signals) {
-                            executionEngine.processSignal(signal, ctx);
+                            // Use the multi-broker OrderExecutionService (broker-aware risk + routing)
+                            orderExecutionService.execute(signal, ctx);
                         }
                     }
                 } catch (Exception e) {

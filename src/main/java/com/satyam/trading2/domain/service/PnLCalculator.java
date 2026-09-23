@@ -34,6 +34,9 @@ public class PnLCalculator {
     
     // P&L per strategy
     private final Map<String, Double> strategyPnL = new ConcurrentHashMap<>();
+
+    // P&L per broker (e.g. "KITE", "INDSTOCKS", "SHOONYA")
+    private final Map<String, Double> brokerPnL = new ConcurrentHashMap<>();
     
     /**
      * Calculate P&L for a trade
@@ -46,18 +49,30 @@ public class PnLCalculator {
      * Record a completed trade and update all P&L metrics
      */
     public void recordTrade(double pnl, String strategyName) {
+        recordTrade(pnl, strategyName, "KITE");
+    }
+
+    /**
+     * Record a completed trade with broker dimension and update all P&L metrics.
+     */
+    public void recordTrade(double pnl, String strategyName, String broker) {
         // Update totals
         totalPnL += pnl;
         todaysPnL += pnl;
-        
+
         // Update strategy P&L
         strategyPnL.merge(strategyName, pnl, Double::sum);
-        
+
+        // Update broker P&L
+        String brokerKey = (broker != null && !broker.isEmpty()) ? broker : "KITE";
+        brokerPnL.merge(brokerKey, pnl, Double::sum);
+
         // Update drawdown
         updateDrawdown();
-        
-        log.info("📊 Trade recorded: PnL={}, Total={}, Today={}, Strategy={} ({})", 
-                pnl, totalPnL, todaysPnL, strategyName, strategyPnL.get(strategyName));
+
+        log.info("📊 Trade recorded: PnL={}, Total={}, Today={}, Strategy={} ({}) Broker={} ({})",
+                pnl, totalPnL, todaysPnL, strategyName, strategyPnL.get(strategyName),
+                brokerKey, brokerPnL.get(brokerKey));
     }
     
     /**
@@ -92,6 +107,20 @@ public class PnLCalculator {
      */
     public Map<String, Double> getAllStrategyPnLs() {
         return new ConcurrentHashMap<>(strategyPnL);
+    }
+
+    /**
+     * Get P&L for a specific broker
+     */
+    public Double getBrokerPnL(String broker) {
+        return brokerPnL.getOrDefault(broker, 0.0);
+    }
+
+    /**
+     * Get all broker P&Ls
+     */
+    public Map<String, Double> getAllBrokerPnLs() {
+        return new ConcurrentHashMap<>(brokerPnL);
     }
     
     /**
@@ -165,6 +194,16 @@ public class PnLCalculator {
         }
 
         log.debug("Restored total P&L: {}, Peak: {}", totalPnL, peakPnL);
+    }
+
+    /**
+     * Restore broker P&L from historical trades
+     * Called during application startup to rebuild per-broker P&L from CSV
+     */
+    public void restoreBrokerPnL(String broker, double pnl) {
+        String brokerKey = (broker != null && !broker.isEmpty()) ? broker : "KITE";
+        brokerPnL.merge(brokerKey, pnl, Double::sum);
+        log.debug("Restored broker P&L: {} = {}", brokerKey, brokerPnL.get(brokerKey));
     }
 }
 

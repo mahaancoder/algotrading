@@ -1,8 +1,11 @@
 package com.satyam.trading2.scheduler;
 
+import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
+import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.helpers.LatestPriceHelper;
+import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.service.OrderServiceV2;
 import com.satyam.trading2.service.ReconciliationService;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +16,7 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import static com.satyam.trading2.datamodel.Position.PositionType.HOLDING;
 import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 
 @Service
@@ -23,8 +27,9 @@ public class TrailingStopScheduler {
     private final OrderServiceV2 orderServiceV2;
     private final ReconciliationService reconciliationService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
+    private final PendingOrderRepository pendingOrderRepository;
 
-    @Scheduled(cron = "0/20 * * * * MON-FRI")
+    @Scheduled(cron = "0/10 * * * * MON-FRI")
     public void updateTrailingStops() {
         if (killSwitchService.isActive()) {
             System.out.println("🛑 [TrailingStopScheduler] Skipped - Kill switch is ACTIVE");
@@ -32,7 +37,7 @@ public class TrailingStopScheduler {
         }
 
         LocalTime now = LocalTime.now();
-        if (now.isBefore(LocalTime.of(9, 25))) {
+        if (now.isBefore(LocalTime.of(9, 17))) {
             return;
         }
 
@@ -56,24 +61,28 @@ public class TrailingStopScheduler {
 
         reconciliationService.syncBrokerPositions(false);
         try {
-            List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
-                    .filter(p -> p.getPositionType() == INTRADAY)
+            // Process BOTH intraday and holding positions
+            List<Position> openPositions = positionManager.getAllOpenPositions().stream()
+                    .filter(p -> p.getPositionType() == INTRADAY || p.getPositionType() == HOLDING)
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
-            if (intradayPositions.isEmpty()) {
-                System.out.println("⏭️ [TrailingStop] No INTRADAY positions found - skipping");
+            if (openPositions.isEmpty()) {
+                System.out.println("⏭️ [TrailingStop] No open positions found - skipping");
                 return;
             }
 
-            System.out.println("📊 [TrailingStop] Found " + intradayPositions.size() + " INTRADAY positions");
+            long intradayCount = openPositions.stream().filter(p -> p.getPositionType() == INTRADAY).count();
+            long holdingCount = openPositions.stream().filter(p -> p.getPositionType() == HOLDING).count();
+            System.out.println("📊 [TrailingStop] Found " + intradayCount + " INTRADAY + " + holdingCount + " HOLDING positions");
 
             int updatedCount = 0;
             int skippedCount = 0;
             int failedCount = 0;
 
-            for (Position position : intradayPositions) {
+            for (Position position : openPositions) {
                 try {
+                    boolean isHolding = position.getPositionType() == HOLDING;
                     String symbol = position.getSymbol();
                     double avgPrice = position.getAveragePrice();
                     int qty = position.getTotalQuantity();
@@ -89,35 +98,70 @@ public class TrailingStopScheduler {
                     double profitPercent = ((ltp - avgPrice) / avgPrice) * 100.0;
 
                     if (profitPercent < threshold) {
-                        System.out.println("⏭️ [TrailingStop] " + symbol + ": Profit " +
-                                String.format("%.2f", profitPercent) + "% < " + threshold + "%, skipping");
                         skippedCount++;
                         continue;
                     }
 
-                    String oldOrderId = position.getTargetOrderId();
-                    String newOrderId = orderServiceV2.updateTargetOrder(
-                            symbol,
-                            ltp,
-                            qty,
-                            oldOrderId,
-                            false,
-                            position.getStrategy()
-                    );
+                    if (isHolding) {
+                        // ===== CNC/HOLDING: Update only the primary target sell (A).
+                        // Do NOT touch the secondary quick-exit sell (B) — it should
+                        // remain at its original 1% price. We cancel only the primary
+                        // targetOrderId and place a new sell at LTP for total qty.
+                        // Using placeOrder directly instead of updateTargetOrder to
+                        // avoid the blanket "cancel all CNC SELL orders" behavior.
+                        String oldPrimaryOrderId = position.getTargetOrderId();
+                        if (oldPrimaryOrderId != null) {
+                            try {
+                                orderServiceV2.cancelOrder(oldPrimaryOrderId);
+                                Thread.sleep(300);
+                            } catch (Exception e) {
+                                System.err.println("⚠️ [TrailingStop] Failed to cancel primary sell for " + symbol + ": " + e.getMessage());
+                            }
+                        }
 
-                    if (newOrderId != null) {
-                        position.setTargetOrderId(newOrderId);
-                        position.setTarget(ltp);
-                        positionManager.updatePosition(position);
+                        String newOrderId = orderServiceV2.placeOrder(
+                                symbol, "SELL", "LIMIT", qty, ltp, 0, "CNC", position.getStrategy());
 
-                        updatedCount++;
-                        System.out.println("✅ [TrailingStop] " + symbol +
-                                ": Updated target to LTP ₹" + String.format("%.2f", ltp) +
-                                " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
-                                "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
+                        if (newOrderId != null) {
+                            position.setTargetOrderId(newOrderId);
+                            position.setTarget(ltp);
+                            positionManager.updatePosition(position);
+
+                            // Create PendingOrder so webhook can find it on fill
+                            PendingOrder targetPO = pendingOrderRepository.create(
+                                    newOrderId, symbol, TradeSide.SELL,
+                                    position.getStrategy(), qty, ltp, true);
+                            pendingOrderRepository.save(targetPO);
+
+                            updatedCount++;
+                            System.out.println("✅ [TrailingStop] " + symbol + " (CNC)" +
+                                    ": Updated primary sell to LTP ₹" + String.format("%.2f", ltp) +
+                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
+                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
+                        } else {
+                            failedCount++;
+                            System.err.println("❌ [TrailingStop] " + symbol + " (CNC): Failed to update primary sell");
+                        }
                     } else {
-                        failedCount++;
-                        System.err.println("❌ [TrailingStop] " + symbol + ": Failed to update target order");
+                        // ===== INTRADAY/MIS: existing logic — update single target sell to LTP
+                        String oldOrderId = position.getTargetOrderId();
+                        String newOrderId = orderServiceV2.updateTargetOrder(
+                                symbol, ltp, qty, oldOrderId, false, position.getStrategy());
+
+                        if (newOrderId != null) {
+                            position.setTargetOrderId(newOrderId);
+                            position.setTarget(ltp);
+                            positionManager.updatePosition(position);
+
+                            updatedCount++;
+                            System.out.println("✅ [TrailingStop] " + symbol +
+                                    ": Updated target to LTP ₹" + String.format("%.2f", ltp) +
+                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
+                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
+                        } else {
+                            failedCount++;
+                            System.err.println("❌ [TrailingStop] " + symbol + ": Failed to update target order");
+                        }
                     }
 
                     Thread.sleep(100);

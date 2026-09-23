@@ -82,6 +82,7 @@ public class TradeEntryMetrics {
     private Integer daysToTarget;         // Set when position is sold
     private Double pnl;
     private String positionType; // Set when position is sold
+    private String broker;      // Which broker executed the trade (KITE/INDSTOCKS/SHOONYA)
     
     /**
      * Convert to CSV line for persistence
@@ -128,7 +129,8 @@ public class TradeEntryMetrics {
                atrTargetTouched + "," +
                nvl(daysToTarget) + "," +
                nvl(pnl)+ "," +
-                positionType
+                positionType + "," +
+                nvl(broker)
                 ;
     }
     
@@ -146,7 +148,7 @@ public class TradeEntryMetrics {
                "atr,atrPercent," +
                "openingRangeHigh,openingRangeLow,buyAboveOpeningRangeHigh," +
                "yesterdayHigh,buyAboveYesterdayHigh," +
-               "entryType,convertedToHolding,atrTarget,atrTargetTouched,daysToTarget,pnl,positionType";
+               "entryType,convertedToHolding,atrTarget,atrTargetTouched,daysToTarget,pnl,positionType,broker";
     }
 
     /**
@@ -161,7 +163,7 @@ public class TradeEntryMetrics {
             // Split by comma, handling quoted fields
             String[] parts = parseCsvLine(csvLine);
 
-            if (parts.length < 40) {
+            if (parts.length < 41) {
                 return null; // Invalid line
             }
 
@@ -208,6 +210,7 @@ public class TradeEntryMetrics {
                 .daysToTarget(parseIntegerOrNull(parts[39]))
                 .pnl(parseDoubleOrNull(parts[40]))
                 .positionType(parts.length>41 ? parts[41]: null)
+                .broker(parts.length>42 ? unquote(parts[42]) : null)
                 .build();
         } catch (Exception e) {
             // Log error and return null for invalid lines

@@ -1,55 +1,222 @@
 package com.satyam.trading2.controller;
 
+import com.satyam.trading2.broker.IndstocksBroker;
+import com.satyam.trading2.broker.ShoonyaBroker;
+import com.satyam.trading2.broker.auth.IndstocksInstrumentsService;
+import com.satyam.trading2.broker.auth.IndstocksTokenService;
+import com.satyam.trading2.broker.auth.ShoonyaOAuthService;
+import com.satyam.trading2.config.IndstocksConfig;
 import com.satyam.trading2.config.KiteAuthService;
+import com.satyam.trading2.config.KiteConfig;
+import com.satyam.trading2.config.ShoonyaConfig;
 import com.satyam.trading2.service.TradingOrchestrator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
-import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseBody;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 
 @Controller
 public class AuthController {
 
-    @Autowired
-    private TradingOrchestrator tradingOrchestrator;
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
     private final KiteAuthService authService;
+    private final KiteConfig kiteConfig;
 
-    public AuthController(KiteAuthService authService) {
+    // Conditional beans — only present when broker.*.enabled=true
+    @Autowired
+    private Optional<ShoonyaOAuthService> shoonyaOAuthService;
+    @Autowired
+    private Optional<IndstocksTokenService> indstocksTokenService;
+    @Autowired
+    private Optional<IndstocksInstrumentsService> indstocksInstrumentsService;
+    @Autowired
+    private Optional<ShoonyaBroker> shoonyaBroker;
+    @Autowired
+    private Optional<IndstocksBroker> indstocksBroker;
+    @Autowired
+    private Optional<ShoonyaConfig> shoonyaConfig;
+    @Autowired
+    private Optional<IndstocksConfig> indstocksConfig;
+
+    @Autowired
+    private TradingOrchestrator tradingOrchestrator;
+
+    public AuthController(KiteAuthService authService, KiteConfig kiteConfig) {
         this.authService = authService;
+        this.kiteConfig = kiteConfig;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // LOGIN PAGE — shows all brokers with their auth status
+    // ─────────────────────────────────────────────────────────────────────
+
     @GetMapping("/auth/login")
-    public String login() {
+    public String loginPage() {
+        return "login";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // KITE — redirect to Kite OAuth, then callback
+    // ─────────────────────────────────────────────────────────────────────
+
+    @GetMapping("/auth/kite")
+    public String kiteLogin() {
         return "redirect:" + authService.getLoginUrl();
     }
 
     @GetMapping("/auth/callback")
-    public String callback(
+    public String kiteCallback(
             @RequestParam(value = "request_token", required = false) String requestToken,
             @RequestParam(value = "status", required = false) String status,
-            Model model) {
+            Map<String, Object> model) {
 
         if ("success".equals(status) && requestToken != null) {
             boolean success = authService.exchangeToken(requestToken);
-            model.addAttribute("message",
-                    success ? "Login successful! Bot is now active." : "Token exchange failed. Please try again.");
-            model.addAttribute("success", success);
-            tradingOrchestrator.start(); // 🔥 START HERE
-        } else {
-            model.addAttribute("message", "Login failed or was cancelled.");
-            model.addAttribute("success", false);
+            if (success) {
+                tradingOrchestrator.start();
+                return "redirect:/auth/login?kite=success";
+            }
         }
-        return "redirect:/";
+        return "redirect:/auth/login?kite=failed";
     }
 
-    @GetMapping("/auth/logout")
-    public String logout() {
+    @PostMapping("/auth/kite/logout")
+    public String kiteLogout() {
         authService.logout();
-        return "redirect:/";
+        return "redirect:/auth/login";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // SHOONYA — redirect to OAuth authorize URL, then callback with code
+    // ─────────────────────────────────────────────────────────────────────
+
+    @GetMapping("/auth/shoonya")
+    public String shoonyaLogin() {
+        if (shoonyaOAuthService.isEmpty()) {
+            log.warn("[AuthController] Shoonya not enabled — cannot login");
+            return "redirect:/auth/login?shoonya=disabled";
+        }
+        // Redirect to Shoonya OAuth authorize URL.
+        // After login, Shoonya redirects back to /auth/login?code=<auth_code>
+        String url = shoonyaOAuthService.get().getAuthorizeUrl()
+                + "&redirect_uri=" + java.net.URLEncoder.encode(
+                        "http://localhost:8080/auth/login", java.nio.charset.StandardCharsets.UTF_8);
+        return "redirect:" + url;
+    }
+
+    @GetMapping("/auth/shoonya/callback")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> shoonyaCallback(@RequestParam("code") String authCode) {
+        Map<String, Object> response = new HashMap<>();
+        if (shoonyaOAuthService.isEmpty()) {
+            response.put("success", false);
+            response.put("message", "Shoonya not enabled");
+            return ResponseEntity.badRequest().body(response);
+        }
+        boolean success = shoonyaOAuthService.get().exchangeAuthCode(authCode);
+        if (success) {
+            // Start order updates WebSocket
+            shoonyaBroker.ifPresent(b -> {
+                try {
+                    b.startOrderUpdates();
+                    log.info("[AuthController] Shoonya order updates started");
+                } catch (Exception e) {
+                    log.error("[AuthController] Failed to start Shoonya order updates: {}", e.getMessage());
+                }
+            });
+            response.put("success", true);
+            response.put("message", "Shoonya authenticated successfully");
+        } else {
+            response.put("success", false);
+            response.put("message", "Token exchange failed");
+        }
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/auth/shoonya/logout")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> shoonyaLogout() {
+        shoonyaBroker.ifPresent(b -> b.stopOrderUpdates());
+        shoonyaConfig.ifPresent(c -> c.setAccessToken(null));
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        return ResponseEntity.ok(response);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // INDSTOCKS — TOTP auto-login (no redirect needed)
+    // ─────────────────────────────────────────────────────────────────────
+
+    @PostMapping("/auth/indstocks/token")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> indstocksToken() {
+        Map<String, Object> response = new HashMap<>();
+        if (indstocksTokenService.isEmpty()) {
+            response.put("success", false);
+            response.put("message", "INDstocks not enabled");
+            return ResponseEntity.badRequest().body(response);
+        }
+        boolean success = indstocksTokenService.get().generateToken();
+        if (success) {
+            // Populate instruments master + start order updates
+            indstocksInstrumentsService.ifPresent(svc -> {
+                try {
+                    int mapped = svc.populateInstruments();
+                    log.info("[AuthController] INDstocks instruments loaded: {} symbols", mapped);
+                } catch (Exception e) {
+                    log.error("[AuthController] Failed to load INDstocks instruments: {}", e.getMessage());
+                }
+            });
+            indstocksBroker.ifPresent(b -> {
+                try {
+                    b.startOrderUpdates();
+                    log.info("[AuthController] INDstocks order updates started");
+                } catch (Exception e) {
+                    log.error("[AuthController] Failed to start INDstocks order updates: {}", e.getMessage());
+                }
+            });
+            response.put("success", true);
+            response.put("message", "INDstocks authenticated, instruments loaded, order updates started");
+        } else {
+            response.put("success", false);
+            response.put("message", "TOTP token generation failed — check api.key, mpin, totp.secret in config");
+        }
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/auth/indstocks/logout")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> indstocksLogout() {
+        indstocksBroker.ifPresent(b -> b.stopOrderUpdates());
+        indstocksConfig.ifPresent(c -> c.setAccessToken(null));
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        return ResponseEntity.ok(response);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // AUTH STATUS — JSON endpoint for the login page to poll
+    // ─────────────────────────────────────────────────────────────────────
+
+    @GetMapping("/auth/status")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> authStatus() {
+        Map<String, Object> status = new HashMap<>();
+        status.put("kite", kiteConfig.isAuthenticated());
+        status.put("shoonya", shoonyaConfig.map(ShoonyaConfig::isAuthenticated).orElse(false));
+        status.put("shoonyaEnabled", shoonyaConfig.isPresent());
+        status.put("indstocks", indstocksConfig.map(IndstocksConfig::isAuthenticated).orElse(false));
+        status.put("indstocksEnabled", indstocksConfig.isPresent());
+        return ResponseEntity.ok(status);
     }
 }

@@ -1,20 +1,33 @@
 package com.satyam.trading2.scheduler;
 
+import com.satyam.trading2.broker.Broker;
+import com.satyam.trading2.broker.BrokerRouter;
+import com.satyam.trading2.broker.ExecutionRoute;
+import com.satyam.trading2.broker.model.BrokerFunds;
 import com.satyam.trading2.service.OrderServiceV2;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalTime;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class MarginFetchScheduler {
 
     private final OrderServiceV2 brokerService;
-    private static Map<String, Integer> MAX_CAPITAL_PER_STRATEGY = new HashMap<>();
+    private final BrokerRouter brokerRouter;
+
+    // strategy → max capital (Kite funds × time multiplier) — legacy global map
+    private static final Map<String, Double> MAX_CAPITAL_PER_STRATEGY = new ConcurrentHashMap<>();
+
+    // broker → available funds (cached, refreshed by setDailyBudgets)
+    private final Map<String, Double> brokerAvailableFunds = new ConcurrentHashMap<>();
 
 
     @Scheduled(cron = "0 0/10 9-15 * * *")
@@ -23,63 +36,108 @@ public class MarginFetchScheduler {
             Double availableFunds = brokerService.getMargin();
 
             if (availableFunds != null) {
-                // Determine multiplier for Momentum strategy based on time
-                LocalTime now = LocalTime.now();
-                double momentumMultiplier;
-                String timeSlot;
-
-                if (now.isBefore(LocalTime.of(10, 0))) {
-                    // 9:15 - 10:00 AM
-                    momentumMultiplier = 1.0;
-                    timeSlot = "9:15-10:00";
-                }  else if (now.isBefore(LocalTime.of(10, 30))) {
-                    // 10:00 - 10:30 AM (Peak)
-                    momentumMultiplier = 0.8;
-                    timeSlot = "10:00-10:30";
-                } else if (now.isBefore(LocalTime.of(11, 0))) {
-                    // 10:30 - 11:00 AM
-                    momentumMultiplier = 0.6;
-                    timeSlot = "10:30-11:00";
-                } else if (now.isBefore(LocalTime.of(11, 15))) {
-                    // 11:00 - 11:15 AM
-                    momentumMultiplier = 0.4;
-                    timeSlot = "11:00-11:15";
-                } else if (now.isBefore(LocalTime.of(11, 30))) {
-                    // 11:15 - 11:30 AM
-                    momentumMultiplier = 0.2;
-                    timeSlot = "11:15-11:30";
-                } else {
-                    // 11:30 AM and later
-                    momentumMultiplier = 0.1;
-                    timeSlot = "11:30+";
-                }
-
-                double momentumCapital = availableFunds * momentumMultiplier;
-
-                // Set budgets with time-based Momentum allocation
-                MAX_CAPITAL_PER_STRATEGY.put("Dip-Accumulator-Momentum", (int) momentumCapital);
-
-                // Log every 5 minutes (every 10th call at 30s interval)
-            //    if (System.currentTimeMillis() % 300000 < 30000) {
-                    System.out.println("💰 [MarginFetchScheduler] Available Funds: ₹" + String.format("%.0f", availableFunds) +
-                                     " | Time Slot: " + timeSlot +
-                                     " | Multiplier: " + (momentumMultiplier * 100) + "%" +
-                                     " | Momentum Budget: ₹" + String.format("%.0f", momentumCapital));
-                //}
-//                MAX_CAPITAL_PER_STRATEGY.put("Dip-Accumulator-NoRegime", (int) (momentumCapital * 0.3));
-//                MAX_CAPITAL_PER_STRATEGY.put("Dip-Accumulator-SmartBounce", (int) (momentumCapital * 0.3));
+                brokerAvailableFunds.put("KITE", availableFunds);
+                applyTimeBasedBudget("KITE", availableFunds);
             }
+
+            // Fetch funds from all other registered brokers (INDstocks, Shoonya)
+            for (Broker broker : brokerRouter.getAllBrokers()) {
+                String name = broker.getBrokerName();
+                if ("KITE".equals(name)) continue;
+                try {
+                    BrokerFunds funds = broker.getFunds();
+                    if (funds != null && funds.getAvailableMargin() > 0) {
+                        brokerAvailableFunds.put(name, funds.getAvailableMargin());
+                        // Per-broker budget uses the same time-based multiplier
+                        applyTimeBasedBudget(name, funds.getAvailableMargin());
+                    }
+                } catch (Exception e) {
+                    log.warn("[MarginFetchScheduler] Failed to fetch funds for {}: {}", name, e.getMessage());
+                }
+            }
+
         } catch (Exception e) {
-            System.out.println("❌ Failed to set daily budgets: " + e);
+            log.error("❌ Failed to set daily budgets: {}", e.getMessage());
         }
     }
 
+    /**
+     * Apply the time-based momentum multiplier to a broker's available funds
+     * and store the resulting budget keyed by broker::strategy.
+     */
+    private void applyTimeBasedBudget(String brokerName, double availableFunds) {
+        LocalTime now = LocalTime.now();
+        double multiplier;
+        String timeSlot;
+
+        if (now.isBefore(LocalTime.of(10, 0))) {
+            multiplier = 4.0; timeSlot = "9:15-10:00";
+        } else if (now.isBefore(LocalTime.of(10, 30))) {
+            multiplier = 2.0; timeSlot = "10:00-10:30";
+        } else if (now.isBefore(LocalTime.of(11, 0))) {
+            multiplier = 1.0; timeSlot = "10:30-11:00";
+        } else if (now.isBefore(LocalTime.of(11, 15))) {
+            multiplier = 0.6; timeSlot = "11:00-11:15";
+        } else if (now.isBefore(LocalTime.of(11, 30))) {
+            multiplier = 0.4; timeSlot = "11:15-11:30";
+        } else {
+            multiplier = 0.2; timeSlot = "11:30+";
+        }
+
+        double budget = availableFunds * multiplier;
+
+        // Per-broker+strategy budget: "KITE::Dip-Accumulator-Momentum" → budget
+        MAX_CAPITAL_PER_STRATEGY.put(brokerName + "::Dip-Accumulator-Momentum", budget);
+
+        // Also update the legacy global key (Kite only) for backward compat
+        if ("KITE".equals(brokerName)) {
+            MAX_CAPITAL_PER_STRATEGY.put("Dip-Accumulator-Momentum", budget);
+        }
+
+        System.out.println("💰 [MarginFetchScheduler] " + brokerName +
+                         " | Funds: ₹" + String.format("%.0f", availableFunds) +
+                         " | Slot: " + timeSlot +
+                         " | Mult: " + (multiplier * 100) + "%" +
+                         " | Budget: ₹" + String.format("%.0f", budget));
+    }
+
+    /**
+     * Legacy: max capital for a strategy (global, Kite-based).
+     * Kept for backward compat with callers that don't know the broker yet.
+     */
     public double getMaxCapitalPerStrategy(String name) {
-        Integer maxCapital = MAX_CAPITAL_PER_STRATEGY.get(name);
+        Double maxCapital = MAX_CAPITAL_PER_STRATEGY.get(name);
         if (maxCapital == null) {
-            System.out.println("⚠️ [RiskManager] Max capital not initialized for " + name + ", using default 330000");
             return 100000; // 1L default
         }
         return maxCapital;
+    }
+
+    /**
+     * Per-broker max capital for a strategy.
+     * Falls back to the broker's cached available funds (× time multiplier)
+     * if the scheduled budget hasn't been set yet.
+     */
+    public double getMaxCapitalPerStrategyAndBroker(String strategy, String broker) {
+        String b = broker != null ? broker : "KITE";
+        String key = b + "::" + strategy;
+        Double budget = MAX_CAPITAL_PER_STRATEGY.get(key);
+        if (budget != null) {
+            return budget;
+        }
+        // Fallback: use cached broker funds (if any) with a conservative 1× multiplier
+        Double funds = brokerAvailableFunds.get(b);
+        if (funds != null && funds > 0) {
+            return funds;
+        }
+        // Final fallback: Kite's global budget (so Kite-only setups still work)
+        Double kiteBudget = MAX_CAPITAL_PER_STRATEGY.get(strategy);
+        return kiteBudget != null ? kiteBudget : 100000;
+    }
+
+    /** Get the cached available funds for a specific broker. */
+    public double getAvailableFundsForBroker(String broker) {
+        String b = broker != null ? broker : "KITE";
+        return brokerAvailableFunds.getOrDefault(b, 0.0);
     }
 }

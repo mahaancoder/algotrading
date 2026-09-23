@@ -10,7 +10,7 @@ import lombok.Data;
 @Data
 @AllArgsConstructor
 public class SignalRecord {
-    
+
     private long timestamp;              // When signal was generated
     private String symbol;               // Stock symbol
     private String strategyName;         // Which strategy generated it
@@ -20,14 +20,19 @@ public class SignalRecord {
     private int quantity;                // Proposed quantity
     private String reason;               // Signal generation reason
     private EntryType entryType;         // Entry type (TOP_GAINER, TOP_LOSER, etc.)
-    
+
     // Execution status
     private boolean executed;            // Was the signal executed?
     private String rejectionReason;      // Why was it rejected (if not executed)
-    
+
     // Additional context
     private double capitalRequired;      // Capital needed for this signal
-    
+
+    // ===== Broker dimension (added in multi-broker refactor) =====
+    // Which broker the signal was routed to (for per-broker analytics).
+    // Null for legacy records and rejected signals that never reached a broker.
+    private String broker;
+
     public SignalRecord(TradeSignal signal, boolean executed, String rejectionReason, double capitalRequired) {
         this.timestamp = System.currentTimeMillis();
         this.symbol = signal.getSymbol();
@@ -41,6 +46,7 @@ public class SignalRecord {
         this.executed = executed;
         this.rejectionReason = rejectionReason;
         this.capitalRequired = capitalRequired;
+        this.broker = null; // set by caller after routing if executed
     }
     
     /**
@@ -59,7 +65,8 @@ public class SignalRecord {
                (entryType != null ? entryType : "UNKNOWN") + "," +
                executed + "," +
                (rejectionReason != null ? "\"" + rejectionReason.replace("\"", "\"\"") + "\"" : "") + "," +
-               capitalRequired;
+               capitalRequired + "," +
+               (broker != null ? broker : "");
     }
     
     /**
@@ -85,10 +92,12 @@ public class SignalRecord {
         boolean executed = Boolean.parseBoolean(parts[9]);
         String rejectionReason = parts[10].isEmpty() ? null : parts[10];
         double capitalRequired = Double.parseDouble(parts[11]);
-        
+        // broker is field 12 (0-indexed) — optional, null for old CSV lines
+        String broker = parts.length > 12 && !parts[12].isEmpty() ? parts[12] : null;
+
         return new SignalRecord(
             timestamp, symbol, strategyName, entryPrice, stopLoss, target,
-            quantity, reason, entryType, executed, rejectionReason, capitalRequired
+            quantity, reason, entryType, executed, rejectionReason, capitalRequired, broker
         );
     }
     

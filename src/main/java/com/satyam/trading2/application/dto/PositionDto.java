@@ -47,7 +47,10 @@ public class PositionDto {
 
     // Analytics: Entry type (TOP_GAINER, TOP_LOSER, ACCUMULATION)
     private String entryType;
-    
+
+    // Broker that owns this position (e.g. "KITE", "INDSTOCKS", "SHOONYA")
+    private String broker;
+
     /**
      * Create from Position entity for INTRADAY
      */
@@ -64,6 +67,7 @@ public class PositionDto {
                 .strategy(position.getStrategy())
                 .target(position.getTarget())
                 .entryType(position.getEntryType() != null ? position.getEntryType().name() : null)
+                .broker(position.getBroker() != null ? position.getBroker() : "KITE")
                 .build();
     }
 
@@ -83,6 +87,7 @@ public class PositionDto {
                 .strategy(position.getStrategy())
                 .target(position.getTarget())
                 .entryType(position.getEntryType() != null ? position.getEntryType().name() : null)
+                .broker(position.getBroker() != null ? position.getBroker() : "KITE")
                 .build();
     }
 }

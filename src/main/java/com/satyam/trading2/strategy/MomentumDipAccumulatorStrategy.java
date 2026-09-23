@@ -33,11 +33,17 @@ public class MomentumDipAccumulatorStrategy implements TradingStrategy {
     public TradeSignal evaluate(MarketContext ctx) {
 
         String symbol = ctx.getSymbol();
+
+        // ===== Broker-aware capital pre-check =====
+        // The strategy doesn't know which broker the signal will route to yet
+        // (that's decided by FilterEngine in OrderExecutionService). So we check
+        // against the MAX available funds across all brokers as a quick pre-filter.
+        // The real per-broker check happens in RiskManager.checkSignalSafety()
+        // after the broker is determined.
         double strategyIntradayCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(getName());
         double maxIntradayCapital = marginFetchScheduler.getMaxCapitalPerStrategy(getName());
         double availableFundsToTrade = maxIntradayCapital - strategyIntradayCapitalUsed;
         if (CAPITAL_PER_BUY > availableFundsToTrade) {
-//            System.out.println("🚫 [" + getName() + "] " + symbol + " - Insufficient capital: need ₹" + CAPITAL_PER_BUY + ", available ₹" + availableFundsToTrade);
             return null;
         }
 

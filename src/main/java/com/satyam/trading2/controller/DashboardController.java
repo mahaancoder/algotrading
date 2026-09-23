@@ -35,6 +35,9 @@ public class DashboardController {
     private ProductToggleService productToggleService;
 
     @Autowired
+    private BrokerToggleService brokerToggleService;
+
+    @Autowired
     private BroadcastService broadcastService;
 
     @Autowired
@@ -198,6 +201,41 @@ public class DashboardController {
         Map<String, Boolean> response = new HashMap<>();
         response.put("misEnabled", productToggleService.isMisEnabled());
         response.put("cncEnabled", productToggleService.isCncEnabled());
+        return ResponseEntity.ok(response);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  BROKER TOGGLE API (enable/disable trading per broker)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    @PostMapping("/api/broker/toggle")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> toggleBroker(@RequestParam String broker) {
+        com.satyam.trading2.broker.ExecutionRoute route;
+        try {
+            route = com.satyam.trading2.broker.ExecutionRoute.valueOf(broker.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("success", false);
+            err.put("message", "Unknown broker: " + broker);
+            return ResponseEntity.badRequest().body(err);
+        }
+        boolean newState = brokerToggleService.toggle(route);
+        broadcastService.broadcastBrokerToggle(route.name(), newState);
+        Map<String, Object> response = new HashMap<>();
+        response.put("broker", route.name());
+        response.put("enabled", newState);
+        response.put("message", newState
+                ? route + " trading ENABLED"
+                : route + " trading DISABLED — new buys will fall back to KITE");
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/api/broker/status")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> getBrokerStatus() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("brokers", brokerToggleService.getAllStates());
         return ResponseEntity.ok(response);
     }
 

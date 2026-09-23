@@ -86,7 +86,12 @@ public class OrderCompletionProcessor {
 
             if(position == null) {
                 System.out.println("Position not found, creating new position");
-                position = positionManager.createPosition(pendingOrder.getSymbol(), pendingOrder.getStrategy(), pendingOrder.getPositionType());
+                // Create with broker dimension from the pending order
+                String broker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+                com.satyam.trading2.broker.ExecutionRoute route = pendingOrder.getExecutionRoute() != null
+                        ? pendingOrder.getExecutionRoute() : com.satyam.trading2.broker.ExecutionRoute.KITE;
+                position = positionManager.createPosition(pendingOrder.getSymbol(), pendingOrder.getStrategy(),
+                        pendingOrder.getPositionType(), broker, route);
                 // Set entry type for new positions from pending order
                 if (pendingOrder.getEntryType() != null) {
                     position.setEntryType(pendingOrder.getEntryType());
@@ -129,68 +134,128 @@ public class OrderCompletionProcessor {
 
 //      4. TARGET ORDER MANAGEMENT
             boolean isHolding = position.getPositionType() == Position.PositionType.HOLDING;
-            // ✅ Use time-based multiplier for consistent target pricing
-            double target = com.satyam.trading2.helpers.TargetMultiplierHelper.calculateTargetPrice(newAvg, isHolding);
 
-            if (!isHolding) {
+            if (isHolding) {
+                // ===== CNC / HOLDING: Dual sell-order strategy =====
+                //
+                // Sell Order A ("holding target"):
+                //   qty  = total holdings (existing + new buy)
+                //   price = blended avg × 1.0003  (0.03% above blended avg)
+                //
+                // Sell Order B ("quick exit"):
+                //   qty  = new buy qty only
+                //   price = new buy avg × 1.01    (1% above new buy — same as MIS target)
+                //
+                // When either fills → cancel the other.
+
+                double blendedAvg = newAvg;  // already computed as weighted avg of old + new
+                double holdingTargetPrice = blendedAvg * 1.0003;
+                double quickExitPrice = pendingOrder.getAvgPrice() * 1.01;
+                int newBuyQty = pendingOrder.getFilledQty();
+
+                System.out.println("🎯 [OrderCompletionProcessor] CNC dual sell for " + pendingOrder.getSymbol() +
+                                 " | Blended avg: ₹" + String.format("%.2f", blendedAvg) +
+                                 " | Holding target: ₹" + String.format("%.2f", holdingTargetPrice) + " (qty=" + newQty + ")" +
+                                 " | Quick exit: ₹" + String.format("%.2f", quickExitPrice) + " (qty=" + newBuyQty + ")");
+
+                // --- Cancel any existing sell orders for this holding (both primary + secondary) ---
+                String oldTargetOrderId = position.getTargetOrderId();
+                String oldSecondaryOrderId = position.getSecondaryTargetOrderId();
+                if (oldTargetOrderId != null) {
+                    try { orderServiceV2.cancelOrder(oldTargetOrderId); } catch (Exception ignored) {}
+                }
+                if (oldSecondaryOrderId != null) {
+                    try { orderServiceV2.cancelOrder(oldSecondaryOrderId); } catch (Exception ignored) {}
+                }
+
+                // --- Sell Order A: holding target (total qty, 0.03% above blended avg) ---
+                if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), holdingTargetPrice)) {
+                    String holdingSellOrderId = orderServiceV2.updateTargetOrder(
+                            pendingOrder.getSymbol(), holdingTargetPrice, newQty, oldTargetOrderId, true, position.getStrategy());
+                    if (holdingSellOrderId != null) {
+                        position.setTargetOrderId(holdingSellOrderId);
+                        position.setTargetPlaced(true);
+                        PendingOrder targetPO = pendingOrderRepository.create(
+                                holdingSellOrderId, pendingOrder.getSymbol(), TradeSide.SELL,
+                                pendingOrder.getStrategy(), newQty, holdingTargetPrice, true);
+                        pendingOrderRepository.save(targetPO);
+                        System.out.println("✅ [OrderCompletionProcessor] Holding target sell placed: " + holdingSellOrderId +
+                                         " (qty=" + newQty + ", price=₹" + String.format("%.2f", holdingTargetPrice) + ")");
+                    } else {
+                        System.err.println("❌ [OrderCompletionProcessor] Holding target sell FAILED for " + pendingOrder.getSymbol());
+                        position.setTargetPlaced(false);
+                        position.setTargetOrderId(null);
+                    }
+                } else {
+                    System.out.println("🚫 [OrderCompletionProcessor] Holding target price hits circuit limit — skipping sell A");
+                    position.setTargetPlaced(false);
+                    position.setTargetOrderId(null);
+                }
+
+                // --- Sell Order B: quick exit (new buy qty only, 1% above new buy avg) ---
+                if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), quickExitPrice)) {
+                    String quickExitOrderId = orderServiceV2.placeOrder(
+                            pendingOrder.getSymbol(), "SELL", "LIMIT", newBuyQty, quickExitPrice, 0, "CNC", position.getStrategy());
+                    if (quickExitOrderId != null) {
+                        position.setSecondaryTargetOrderId(quickExitOrderId);
+                        position.setSecondaryTargetQty(newBuyQty);
+                        position.setSecondaryTargetPlaced(true);
+                        PendingOrder quickPO = pendingOrderRepository.create(
+                                quickExitOrderId, pendingOrder.getSymbol(), TradeSide.SELL,
+                                pendingOrder.getStrategy(), newBuyQty, quickExitPrice, true);
+                        pendingOrderRepository.save(quickPO);
+                        System.out.println("✅ [OrderCompletionProcessor] Quick-exit sell placed: " + quickExitOrderId +
+                                         " (qty=" + newBuyQty + ", price=₹" + String.format("%.2f", quickExitPrice) + ")");
+                    } else {
+                        System.err.println("❌ [OrderCompletionProcessor] Quick-exit sell FAILED for " + pendingOrder.getSymbol());
+                        position.setSecondaryTargetPlaced(false);
+                        position.setSecondaryTargetOrderId(null);
+                    }
+                } else {
+                    System.out.println("🚫 [OrderCompletionProcessor] Quick-exit price hits circuit limit — skipping sell B");
+                    position.setSecondaryTargetPlaced(false);
+                    position.setSecondaryTargetOrderId(null);
+                }
+
+            } else {
+                // ===== INTRADAY / MIS: Single target sell order (existing logic) =====
+                double target = com.satyam.trading2.helpers.TargetMultiplierHelper.calculateTargetPrice(newAvg, false);
                 String timeWindow = com.satyam.trading2.helpers.TargetMultiplierHelper.getCurrentTimeWindow();
                 System.out.println("🎯 [OrderCompletionProcessor] Target for " + pendingOrder.getSymbol() +
                                  " - Window: " + timeWindow + ", Target: ₹" + String.format("%.2f", target));
-            }
 
-            // ===== CIRCUIT LIMIT CHECK =====
-            if (!com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), target)) {
-                System.out.println("🚫 [OrderCompletionProcessor] SKIPPED placing target for " + pendingOrder.getSymbol() +
-                                 " - target would hit upper circuit limit. Target: ₹" + String.format("%.2f", target));
-                // Mark that target was intentionally not placed due to circuit limit
-                position.setTargetPlaced(false);
-                position.setTargetOrderId(null);
-            } else {
-                String oldTargetOrderId = position.getTargetOrderId();
-
-                // Log what we're about to do
-                if (oldTargetOrderId != null) {
-                    System.out.println("🔄 [OrderCompletionProcessor] Updating existing target order " + oldTargetOrderId +
-                                     " for " + pendingOrder.getSymbol() +
-                                     " with new qty=" + newQty + " and target=₹" + String.format("%.2f", target));
-                } else {
-                    System.out.println("🆕 [OrderCompletionProcessor] Creating new target order for " + pendingOrder.getSymbol() +
-                                     " with qty=" + newQty + " and target=₹" + String.format("%.2f", target));
-                }
-
-                String newTargetOrderId = orderServiceV2.updateTargetOrder(pendingOrder.getSymbol(), target, newQty, oldTargetOrderId, isHolding, position.getStrategy());
-                if(newTargetOrderId != null) {
-                    position.setTargetOrderId(newTargetOrderId);
-                    position.setTargetPlaced(true);
-
-                    // ✅ FIX: Create PendingOrder for target so webhook can find it
-                    PendingOrder targetPO = pendingOrderRepository.create(
-                            newTargetOrderId,
-                            pendingOrder.getSymbol(),
-                            TradeSide.SELL,
-                            pendingOrder.getStrategy(),
-                            newQty,
-                            target,
-                            isHolding
-                    );
-                    pendingOrderRepository.save(targetPO);
-                    System.out.println("✅ [OrderCompletionProcessor] Successfully placed target order " + newTargetOrderId +
-                                     " for " + pendingOrder.getSymbol() + " (qty=" + newQty + ", target=₹" + String.format("%.2f", target) + ")");
-                } else {
-                    // ❌ CRITICAL: Target order placement FAILED!
-                    System.err.println("❌❌❌ CRITICAL: Target order placement FAILED for " + pendingOrder.getSymbol());
-                    System.err.println("   Symbol: " + pendingOrder.getSymbol());
-                    System.err.println("   Strategy: " + pendingOrder.getStrategy());
-                    System.err.println("   Quantity: " + newQty);
-                    System.err.println("   Target Price: ₹" + String.format("%.2f", target));
-                    System.err.println("   Position Average: ₹" + String.format("%.2f", newAvg));
-                    System.err.println("   IS HOLDING: " + isHolding);
-                    System.err.println("⚠️ Position will be left WITHOUT a target order!");
-                    System.err.println("❌❌❌ Manual intervention may be required!");
-
-                    // Mark that target placement failed
+                if (!com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), target)) {
+                    System.out.println("🚫 [OrderCompletionProcessor] SKIPPED placing target for " + pendingOrder.getSymbol() +
+                                     " - target would hit upper circuit limit. Target: ₹" + String.format("%.2f", target));
                     position.setTargetPlaced(false);
                     position.setTargetOrderId(null);
+                } else {
+                    String oldTargetOrderId = position.getTargetOrderId();
+                    if (oldTargetOrderId != null) {
+                        System.out.println("🔄 [OrderCompletionProcessor] Updating existing target order " + oldTargetOrderId +
+                                         " for " + pendingOrder.getSymbol() +
+                                         " with new qty=" + newQty + " and target=₹" + String.format("%.2f", target));
+                    } else {
+                        System.out.println("🆕 [OrderCompletionProcessor] Creating new target order for " + pendingOrder.getSymbol() +
+                                         " with qty=" + newQty + " and target=₹" + String.format("%.2f", target));
+                    }
+
+                    String newTargetOrderId = orderServiceV2.updateTargetOrder(pendingOrder.getSymbol(), target, newQty, oldTargetOrderId, false, position.getStrategy());
+                    if(newTargetOrderId != null) {
+                        position.setTargetOrderId(newTargetOrderId);
+                        position.setTargetPlaced(true);
+                        PendingOrder targetPO = pendingOrderRepository.create(
+                                newTargetOrderId, pendingOrder.getSymbol(), TradeSide.SELL,
+                                pendingOrder.getStrategy(), newQty, target, false);
+                        pendingOrderRepository.save(targetPO);
+                        System.out.println("✅ [OrderCompletionProcessor] Successfully placed target order " + newTargetOrderId +
+                                         " for " + pendingOrder.getSymbol() + " (qty=" + newQty + ", target=₹" + String.format("%.2f", target) + ")");
+                    } else {
+                        System.err.println("❌❌❌ CRITICAL: Target order placement FAILED for " + pendingOrder.getSymbol());
+                        System.err.println("   Symbol: " + pendingOrder.getSymbol() + " | Qty: " + newQty + " | Target: ₹" + String.format("%.2f", target));
+                        position.setTargetPlaced(false);
+                        position.setTargetOrderId(null);
+                    }
                 }
             }
 
@@ -198,8 +263,10 @@ public class OrderCompletionProcessor {
             positionManager.updatePosition(position);
 
 //      5.5. CONFIRM CAPITAL USAGE (move from "reserved" to "used")
-            // This releases the reservation and the position is now counted via PositionManager
-            riskManager.confirmCapitalUsage(pendingOrder.getStrategy(), actualCapital);
+            // This releases the reservation and the position is now counted via PositionManager.
+            // Use the broker-aware overload (Decision #3: per-broker capital tracking).
+            String poBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+            riskManager.confirmCapitalUsage(pendingOrder.getStrategy(), actualCapital, poBroker);
             // Also release the per-symbol capital reservation
             riskManager.releaseCapitalForSymbol(pendingOrder.getSymbol(), actualCapital);
 
@@ -226,9 +293,12 @@ public class OrderCompletionProcessor {
             buyEvent.setPnl(0);
             buyEvent.setTime(System.currentTimeMillis());
             buyEvent.setEntryType(position.getEntryType());
+            buyEvent.setBroker(position.getBroker() != null ? position.getBroker() : "KITE");
             tradeJournalService.saveEvent(buyEvent);
 
             // ===== COLLECT TRADE METRICS =====
+            String metricsBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() :
+                    (position.getBroker() != null ? position.getBroker() : "KITE");
             tradeMetricsCollector.collectMetrics(
                 symbol,
                 pendingOrder.getStrategy(),
@@ -237,7 +307,8 @@ public class OrderCompletionProcessor {
                 pendingOrder.getOrderId(),
                 position.getEntryType(),
                 isHolding,
-                executionEngine.symbolMarketContext.get(symbol)
+                executionEngine.symbolMarketContext.get(symbol),
+                metricsBroker
             );
 
             // Broadcast using type-safe DTO
@@ -269,10 +340,37 @@ public class OrderCompletionProcessor {
             String symbol = pendingOrder.getSymbol();
             String strategy = pendingOrder.getStrategy();
 
+            // ===== Find position by primary OR secondary target order ID =====
             Position position = positionManager.findByTargetOrderId(sellOrderId);
+            boolean isSecondarySell = false;
+            if (position == null) {
+                position = positionManager.findBySecondaryTargetOrderId(sellOrderId);
+                isSecondarySell = (position != null);
+            }
             if(position==null) {
-                System.out.println("⚠️ Position not found for target order ID: " + sellOrderId + ", exiting");
+                System.out.println("⚠️ Position not found for sell order ID: " + sellOrderId + ", exiting");
                 return;
+            }
+
+            // ===== DUAL SELL-ORDER: Cancel the other sell order when one fills =====
+            if (position.getTargetOrderId() != null && position.getSecondaryTargetOrderId() != null) {
+                if (isSecondarySell) {
+                    // Quick-exit (secondary) filled → cancel the holding target (primary)
+                    String primaryOrderId = position.getTargetOrderId();
+                    System.out.println("🔗 [OrderCompletionProcessor] Quick-exit sell filled for " + symbol +
+                                     " → cancelling holding target sell " + primaryOrderId);
+                    try { orderServiceV2.cancelOrder(primaryOrderId); } catch (Exception e) {
+                        System.err.println("⚠️ Failed to cancel primary sell " + primaryOrderId + ": " + e.getMessage());
+                    }
+                } else {
+                    // Holding target (primary) filled → cancel the quick-exit (secondary)
+                    String secondaryOrderId = position.getSecondaryTargetOrderId();
+                    System.out.println("🔗 [OrderCompletionProcessor] Holding target sell filled for " + symbol +
+                                     " → cancelling quick-exit sell " + secondaryOrderId);
+                    try { orderServiceV2.cancelOrder(secondaryOrderId); } catch (Exception e) {
+                        System.err.println("⚠️ Failed to cancel secondary sell " + secondaryOrderId + ": " + e.getMessage());
+                    }
+                }
             }
 
             // Declare variables outside synchronized block so they're accessible later
@@ -296,7 +394,9 @@ public class OrderCompletionProcessor {
                 // Full exit
                 position.setOpen(false);
                 positionManager.updatePosition(position);
-                positionManager.removePosition(symbol, strategy);
+                // Broker-aware removal: use the position's broker dimension
+                String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
+                positionManager.removePosition(symbol, strategy, posBroker);
             } else {
                 // Partial exit
                 position.setTotalQuantity(position.getTotalQuantity() - soldQty);
@@ -306,8 +406,43 @@ public class OrderCompletionProcessor {
                 dipAccumulatorService.remove(symbol, strategy);
                 pendingOrder.markCompletionProcessed();
                 pendingOrderRepository.save(pendingOrder);
-                pnlCalculator.recordTrade(pnl, strategy);
-                Exits.markAsExitedToday(symbol, strategy);
+                String tradeBroker = position.getBroker() != null ? position.getBroker() : "KITE";
+                pnlCalculator.recordTrade(pnl, strategy, tradeBroker);
+                // Decision #1: price-aware exit — record buy price so re-entry
+                // is allowed only at a lower price (within or across brokers).
+                Exits.markAsExitedToday(symbol, strategy, buyPrice);
+
+                // ===== DUAL SELL: If quick-exit (secondary) filled, re-place a sell
+                // for the remaining holdings (since we cancelled the holding target).
+                // The remaining qty = total - secondaryTargetQty.
+                if (isSecondarySell && position.isOpen()) {
+                    int remainingQty = position.getTotalQuantity(); // already reduced by partial exit
+                    if (remainingQty > 0) {
+                        double remainingAvg = position.getAveragePrice();
+                        double newHoldingTarget = remainingAvg * 1.0003; // 0.03% above remaining avg
+                        System.out.println("🔄 [OrderCompletionProcessor] Re-placing holding sell for " + symbol +
+                                         " (remaining qty=" + remainingQty + ", target=₹" + String.format("%.2f", newHoldingTarget) + ")");
+                        String newSellOrderId = orderServiceV2.placeOrder(
+                                symbol, "SELL", "LIMIT", remainingQty, newHoldingTarget, 0, "CNC", strategy);
+                        if (newSellOrderId != null) {
+                            position.setTargetOrderId(newSellOrderId);
+                            position.setTargetPlaced(true);
+                            position.setSecondaryTargetOrderId(null);
+                            position.setSecondaryTargetPlaced(false);
+                            positionManager.updatePosition(position);
+                            PendingOrder newTargetPO = pendingOrderRepository.create(
+                                    newSellOrderId, symbol, TradeSide.SELL, strategy,
+                                    remainingQty, newHoldingTarget, true);
+                            pendingOrderRepository.save(newTargetPO);
+                            System.out.println("✅ [OrderCompletionProcessor] Re-placed holding sell: " + newSellOrderId);
+                        }
+                    }
+                } else {
+                    // Holding target (primary) filled or single sell — clear secondary
+                    position.setSecondaryTargetOrderId(null);
+                    position.setSecondaryTargetPlaced(false);
+                    positionManager.updatePosition(position);
+                }
             } // End synchronized block - critical section complete
 
             long timestamp = System.currentTimeMillis();
@@ -329,7 +464,8 @@ public class OrderCompletionProcessor {
                 timestamp,
                 position.getEntryType() != null ? position.getEntryType() : EntryType.UNKNOWN,
                 position.isConvertedToHolding(),
-                holdingDuration
+                holdingDuration,
+                position.getBroker() != null ? position.getBroker() : "KITE"
             );
             tradeJournalService.saveTrade(record);
 
@@ -349,6 +485,10 @@ public class OrderCompletionProcessor {
             String entryType = position.getEntryType() != null ? position.getEntryType().name() : null;
             broadcastService.broadcastSell(symbol, strategy, buyPrice, sellPrice, soldQty, pnl, "morning/evening checks", entryType);
             broadcastService.broadcastStrategyPnL(strategy, pnlCalculator.getStrategyPnL(strategy));
+            // Broadcast per-broker P&L so the dashboard Broker P&L section updates live
+            for (Map.Entry<String, Double> bpnl : pnlCalculator.getAllBrokerPnLs().entrySet()) {
+                broadcastService.broadcastBrokerPnL(bpnl.getKey(), bpnl.getValue());
+            }
             broadcastPnL();
             broadcastTodaysPnL();
             broadcastRisk();
@@ -368,6 +508,7 @@ public class OrderCompletionProcessor {
             sellEvent.setQty(soldQty);
             sellEvent.setPnl(pnl);
             sellEvent.setTime(System.currentTimeMillis());
+            sellEvent.setBroker(position.getBroker() != null ? position.getBroker() : "KITE");
             tradeJournalService.saveEvent(sellEvent);
 
         } catch (Exception e) {
