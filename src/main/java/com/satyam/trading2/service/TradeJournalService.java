@@ -118,6 +118,7 @@ public class TradeJournalService {
                 if (p.length < 6) {
                     continue;
                 }
+                try {
                 String symbol = p[0].trim();
                 String strategy = p[1].trim();
                 double entryPrice = Double.parseDouble(p[2].trim());
@@ -167,6 +168,9 @@ public class TradeJournalService {
                 pnlCalculator.restoreBrokerPnL(broker, pnl);
 
                 count++;
+                } catch (Exception rowEx) {
+                    System.out.println("⚠️ Skipping malformed trade row: " + line + " (" + rowEx.getMessage() + ")");
+                }
             }
 
             // ⚠️ MEMORY FIX: Only keep last MAX_TRADES_IN_MEMORY trades in memory
@@ -277,6 +281,7 @@ public class TradeJournalService {
             while((line=br.readLine())!=null){
                 String[] p = line.split(",");
                 if(p.length < 7) continue;
+                try {
                 TradeEvent e = new TradeEvent();
                 e.setTime(Long.parseLong(p[0]));
                 e.setSymbol(p[1]);
@@ -303,6 +308,9 @@ public class TradeJournalService {
                 }
 
                 allEvents.add(e);
+                } catch (Exception rowEx) {
+                    System.out.println("⚠️ Skipping malformed event row: " + line + " (" + rowEx.getMessage() + ")");
+                }
             }
 
             // ⚠️ MEMORY FIX: Only keep last MAX_EVENTS_IN_MEMORY events in memory
