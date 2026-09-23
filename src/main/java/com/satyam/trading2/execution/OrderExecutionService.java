@@ -165,6 +165,12 @@ public class OrderExecutionService {
         Broker broker = brokerRouter.getBrokerWithFallback(route);
         String brokerName = broker.getBrokerName();
 
+        // Visibility into every routing decision: which broker a BUY was sent to
+        // and why (entryType drives the Group1/Group2 filter). Helps diagnose
+        // why orders do/don't reach INDSTOCKS/SHOONYA vs the KITE fallback.
+        log.info("🧭 [Routing] {} {} entryType={} → route={} broker={}",
+                strategy, symbol, signal.getEntryType(), route, brokerName);
+
         // ===== STEP 2.5: RISK CHECK (broker-aware — checks per-broker + global capital) =====
         RiskManager.RiskCheckResult riskCheck = riskManager.checkSignalSafety(symbol, strategy, actualCapital, entry, state, isHolding, brokerName);
         if (!riskCheck.isSafe()) {

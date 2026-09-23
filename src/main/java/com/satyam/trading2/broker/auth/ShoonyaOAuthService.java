@@ -88,10 +88,13 @@ public class ShoonyaOAuthService {
                     + authCode;
             String checksum = sha256Hex(checksumInput);
 
+            // Finvasia's reference NorenRestApiOAuth.getAccessToken sends the
+            // checksum under the "checksum" field (not "appkey"); using "appkey"
+            // makes the server report "code or checksum is Missing".
             Map<String, String> payload = new HashMap<>();
             payload.put("uid", shoonyaConfig.getUserId());
             payload.put("code", authCode);
-            payload.put("appkey", checksum);
+            payload.put("checksum", checksum);
 
             // Shoonya's NorenWClientAPI expects the raw JSON as the jData form value
             // (NOT URL-encoded). URL-encoding it makes the server reject it with
@@ -107,7 +110,7 @@ public class ShoonyaOAuthService {
                     .build();
 
             java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofMillis(1000))
+                    .connectTimeout(java.time.Duration.ofMillis(5000))
                     .build();
 
             java.net.http.HttpResponse<String> response =
@@ -115,13 +118,20 @@ public class ShoonyaOAuthService {
             JsonNode json = objectMapper.readTree(response.body());
 
             String stat = json.has("stat") ? json.get("stat").asText() : "";
-            if ("Ok".equals(stat)) {
-                String accessToken = json.has("susertoken") ? json.get("susertoken").asText() : null;
-                if (accessToken != null && !accessToken.isEmpty()) {
-                    shoonyaConfig.setAccessToken(accessToken);
-                    log.info("[ShoonyaOAuthService] Access token obtained successfully via OAuth");
-                    return true;
-                }
+
+            // The GenAcsTok success response is token-bearing and may not carry
+            // stat=Ok; the token comes back as susertoken or access_token. Treat
+            // any non-empty token as success regardless of stat.
+            String accessToken = null;
+            if (json.has("susertoken") && !json.get("susertoken").asText().isEmpty()) {
+                accessToken = json.get("susertoken").asText();
+            } else if (json.has("access_token") && !json.get("access_token").asText().isEmpty()) {
+                accessToken = json.get("access_token").asText();
+            }
+            if (accessToken != null && !accessToken.isEmpty()) {
+                shoonyaConfig.setAccessToken(accessToken);
+                log.info("[ShoonyaOAuthService] Access token obtained successfully via OAuth");
+                return true;
             }
             String emsg = json.has("emsg") ? json.get("emsg").asText() : "unknown";
             lastError = "stat=" + (stat.isEmpty() ? "?" : stat) + ", emsg=" + emsg;

@@ -83,7 +83,7 @@ public class FilterEngine {
         LocalTime now = LocalTime.now();
         long minutesSinceOpen = java.time.Duration.between(MARKET_OPEN, now).toMinutes();
         if (minutesSinceOpen >= 0 && minutesSinceOpen <= 10) {
-            log.debug("[FilterEngine] {} → Group 1 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + {}min) → INDSTOCKS",
+            log.info("[FilterEngine] {} → Group 1 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + {}min) → INDSTOCKS",
                     signal.getSymbol(), minutesSinceOpen);
             return true;
         }
@@ -100,8 +100,9 @@ public class FilterEngine {
                 double openPrice = getOpenPrice(symbol, previousClose);
                 double gapPercent = ((openPrice - previousClose) / previousClose) * 100.0;
                 if (gapPercent <= 0.048) {
-                    log.debug("[FilterEngine] {} → Group 1 MATCH (Sub-filter B: Nifty5d={:.2f}% + gap={:.3f}% + ATR%={:.3f}) → INDSTOCKS",
-                            symbol, nifty5DayReturn, gapPercent, atrPercent);
+                    log.info("[FilterEngine] {} → Group 1 MATCH (Sub-filter B: Nifty5d={}% + gap={}% + ATR%={}) → INDSTOCKS",
+                            symbol, String.format("%.2f", nifty5DayReturn),
+                            String.format("%.3f", gapPercent), String.format("%.3f", atrPercent));
                     return true;
                 }
             }
@@ -113,8 +114,9 @@ public class FilterEngine {
             if (dayLow > 0) {
                 double distanceFromDayLow = ((signal.getEntryPrice() - dayLow) / dayLow) * 100.0;
                 if (distanceFromDayLow >= 0.213) {
-                    log.debug("[FilterEngine] {} → Group 1 MATCH (Sub-filter C: Nifty5d={:.2f}% + ATR%={:.3f} + distFromDayLow={:.3f}%) → INDSTOCKS",
-                            symbol, nifty5DayReturn, atrPercent, distanceFromDayLow);
+                    log.info("[FilterEngine] {} → Group 1 MATCH (Sub-filter C: Nifty5d={}% + ATR%={} + distFromDayLow={}%) → INDSTOCKS",
+                            symbol, String.format("%.2f", nifty5DayReturn),
+                            String.format("%.3f", atrPercent), String.format("%.3f", distanceFromDayLow));
                     return true;
                 }
             }
@@ -165,8 +167,8 @@ public class FilterEngine {
         // ── Sub-filter A: stock's relative strength (5-day return) >= 0.84% ──
         double fiveDayReturn = relativeStrengthService.getStockFiveDayReturn(symbol);
         if (fiveDayReturn >= 0.84) {
-            log.debug("[FilterEngine] {} → Group 2 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + RS={:.2f}%) → SHOONYA",
-                    symbol, fiveDayReturn);
+            log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + RS={}%) → SHOONYA",
+                    symbol, String.format("%.2f", fiveDayReturn));
             return true;
         }
 
@@ -177,8 +179,8 @@ public class FilterEngine {
 
         // ── Sub-filter B: Nifty 5-day return + ATR ──
         if (nifty5DayReturn >= 1.384 && atrPercent >= 0.169) {
-            log.debug("[FilterEngine] {} → Group 2 MATCH (Sub-filter B: Nifty5d={:.2f}% + ATR%={:.3f}) → SHOONYA",
-                    symbol, nifty5DayReturn, atrPercent);
+            log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter B: Nifty5d={}% + ATR%={}) → SHOONYA",
+                    symbol, String.format("%.2f", nifty5DayReturn), String.format("%.3f", atrPercent));
             return true;
         }
 
@@ -188,8 +190,9 @@ public class FilterEngine {
             if (dayLow > 0) {
                 double distanceFromDayLow = ((signal.getEntryPrice() - dayLow) / dayLow) * 100.0;
                 if (distanceFromDayLow >= 0.213) {
-                    log.debug("[FilterEngine] {} → Group 2 MATCH (Sub-filter C: Nifty5d={:.2f}% + ATR%={:.3f} + distFromDayLow={:.3f}%) → SHOONYA",
-                            symbol, nifty5DayReturn, atrPercent, distanceFromDayLow);
+                    log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter C: Nifty5d={}% + ATR%={} + distFromDayLow={}%) → SHOONYA",
+                            symbol, String.format("%.2f", nifty5DayReturn),
+                            String.format("%.3f", atrPercent), String.format("%.3f", distanceFromDayLow));
                     return true;
                 }
             }
@@ -207,8 +210,8 @@ public class FilterEngine {
         boolean g2 = matchesGroup2(signal);
         FilterResult result = FilterResult.from(g1, g2);
 
-        if (log.isDebugEnabled() && (g1 || g2)) {
-            log.debug("[FilterEngine] {} → Group1={} Group2={} → Route={}",
+        if (g1 || g2) {
+            log.info("[FilterEngine] {} → Group1={} Group2={} → Route={}",
                     signal.getSymbol(), g1, g2, result.getExecutionRoute());
         }
 
