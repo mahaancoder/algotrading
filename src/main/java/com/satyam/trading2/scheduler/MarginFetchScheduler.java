@@ -4,6 +4,7 @@ import com.satyam.trading2.broker.Broker;
 import com.satyam.trading2.broker.BrokerRouter;
 import com.satyam.trading2.broker.ExecutionRoute;
 import com.satyam.trading2.broker.model.BrokerFunds;
+import com.satyam.trading2.config.KiteConfig;
 import com.satyam.trading2.service.OrderServiceV2;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,7 @@ public class MarginFetchScheduler {
 
     private final OrderServiceV2 brokerService;
     private final BrokerRouter brokerRouter;
+    private final KiteConfig kiteConfig;
 
     // strategy → max capital (Kite funds × time multiplier) — legacy global map
     private static final Map<String, Double> MAX_CAPITAL_PER_STRATEGY = new ConcurrentHashMap<>();
@@ -30,14 +32,19 @@ public class MarginFetchScheduler {
     private final Map<String, Double> brokerAvailableFunds = new ConcurrentHashMap<>();
 
 
-    @Scheduled(cron = "0 0/10 9-15 * * *")
+    // Runs shortly after startup and then every 5 minutes, all day. This keeps
+    // the dashboard's available-margin cache populated even after market hours
+    // or after a restart, and retries until each broker is logged in.
+    @Scheduled(initialDelay = 30_000, fixedDelay = 300_000)
     public void setDailyBudgets() {
         try {
-            Double availableFunds = brokerService.getMargin();
-
-            if (availableFunds != null) {
-                brokerAvailableFunds.put("KITE", availableFunds);
-                applyTimeBasedBudget("KITE", availableFunds);
+            // Fetch Kite funds only when logged in (avoids noisy 401s off-hours)
+            if (kiteConfig.isAuthenticated()) {
+                Double availableFunds = brokerService.getMargin();
+                if (availableFunds != null) {
+                    brokerAvailableFunds.put("KITE", availableFunds);
+                    applyTimeBasedBudget("KITE", availableFunds);
+                }
             }
 
             // Fetch funds from all other registered brokers (INDstocks, Shoonya)
