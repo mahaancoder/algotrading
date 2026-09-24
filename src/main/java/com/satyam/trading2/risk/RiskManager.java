@@ -172,15 +172,16 @@ public class RiskManager {
         String b = broker != null ? broker : "KITE";
         String brokerStrategyKey = b + "::" + strategy;
 
-        // Per-broker check
+        // Per-broker check — use THIS broker's own budget (available funds × time
+        // multiplier), not the global Kite budget. Sourcing the cap from the global
+        // key let INDSTOCKS/SHOONYA orders reserve against Kite's funds and ignore
+        // their own available margin, so orders kept flowing past the broker's limit.
         double brokerStrategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategyAndBroker(strategy, b);
         double brokerReserved = reservedCapitalPerBrokerStrategy.getOrDefault(brokerStrategyKey, 0.0);
         double brokerCommitted = brokerStrategyCapitalUsed + brokerReserved;
 
-        // Max capital per strategy is still global for now (sourced from Kite margin).
-        // TODO: When each broker reports its own funds via BrokerFunds, use per-broker max.
-        double maxCapital = marginFetchScheduler.getMaxCapitalPerStrategy(strategy);
-        double brokerFundsAvailable = maxCapital - brokerCommitted;
+        double brokerMaxCapital = marginFetchScheduler.getMaxCapitalPerStrategyAndBroker(strategy, b);
+        double brokerFundsAvailable = brokerMaxCapital - brokerCommitted;
 
         if (capitalAmount > brokerFundsAvailable) {
             return false;
@@ -189,7 +190,8 @@ public class RiskManager {
         // Update per-broker+strategy map
         reservedCapitalPerBrokerStrategy.merge(brokerStrategyKey, capitalAmount, Double::sum);
 
-        // Also update the global strategy-level map (backward compat for dashboards)
+        // Global strategy-level safety net across all brokers (uses the global budget).
+        double maxCapital = marginFetchScheduler.getMaxCapitalPerStrategy(strategy);
         double globalStrategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(strategy);
         double globalReserved = reservedCapitalPerStrategy.getOrDefault(strategy, 0.0);
         double globalCommitted = globalStrategyCapitalUsed + globalReserved;
