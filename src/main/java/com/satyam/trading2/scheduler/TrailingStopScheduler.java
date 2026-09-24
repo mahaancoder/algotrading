@@ -57,7 +57,7 @@ public class TrailingStopScheduler {
             threshold = 0.4;
         }
 
-        System.out.println("🔄 [TrailingStop] Running at " + now + " - threshold: " + threshold + "%");
+//        System.out.println("🔄 [TrailingStop] Running at " + now + " - threshold: " + threshold + "%");
 
         reconciliationService.syncBrokerPositions(false);
         try {
@@ -74,7 +74,7 @@ public class TrailingStopScheduler {
 
             long intradayCount = openPositions.stream().filter(p -> p.getPositionType() == INTRADAY).count();
             long holdingCount = openPositions.stream().filter(p -> p.getPositionType() == HOLDING).count();
-            System.out.println("📊 [TrailingStop] Found " + intradayCount + " INTRADAY + " + holdingCount + " HOLDING positions");
+//            System.out.println("📊 [TrailingStop] Found " + intradayCount + " INTRADAY + " + holdingCount + " HOLDING positions");
 
             int updatedCount = 0;
             int skippedCount = 0;
@@ -134,10 +134,10 @@ public class TrailingStopScheduler {
                             pendingOrderRepository.save(targetPO);
 
                             updatedCount++;
-                            System.out.println("✅ [TrailingStop] " + symbol + " (CNC)" +
-                                    ": Updated primary sell to LTP ₹" + String.format("%.2f", ltp) +
-                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
-                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
+//                            System.out.println("✅ [TrailingStop] " + symbol + " (CNC)" +
+//                                    ": Updated primary sell to LTP ₹" + String.format("%.2f", ltp) +
+//                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
+//                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
                         } else {
                             failedCount++;
                             System.err.println("❌ [TrailingStop] " + symbol + " (CNC): Failed to update primary sell");
@@ -154,10 +154,10 @@ public class TrailingStopScheduler {
                             positionManager.updatePosition(position);
 
                             updatedCount++;
-                            System.out.println("✅ [TrailingStop] " + symbol +
-                                    ": Updated target to LTP ₹" + String.format("%.2f", ltp) +
-                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
-                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
+//                            System.out.println("✅ [TrailingStop] " + symbol +
+//                                    ": Updated target to LTP ₹" + String.format("%.2f", ltp) +
+//                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
+//                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
                         } else {
                             failedCount++;
                             System.err.println("❌ [TrailingStop] " + symbol + ": Failed to update target order");
@@ -177,7 +177,7 @@ public class TrailingStopScheduler {
                     "[TrailingStop] Complete - Updated: %d, Skipped: %d, Failed: %d",
                     updatedCount, skippedCount, failedCount
             );
-            System.out.println("📊 " + summary);
+//            System.out.println("📊 " + summary);
 
         } catch (Exception e) {
             System.err.println("❌ [TrailingStop] Error in updateTrailingStops: " + e.getMessage());

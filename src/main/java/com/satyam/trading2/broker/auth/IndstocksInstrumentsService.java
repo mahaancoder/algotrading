@@ -127,7 +127,7 @@ public class IndstocksInstrumentsService {
 
             // Build column index map from the header row. Tolerate quoted headers.
             String[] headers = headerLine.split(",");
-            int idxSecurityId = -1, idxSymbolName = -1, idxSeries = -1, idxExch = -1;
+            int idxSecurityId = -1, idxSymbolName = -1, idxSeries = -1, idxExch = -1, idxTradingSymbol = -1;
             for (int i = 0; i < headers.length; i++) {
                 String h = headers[i].trim().replaceAll("^\"|\"$", "").toUpperCase();
                 switch (h) {
@@ -135,16 +135,32 @@ public class IndstocksInstrumentsService {
                     case "SYMBOL_NAME":  idxSymbolName = i; break;
                     case "SERIES":       idxSeries = i; break;
                     case "EXCH":         idxExch = i; break;
+                    case "TRADING_SYMBOL":
+                    case "TRADINGSYMBOL":
+                    case "TRADESYMBOL":
+                    case "TSYM":
+                    case "SEM_TRADING_SYMBOL":
+                        idxTradingSymbol = i; break;
                 }
             }
             System.out.println("🔍 [IndstocksInstrumentsService] CSV header: " + headerLine);
             System.out.println("🔍 [IndstocksInstrumentsService] resolved indices → SECURITY_ID=" + idxSecurityId
-                    + " SYMBOL_NAME=" + idxSymbolName + " SERIES=" + idxSeries + " EXCH=" + idxExch);
-            if (idxSecurityId < 0 || idxSymbolName < 0) {
+                    + " TRADING_SYMBOL=" + idxTradingSymbol + " SYMBOL_NAME=" + idxSymbolName
+                    + " SERIES=" + idxSeries + " EXCH=" + idxExch);
+            if (idxSecurityId < 0 || (idxTradingSymbol < 0 && idxSymbolName < 0)) {
                 System.out.println("❌ [IndstocksInstrumentsService] CSV missing required columns "
-                        + "(SECURITY_ID/SYMBOL_NAME). Header: " + headerLine);
+                        + "(SECURITY_ID and one of TRADING_SYMBOL/SYMBOL_NAME). Header: " + headerLine);
                 return 0;
             }
+
+            // The watchlist (Nifty500Stocks.tradingSymbols) holds base NSE trading
+            // symbols like "HDFCBANK". In this CSV that is the TRADING_SYMBOL column;
+            // SYMBOL_NAME holds the full company name (e.g. "HDFC Bank Ltd"), which
+            // never matches the watchlist. Match TRADING_SYMBOL first, then fall
+            // back to SYMBOL_NAME for resilience.
+            java.util.List<Integer> symbolCols = new java.util.ArrayList<>();
+            if (idxTradingSymbol >= 0) symbolCols.add(idxTradingSymbol);
+            if (idxSymbolName >= 0 && idxSymbolName != idxTradingSymbol) symbolCols.add(idxSymbolName);
 
             java.util.Set<String> matched = new java.util.HashSet<>();
             java.util.List<String> sampleRows = new java.util.ArrayList<>();
@@ -157,9 +173,8 @@ public class IndstocksInstrumentsService {
                 if (sampleRows.size() < 3) sampleRows.add(line);
 
                 String[] cols = line.split(",");
-                if (cols.length <= Math.max(idxSecurityId, idxSymbolName)) continue;
+                if (cols.length <= idxSecurityId) continue;
 
-                String symbolName = cols[idxSymbolName].trim().replaceAll("^\"|\"$", "");
                 String securityId = cols[idxSecurityId].trim().replaceAll("^\"|\"$", "");
 
                 // Filter: only EQ series on NSE (if columns are present)
@@ -173,13 +188,26 @@ public class IndstocksInstrumentsService {
                     if (!"NSE".equalsIgnoreCase(exch)) continue;
                 }
                 afterExch++;
-                if (sampleSymbols.size() < 20) sampleSymbols.add(symbolName);
 
-                // Only register if the symbol is in our watchlist
-                if (Nifty500Stocks.tradingSymbols.contains(symbolName)) {
-                    indstocksBroker.registerSecurityId(symbolName, securityId);
-                    matched.add(symbolName);
-                    mapped++;
+                // Match the watchlist against the candidate symbol columns
+                // (TRADING_SYMBOL first, then SYMBOL_NAME). Normalize each value
+                // (uppercase, strip surrounding quotes and a trailing "-EQ") so it
+                // lines up with the watchlist and with resolveSecurityId's lookup.
+                boolean sampled = false;
+                for (int ci : symbolCols) {
+                    if (cols.length <= ci) continue;
+                    String candidate = cols[ci].trim().replaceAll("^\"|\"$", "").toUpperCase();
+                    if (candidate.endsWith("-EQ")) {
+                        candidate = candidate.substring(0, candidate.length() - 3);
+                    }
+                    if (candidate.isEmpty()) continue;
+                    if (!sampled && sampleSymbols.size() < 20) { sampleSymbols.add(candidate); sampled = true; }
+                    if (Nifty500Stocks.tradingSymbols.contains(candidate) && !matched.contains(candidate)) {
+                        indstocksBroker.registerSecurityId(candidate, securityId);
+                        matched.add(candidate);
+                        mapped++;
+                        break;
+                    }
                 }
             }
 
@@ -187,7 +215,7 @@ public class IndstocksInstrumentsService {
                     + " afterSeries(EQ)=" + afterSeries + " afterExch(NSE)=" + afterExch
                     + " matchedWatchlist=" + mapped);
             System.out.println("🔍 [IndstocksInstrumentsService] sample data rows: " + sampleRows);
-            System.out.println("🔍 [IndstocksInstrumentsService] sample post-filter SYMBOL_NAME values: " + sampleSymbols);
+            System.out.println("🔍 [IndstocksInstrumentsService] sample post-filter symbol values (TRADING_SYMBOL): " + sampleSymbols);
 
             // Diagnostic: if some watchlist symbols didn't match a CSV row, list a
             // sample so symbol-naming differences (e.g. M&M vs MM, BAJAJ-AUTO vs

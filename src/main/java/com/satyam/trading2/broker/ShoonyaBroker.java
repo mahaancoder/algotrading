@@ -82,7 +82,13 @@ public class ShoonyaBroker extends AbstractRestBroker {
             payload.put("tsym", toShoonyaSymbol(request.getSymbol()));
             payload.put("qty", String.valueOf(request.getQuantity()));
             payload.put("dscqty", "0");
-            payload.put("prc", String.valueOf(request.getPrice()));
+            // Snap limit price to tick size (same as the Kite path) so Shoonya
+            // doesn't reject with "price is not a multiple of tick size".
+            boolean isBuy = request.getTransactionType() == TransactionType.BUY;
+            String prc = (request.getOrderType() == OrderType.MARKET)
+                    ? String.valueOf(request.getPrice())
+                    : toTickPrice(request.getSymbol(), request.getPrice(), isBuy);
+            payload.put("prc", prc);
             payload.put("prd", toShoonyaProduct(request.getProductType()));
             payload.put("prctyp", toShoonyaOrderType(request.getOrderType()));
             payload.put("trantype", toShoonyaTranType(request.getTransactionType()));
@@ -100,7 +106,8 @@ public class ShoonyaBroker extends AbstractRestBroker {
             if (request.getOrderType() == OrderType.STOP_LOSS
                     || request.getOrderType() == OrderType.STOP_LOSS_MARKET) {
                 if (request.getTriggerPrice() != null) {
-                    payload.put("trgprc", String.valueOf(request.getTriggerPrice()));
+                    payload.put("trgprc",
+                            toTickPriceNearest(request.getSymbol(), request.getTriggerPrice()));
                 }
             }
 
@@ -190,7 +197,12 @@ public class ShoonyaBroker extends AbstractRestBroker {
             payload.put("exch", request.getExchange() != null ? request.getExchange() : "NSE");
             payload.put("tsym", toShoonyaSymbol(request.getSymbol()));
             payload.put("qty", String.valueOf(request.getQuantity()));
-            payload.put("prc", String.valueOf(request.getPrice()));
+            // Snap modified limit price to tick size (see placeOrder).
+            String mprc = (request.getOrderType() == OrderType.MARKET)
+                    ? String.valueOf(request.getPrice())
+                    : toTickPrice(request.getSymbol(), request.getPrice(),
+                            request.getTransactionType() == TransactionType.BUY);
+            payload.put("prc", mprc);
             payload.put("prctyp", toShoonyaOrderType(request.getOrderType()));
             payload.put("ret", "DAY");
 
@@ -262,7 +274,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             String jData = objectMapper.writeValueAsString(payload);
             String body = norenBody(jData);
 
-            JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "Limits", body);
+            JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "Limits", body, SLOW_REQUEST_TIMEOUT_MS);
             // Diagnostic: print the raw Limits response so a ₹0 dashboard can be
             // traced to an API error vs. a field-name mismatch (does NOT include
             // the jKey — only the balance payload).
@@ -275,21 +287,32 @@ public class ShoonyaBroker extends AbstractRestBroker {
                         .availableMargin(0).usedMargin(0).freeCash(0)
                         .build();
             }
-            // cash = total margin, marginused = used margin, freeCash = cash - marginused
+            // Noren /Limits balance model: funds can arrive via several credit
+            // fields (an account that deposited today shows the amount under
+            // 'payin', not 'cash'), so summing only 'cash' wrongly reads ₹0.
+            //   credit    = cash + payin + brkcollamt   (available capital in)
+            //   debit     = marginused + payout          (consumed / withdrawn)
+            //   available = credit - debit               (net deployable)
             double cash = doubleOr(resp, "cash", 0);
+            double payin = doubleOr(resp, "payin", 0);
+            double collateral = doubleOr(resp, "brkcollamt", 0);
+            double payout = doubleOr(resp, "payout", 0);
             double marginUsed = doubleOr(resp, "marginused", 0);
-            double freeCash = cash - marginUsed;
 
-            if (cash == 0) {
-                System.out.println("⚠️ [ShoonyaBroker] getFunds: 'cash' is 0 or absent — "
+            double credit = cash + payin + collateral;
+            double available = credit - marginUsed - payout;
+            if (available < 0) available = 0;
+
+            if (credit == 0) {
+                System.out.println("⚠️ [ShoonyaBroker] getFunds: no credit (cash/payin/brkcollamt all 0) — "
                         + "check field mapping against response above (stat=" + stat + ")");
             }
 
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
-                    .availableMargin(cash)
+                    .availableMargin(available)
                     .usedMargin(marginUsed)
-                    .freeCash(freeCash)
+                    .freeCash(available)
                     .build();
         } catch (Exception e) {
             System.out.println("❌ [ShoonyaBroker] getFunds exception: " + e.getMessage());

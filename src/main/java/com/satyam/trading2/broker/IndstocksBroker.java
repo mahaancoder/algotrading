@@ -179,7 +179,11 @@ public class IndstocksBroker extends AbstractRestBroker {
             payload.put("qty", request.getQuantity());
             payload.put("algo_id", indstocksConfig.getAlgoIdNse());
             if (request.getOrderType() == OrderType.LIMIT || request.getPrice() > 0) {
-                payload.put("limit_price", request.getPrice());
+                // Snap limit price to tick size (same as the Kite path) so INDstocks
+                // doesn't reject with "price is not a multiple of tick size".
+                boolean isBuy = request.getTransactionType() == TransactionType.BUY;
+                payload.put("limit_price",
+                        toTickPriceValue(request.getSymbol(), request.getPrice(), isBuy));
             }
             payload.put("is_amo", false);
             // remarks = strategy/signalId for reconciliation (max 100 chars)
@@ -343,7 +347,7 @@ public class IndstocksBroker extends AbstractRestBroker {
         }
         try {
             JsonNode resp = getJson(indstocksConfig.getBaseUrl() + "/funds",
-                    indstocksConfig.getAuthHeader());
+                    indstocksConfig.getAuthHeader(), SLOW_REQUEST_TIMEOUT_MS);
             // Diagnostic: print the raw funds response so a ₹0 dashboard can be
             // traced to an API error vs. a field-name mismatch (does NOT include
             // the auth token — only the balance payload).
@@ -365,24 +369,43 @@ public class IndstocksBroker extends AbstractRestBroker {
                         .availableMargin(0).usedMargin(0).freeCash(0)
                         .build();
             }
-            // sod_balance = start-of-day balance (total available margin)
-            // withdrawal_balance = free cash
-            // used = sod_balance - withdrawal_balance (approx, ignoring realized P&L)
+            // Funds model: an account funded intraday shows the deposit under
+            // 'funds_added' with 'sod_balance' still 0, while the live, net-of-used
+            // buying power per product sits in the nested 'detailed_avl_balance'
+            // (eq_cnc for delivery, eq_mis for intraday). Reading only 'sod_balance'
+            // therefore wrongly reports ₹0. Prefer the live equity balance, then
+            // fall back to sod_balance, then to funds_added.
             double sodBalance = doubleOr(data, "sod_balance", 0);
-            double withdrawalBalance = doubleOr(data, "withdrawal_balance", 0);
-            double usedMargin = sodBalance - withdrawalBalance;
+            double fundsAdded = doubleOr(data, "funds_added", 0);
+            double fundsWithdrawn = doubleOr(data, "funds_withdrawn", 0);
+
+            JsonNode avl = data.get("detailed_avl_balance");
+            double eqAvailable = 0;
+            if (avl != null) {
+                eqAvailable = doubleOr(avl, "eq_cnc", 0);
+                if (eqAvailable == 0) eqAvailable = doubleOr(avl, "eq_mis", 0);
+            }
+
+            // Net deployable balance (already net of any margin used by positions).
+            double available = eqAvailable > 0 ? eqAvailable
+                    : (sodBalance > 0 ? sodBalance : fundsAdded);
+
+            // Total capital in the account today; used margin is what's not available.
+            double totalCapital = sodBalance + fundsAdded - fundsWithdrawn;
+            double usedMargin = totalCapital - available;
             if (usedMargin < 0) usedMargin = 0;
 
-            if (sodBalance == 0) {
-                System.out.println("⚠️ [IndstocksBroker] getFunds: 'sod_balance' is 0 or absent — "
+            if (available == 0) {
+                System.out.println("⚠️ [IndstocksBroker] getFunds: no available balance found "
+                        + "(eq_cnc/eq_mis/sod_balance/funds_added all 0) — "
                         + "check field mapping against data node keys: " + fieldNames(data));
             }
 
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
-                    .availableMargin(sodBalance)
+                    .availableMargin(available)
                     .usedMargin(usedMargin)
-                    .freeCash(withdrawalBalance)
+                    .freeCash(available)
                     .build();
         } catch (Exception e) {
             System.out.println("❌ [IndstocksBroker] getFunds exception: " + e.getMessage());
