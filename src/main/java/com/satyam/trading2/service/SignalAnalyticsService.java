@@ -50,8 +50,8 @@ public class SignalAnalyticsService {
         String strategy = signal.getStrategyName();
         if (executed) {
             executedCountByStrategy.merge(strategy, 1, Integer::sum);
-            log.info("✅ Signal EXECUTED: {} @ {} - {} ({})",
-                signal.getSymbol(), signal.getEntryPrice(), signal.getReason(), strategy);
+//            log.info("✅ Signal EXECUTED: {} @ {} - {} ({})",
+//                signal.getSymbol(), signal.getEntryPrice(), signal.getReason(), strategy);
         } else {
             rejectedCountByStrategy.merge(strategy, 1, Integer::sum);
             if (rejectionReason != null) {

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.satyam.trading2.broker.model.BrokerOrderEvent;
 import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.config.IndstocksConfig;
-import lombok.extern.slf4j.Slf4j;
 
 /**
  * INDstocks order-update WebSocket client.
@@ -21,7 +20,6 @@ import lombok.extern.slf4j.Slf4j;
  * the frame is a quoted string that itself contains JSON. We handle that
  * double-encoding by detecting and unwrapping it.
  */
-@Slf4j
 public class IndstocksOrderWebSocketClient extends BrokerWebSocketClient {
 
     private final IndstocksConfig config;
@@ -57,6 +55,13 @@ public class IndstocksOrderWebSocketClient extends BrokerWebSocketClient {
     @Override
     protected void handleMessage(String text) {
         try {
+            // Log EVERY raw frame IND Money sends on this socket, so we can see
+            // whether the order-completed event actually arrives here and what
+            // shape it has (mode value, field names). Without this, a fill frame
+            // with an unexpected `mode` is dropped silently and the target SELL
+            // is never placed.
+            System.out.println("[INDSTOCKSWS] RAW frame: " + text);
+
             // INDstocks frames may be double-encoded: a JSON string containing JSON.
             // If the frame starts with a quote, unwrap it first.
             String jsonStr = text;
@@ -68,23 +73,33 @@ public class IndstocksOrderWebSocketClient extends BrokerWebSocketClient {
             String mode = msg.has("mode") ? msg.get("mode").asText() : "";
 
             if (!"order_update".equals(mode)) {
-                // Heartbeat or other message — ignore
-                log.debug("[INDSTOCKSWS] Ignoring non-order_update message: mode={}", mode);
+                // Not the expected order-update shape — log at INFO (not debug) so
+                // a fill event delivered under a different `mode` is visible instead
+                // of being dropped silently.
+                System.out.println("[INDSTOCKSWS] Ignoring non-order_update frame: mode='" + mode + "' | body=" + jsonStr);
                 return;
             }
 
             JsonNode data = msg.get("data");
             if (data == null) {
-                log.debug("[INDSTOCKSWS] order_update missing data field");
+                System.out.println("[INDSTOCKSWS] order_update missing data field: " + jsonStr);
                 return;
             }
 
             BrokerOrderEvent event = parseOrderUpdate(data);
             if (event != null && listener != null) {
+                System.out.println("[INDSTOCKSWS] Dispatching event → orderId=" + event.getBrokerOrderId()
+                        + " status=" + event.getStatus()
+                        + " filledQty=" + event.getFilledQuantity()
+                        + " avgPrice=" + event.getAveragePrice());
                 listener.onOrderEvent(event);
+            } else {
+                System.out.println("[INDSTOCKSWS] No event dispatched (event=" + (event != null)
+                        + ", listener=" + (listener != null) + ")");
             }
         } catch (Exception e) {
-            log.error("[INDSTOCKSWS] Parse error: {} | raw: {}", e.getMessage(), text);
+            System.out.println("[INDSTOCKSWS] Parse error: " + e.getMessage() + " | raw: " + text);
+            e.printStackTrace();
         }
     }
 
@@ -97,14 +112,14 @@ public class IndstocksOrderWebSocketClient extends BrokerWebSocketClient {
     private BrokerOrderEvent parseOrderUpdate(JsonNode data) {
         String orderId = textOr(data, "order_id", null);
         if (orderId == null) {
-            log.warn("[INDSTOCKSWS] order_update missing order_id: {}", data);
+            System.out.println("[INDSTOCKSWS] order_update missing order_id: " + data);
             return null;
         }
 
         String statusCode = textOr(data, "order_status", "");
         BrokerOrderStatus mappedStatus = mapIndStatus(statusCode);
         if (mappedStatus == null) {
-            log.debug("[INDSTOCKSWS] Unmapped status code '{}' for {}", statusCode, orderId);
+            System.out.println("[INDSTOCKSWS] Unmapped status code '" + statusCode + "' for " + orderId);
             return null;
         }
 

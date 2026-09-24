@@ -10,7 +10,6 @@ import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.service.DipAccumulatorService;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -34,7 +33,6 @@ import java.io.IOException;
  * early if already in that state, preventing duplicate processing of
  * duplicate broker events (common with WebSocket reconnects).
  */
-@Slf4j
 @Service
 @RequiredArgsConstructor
 public class BrokerOrderEventProcessor {
@@ -56,7 +54,7 @@ public class BrokerOrderEventProcessor {
 
     public void process(BrokerOrderEvent event) throws IOException {
         if (event == null || event.getBrokerOrderId() == null) {
-            log.warn("[BrokerOrderEventProcessor] Null event or brokerOrderId — ignoring");
+            System.out.println("[BrokerOrderEventProcessor] Null event or brokerOrderId — ignoring");
             return;
         }
 
@@ -66,13 +64,18 @@ public class BrokerOrderEventProcessor {
                 .orElse(null);
 
         if (pendingOrder == null) {
-            log.debug("[BrokerOrderEventProcessor] No PendingOrder for {}::{} — ignoring",
-                    broker, event.getBrokerOrderId());
+            // Visible (was DEBUG): a broker DID push an order update, but no stored
+            // PendingOrder matched (broker, brokerOrderId). For INDstocks this means the
+            // WS fill event arrived yet the buy's saved brokerOrderId differs from the
+            // order_id on the feed — so the position/target-sell chain never fires.
+            System.out.println("[BrokerOrderEventProcessor] No PendingOrder for " + broker + "::"
+                    + event.getBrokerOrderId() + " (status=" + event.getStatus()
+                    + ") — event received but unmatched, ignoring");
             return;
         }
 
-        log.info("[BrokerOrderEventProcessor] {} {} {} → status={}",
-                broker, pendingOrder.getSymbol(), event.getBrokerOrderId(), event.getStatus());
+        System.out.println("[BrokerOrderEventProcessor] " + broker + " " + pendingOrder.getSymbol() + " "
+                + event.getBrokerOrderId() + " → status=" + event.getStatus());
 
         switch (event.getStatus()) {
             case COMPLETE:
@@ -88,17 +91,18 @@ public class BrokerOrderEventProcessor {
                 break;
 
             case PARTIALLY_FILLED:
-                log.info("[BrokerOrderEventProcessor] Partially filled — ignoring for now: {} {}",
-                        pendingOrder.getSymbol(), event.getBrokerOrderId());
+                System.out.println("[BrokerOrderEventProcessor] Partially filled — ignoring for now: "
+                        + pendingOrder.getSymbol() + " " + event.getBrokerOrderId());
                 break;
 
             case OPEN:
-                log.debug("[BrokerOrderEventProcessor] OPEN — ignoring: {} {}", broker, event.getBrokerOrderId());
+                System.out.println("[BrokerOrderEventProcessor] OPEN — ignoring: " + broker + " "
+                        + event.getBrokerOrderId());
                 break;
 
             default:
-                log.warn("[BrokerOrderEventProcessor] Unknown status {} for {} {}",
-                        event.getStatus(), broker, event.getBrokerOrderId());
+                System.out.println("[BrokerOrderEventProcessor] Unknown status " + event.getStatus()
+                        + " for " + broker + " " + event.getBrokerOrderId());
         }
     }
 
@@ -106,8 +110,8 @@ public class BrokerOrderEventProcessor {
 
     private void handleComplete(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
         if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
-            log.debug("[BrokerOrderEventProcessor] Already COMPLETE — idempotency skip: {}",
-                    pendingOrder.getOrderId());
+            System.out.println("[BrokerOrderEventProcessor] Already COMPLETE — idempotency skip: "
+                    + pendingOrder.getOrderId());
             return;
         }
 
@@ -117,8 +121,8 @@ public class BrokerOrderEventProcessor {
         // Read side from the PendingOrder (source of truth), not the event
         TradeSide side = pendingOrder.getSide();
         if (side == null) {
-            log.error("[BrokerOrderEventProcessor] PendingOrder has null side — cannot dispatch: {}",
-                    pendingOrder.getOrderId());
+            System.out.println("[BrokerOrderEventProcessor] PendingOrder has null side — cannot dispatch: "
+                    + pendingOrder.getOrderId());
             return;
         }
 
