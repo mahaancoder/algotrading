@@ -90,7 +90,7 @@ public class TrailingStopScheduler {
                     double ltp = LatestPriceHelper.getLatestPrice(symbol);
 
                     if (ltp <= 0) {
-                        System.out.println("⚠️ [TrailingStop] " + symbol + ": LTP not available, skipping");
+//                        System.out.println("⚠️ [TrailingStop] " + symbol + ": LTP not available, skipping");
                         skippedCount++;
                         continue;
                     }

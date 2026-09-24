@@ -130,8 +130,8 @@ public class ReconciliationService {
 
                 if (ourPos == null) {
                     // Broker has position but we don't - add it
-                    System.out.println("⚠️ Broker has position " + symbol + " (" + strategy + ", " +
-                                     brokerPos.getPositionType() + ") but we don't. Adding to PositionManager.");
+//                    System.out.println("⚠️ Broker has position " + symbol + " (" + strategy + ", " +
+//                                     brokerPos.getPositionType() + ") but we don't. Adding to PositionManager.");
                     positionRepository.addPosition(brokerPos);
                 } else {
                     // Position exists in both - verify quantities match
@@ -160,8 +160,8 @@ public class ReconciliationService {
 
                 if (brokerPos == null) {
                     // We have position but broker doesn't - this position was likely exited
-                    System.out.println("⚠️ We have position " + symbol + " (" + strategy + ", " +
-                                     ourPos.getPositionType() + ") but broker doesn't. Removing from PositionManager.");
+//                    System.out.println("⚠️ We have position " + symbol + " (" + strategy + ", " +
+//                                     ourPos.getPositionType() + ") but broker doesn't. Removing from PositionManager.");
                     positionRepository.removePosition(symbol, ourPos.getStrategy());
                 }
             }

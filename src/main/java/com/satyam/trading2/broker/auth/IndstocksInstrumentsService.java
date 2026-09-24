@@ -120,11 +120,16 @@ public class IndstocksInstrumentsService {
             String headerLine = reader.readLine();
             if (headerLine == null) return 0;
 
-            // Build column index map from the header row
+            // Strip a UTF-8 BOM if present on the header line.
+            if (!headerLine.isEmpty() && headerLine.charAt(0) == '\uFEFF') {
+                headerLine = headerLine.substring(1);
+            }
+
+            // Build column index map from the header row. Tolerate quoted headers.
             String[] headers = headerLine.split(",");
             int idxSecurityId = -1, idxSymbolName = -1, idxSeries = -1, idxExch = -1;
             for (int i = 0; i < headers.length; i++) {
-                String h = headers[i].trim();
+                String h = headers[i].trim().replaceAll("^\"|\"$", "").toUpperCase();
                 switch (h) {
                     case "SECURITY_ID":  idxSecurityId = i; break;
                     case "SYMBOL_NAME":  idxSymbolName = i; break;
@@ -132,6 +137,9 @@ public class IndstocksInstrumentsService {
                     case "EXCH":         idxExch = i; break;
                 }
             }
+            System.out.println("🔍 [IndstocksInstrumentsService] CSV header: " + headerLine);
+            System.out.println("🔍 [IndstocksInstrumentsService] resolved indices → SECURITY_ID=" + idxSecurityId
+                    + " SYMBOL_NAME=" + idxSymbolName + " SERIES=" + idxSeries + " EXCH=" + idxExch);
             if (idxSecurityId < 0 || idxSymbolName < 0) {
                 System.out.println("❌ [IndstocksInstrumentsService] CSV missing required columns "
                         + "(SECURITY_ID/SYMBOL_NAME). Header: " + headerLine);
@@ -139,23 +147,33 @@ public class IndstocksInstrumentsService {
             }
 
             java.util.Set<String> matched = new java.util.HashSet<>();
+            java.util.List<String> sampleRows = new java.util.ArrayList<>();
+            java.util.List<String> sampleSymbols = new java.util.ArrayList<>();
+            int totalRows = 0, afterSeries = 0, afterExch = 0;
             String line;
             while ((line = reader.readLine()) != null) {
+                if (line.isEmpty()) continue;
+                totalRows++;
+                if (sampleRows.size() < 3) sampleRows.add(line);
+
                 String[] cols = line.split(",");
                 if (cols.length <= Math.max(idxSecurityId, idxSymbolName)) continue;
 
-                String symbolName = cols[idxSymbolName].trim();
-                String securityId = cols[idxSecurityId].trim();
+                String symbolName = cols[idxSymbolName].trim().replaceAll("^\"|\"$", "");
+                String securityId = cols[idxSecurityId].trim().replaceAll("^\"|\"$", "");
 
                 // Filter: only EQ series on NSE (if columns are present)
                 if (idxSeries >= 0 && cols.length > idxSeries) {
-                    String series = cols[idxSeries].trim();
-                    if (!"EQ".equals(series)) continue;
+                    String series = cols[idxSeries].trim().replaceAll("^\"|\"$", "");
+                    if (!"EQ".equalsIgnoreCase(series)) continue;
                 }
+                afterSeries++;
                 if (idxExch >= 0 && cols.length > idxExch) {
-                    String exch = cols[idxExch].trim();
-                    if (!"NSE".equals(exch)) continue;
+                    String exch = cols[idxExch].trim().replaceAll("^\"|\"$", "");
+                    if (!"NSE".equalsIgnoreCase(exch)) continue;
                 }
+                afterExch++;
+                if (sampleSymbols.size() < 20) sampleSymbols.add(symbolName);
 
                 // Only register if the symbol is in our watchlist
                 if (Nifty500Stocks.tradingSymbols.contains(symbolName)) {
@@ -164,6 +182,12 @@ public class IndstocksInstrumentsService {
                     mapped++;
                 }
             }
+
+            System.out.println("🔍 [IndstocksInstrumentsService] rows: total=" + totalRows
+                    + " afterSeries(EQ)=" + afterSeries + " afterExch(NSE)=" + afterExch
+                    + " matchedWatchlist=" + mapped);
+            System.out.println("🔍 [IndstocksInstrumentsService] sample data rows: " + sampleRows);
+            System.out.println("🔍 [IndstocksInstrumentsService] sample post-filter SYMBOL_NAME values: " + sampleSymbols);
 
             // Diagnostic: if some watchlist symbols didn't match a CSV row, list a
             // sample so symbol-naming differences (e.g. M&M vs MM, BAJAJ-AUTO vs

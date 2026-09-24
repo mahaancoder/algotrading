@@ -43,6 +43,7 @@ public class OrderCompletionProcessor {
     private final HoldingMetadataRepository holdingMetadataRepository;
     private final com.satyam.trading2.service.MarketContextBuilder marketContextBuilder;
     private final com.satyam.trading2.service.TradeMetricsCollector tradeMetricsCollector;
+    private final com.satyam.trading2.broker.BrokerRouter brokerRouter;
 
 
     // Async executor for non-blocking broadcasts
@@ -62,6 +63,100 @@ public class OrderCompletionProcessor {
             symbol + "_" + strategy,
             k -> new Object()
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Broker-aware sell/target placement.
+    //
+    // The buy for a Shoonya/INDstocks position is routed to that broker, so the
+    // corresponding target/exit sell must go to the SAME broker — not Kite.
+    // OrderServiceV2 is Kite-only, so KITE positions keep using it (preserving
+    // its update-target dedup logic); non-KITE positions route through
+    // BrokerRouter so the sell lands at the owning broker AND its fill event
+    // matches the PendingOrder keyed by (broker, brokerOrderId).
+    // ─────────────────────────────────────────────────────────────────────
+
+    private com.satyam.trading2.broker.ExecutionRoute routeOf(Position position) {
+        return position.getExecutionRoute() != null
+                ? position.getExecutionRoute() : com.satyam.trading2.broker.ExecutionRoute.KITE;
+    }
+
+    /** Cancel an order at the broker that owns the position. */
+    private void cancelViaBroker(Position position, String orderId) {
+        if (orderId == null) return;
+        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
+            orderServiceV2.cancelOrder(orderId);
+        } else {
+            brokerRouter.getBrokerWithFallback(routeOf(position)).cancelOrder(orderId);
+        }
+    }
+
+    /**
+     * Place/replace a TARGET sell. KITE keeps updateTargetOrder (which cancels the
+     * prior target and dedups holdings); non-KITE cancels the prior target then
+     * places a fresh LIMIT SELL at the owning broker.
+     * @return broker order id, or null on failure.
+     */
+    private String placeTargetSell(Position position, String symbol, double price, int qty,
+                                   String oldTargetOrderId, boolean isHolding, String strategy) {
+        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
+            return orderServiceV2.updateTargetOrder(symbol, price, qty, oldTargetOrderId, isHolding, strategy);
+        }
+        cancelViaBroker(position, oldTargetOrderId);
+        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+    }
+
+    /**
+     * Place a plain LIMIT SELL (no cancel-and-replace). Used for the CNC quick-exit
+     * order and the post-fill re-placed holding sell. KITE uses OrderServiceV2;
+     * non-KITE routes to the owning broker.
+     * @return broker order id, or null on failure.
+     */
+    private String placeLimitSell(Position position, String symbol, double price, int qty,
+                                  boolean isHolding, String strategy) {
+        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
+            return orderServiceV2.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0,
+                    isHolding ? "CNC" : "MIS", strategy);
+        }
+        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+    }
+
+    private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
+                                           boolean isHolding, String strategy) {
+        com.satyam.trading2.broker.ExecutionRoute route = routeOf(position);
+        com.satyam.trading2.broker.Broker broker = brokerRouter.getBrokerWithFallback(route);
+        com.satyam.trading2.broker.model.OrderRequest req =
+                com.satyam.trading2.broker.model.OrderRequest.builder()
+                        .symbol(symbol)
+                        .exchange("NSE")
+                        .transactionType(com.satyam.trading2.broker.model.TransactionType.SELL)
+                        .orderType(com.satyam.trading2.broker.model.OrderType.LIMIT)
+                        .quantity(qty)
+                        .price(price)
+                        .productType(isHolding
+                                ? com.satyam.trading2.broker.model.ProductType.DELIVERY
+                                : com.satyam.trading2.broker.model.ProductType.INTRADAY)
+                        .strategyId(strategy)
+                        .build();
+        com.satyam.trading2.broker.model.BrokerOrderResponse resp = broker.placeOrder(req);
+        if (resp != null && resp.isAccepted() && resp.getBrokerOrderId() != null) {
+            System.out.println("🎯 [OrderCompletionProcessor] " + route + " sell placed for " + symbol
+                    + " @ ₹" + String.format("%.2f", price) + " (qty=" + qty + ", id=" + resp.getBrokerOrderId() + ")");
+            return resp.getBrokerOrderId();
+        }
+        System.err.println("❌ [OrderCompletionProcessor] " + route + " sell REJECTED for " + symbol
+                + ": " + (resp != null ? resp.getRejectionReason() : "null response"));
+        return null;
+    }
+
+    /** Create a SELL PendingOrder tagged with the position's broker + route so the
+     *  fill event is matched by (broker, brokerOrderId). KITE positions record KITE. */
+    private PendingOrder createSellPending(Position position, String orderId, String symbol,
+                                           String strategy, int qty, double price, boolean isHolding) {
+        com.satyam.trading2.broker.ExecutionRoute route = routeOf(position);
+        String broker = position.getBroker() != null ? position.getBroker() : route.name();
+        return pendingOrderRepository.create(orderId, symbol, TradeSide.SELL, strategy,
+                qty, price, isHolding, broker, route, null);
     }
 
     public void onBuyCompleted(PendingOrder pendingOrder) throws IOException {
@@ -162,21 +257,21 @@ public class OrderCompletionProcessor {
                 String oldTargetOrderId = position.getTargetOrderId();
                 String oldSecondaryOrderId = position.getSecondaryTargetOrderId();
                 if (oldTargetOrderId != null) {
-                    try { orderServiceV2.cancelOrder(oldTargetOrderId); } catch (Exception ignored) {}
+                    try { cancelViaBroker(position, oldTargetOrderId); } catch (Exception ignored) {}
                 }
                 if (oldSecondaryOrderId != null) {
-                    try { orderServiceV2.cancelOrder(oldSecondaryOrderId); } catch (Exception ignored) {}
+                    try { cancelViaBroker(position, oldSecondaryOrderId); } catch (Exception ignored) {}
                 }
 
                 // --- Sell Order A: holding target (total qty, 0.03% above blended avg) ---
                 if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), holdingTargetPrice)) {
-                    String holdingSellOrderId = orderServiceV2.updateTargetOrder(
-                            pendingOrder.getSymbol(), holdingTargetPrice, newQty, oldTargetOrderId, true, position.getStrategy());
+                    String holdingSellOrderId = placeTargetSell(
+                            position, pendingOrder.getSymbol(), holdingTargetPrice, newQty, oldTargetOrderId, true, position.getStrategy());
                     if (holdingSellOrderId != null) {
                         position.setTargetOrderId(holdingSellOrderId);
                         position.setTargetPlaced(true);
-                        PendingOrder targetPO = pendingOrderRepository.create(
-                                holdingSellOrderId, pendingOrder.getSymbol(), TradeSide.SELL,
+                        PendingOrder targetPO = createSellPending(
+                                position, holdingSellOrderId, pendingOrder.getSymbol(),
                                 pendingOrder.getStrategy(), newQty, holdingTargetPrice, true);
                         pendingOrderRepository.save(targetPO);
                         System.out.println("✅ [OrderCompletionProcessor] Holding target sell placed: " + holdingSellOrderId +
@@ -194,14 +289,14 @@ public class OrderCompletionProcessor {
 
                 // --- Sell Order B: quick exit (new buy qty only, 1% above new buy avg) ---
                 if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), quickExitPrice)) {
-                    String quickExitOrderId = orderServiceV2.placeOrder(
-                            pendingOrder.getSymbol(), "SELL", "LIMIT", newBuyQty, quickExitPrice, 0, "CNC", position.getStrategy());
+                    String quickExitOrderId = placeLimitSell(
+                            position, pendingOrder.getSymbol(), quickExitPrice, newBuyQty, true, position.getStrategy());
                     if (quickExitOrderId != null) {
                         position.setSecondaryTargetOrderId(quickExitOrderId);
                         position.setSecondaryTargetQty(newBuyQty);
                         position.setSecondaryTargetPlaced(true);
-                        PendingOrder quickPO = pendingOrderRepository.create(
-                                quickExitOrderId, pendingOrder.getSymbol(), TradeSide.SELL,
+                        PendingOrder quickPO = createSellPending(
+                                position, quickExitOrderId, pendingOrder.getSymbol(),
                                 pendingOrder.getStrategy(), newBuyQty, quickExitPrice, true);
                         pendingOrderRepository.save(quickPO);
                         System.out.println("✅ [OrderCompletionProcessor] Quick-exit sell placed: " + quickExitOrderId +
@@ -240,12 +335,12 @@ public class OrderCompletionProcessor {
                                          " with qty=" + newQty + " and target=₹" + String.format("%.2f", target));
                     }
 
-                    String newTargetOrderId = orderServiceV2.updateTargetOrder(pendingOrder.getSymbol(), target, newQty, oldTargetOrderId, false, position.getStrategy());
+                    String newTargetOrderId = placeTargetSell(position, pendingOrder.getSymbol(), target, newQty, oldTargetOrderId, false, position.getStrategy());
                     if(newTargetOrderId != null) {
                         position.setTargetOrderId(newTargetOrderId);
                         position.setTargetPlaced(true);
-                        PendingOrder targetPO = pendingOrderRepository.create(
-                                newTargetOrderId, pendingOrder.getSymbol(), TradeSide.SELL,
+                        PendingOrder targetPO = createSellPending(
+                                position, newTargetOrderId, pendingOrder.getSymbol(),
                                 pendingOrder.getStrategy(), newQty, target, false);
                         pendingOrderRepository.save(targetPO);
                         System.out.println("✅ [OrderCompletionProcessor] Successfully placed target order " + newTargetOrderId +
@@ -359,7 +454,7 @@ public class OrderCompletionProcessor {
                     String primaryOrderId = position.getTargetOrderId();
                     System.out.println("🔗 [OrderCompletionProcessor] Quick-exit sell filled for " + symbol +
                                      " → cancelling holding target sell " + primaryOrderId);
-                    try { orderServiceV2.cancelOrder(primaryOrderId); } catch (Exception e) {
+                    try { cancelViaBroker(position, primaryOrderId); } catch (Exception e) {
                         System.err.println("⚠️ Failed to cancel primary sell " + primaryOrderId + ": " + e.getMessage());
                     }
                 } else {
@@ -367,7 +462,7 @@ public class OrderCompletionProcessor {
                     String secondaryOrderId = position.getSecondaryTargetOrderId();
                     System.out.println("🔗 [OrderCompletionProcessor] Holding target sell filled for " + symbol +
                                      " → cancelling quick-exit sell " + secondaryOrderId);
-                    try { orderServiceV2.cancelOrder(secondaryOrderId); } catch (Exception e) {
+                    try { cancelViaBroker(position, secondaryOrderId); } catch (Exception e) {
                         System.err.println("⚠️ Failed to cancel secondary sell " + secondaryOrderId + ": " + e.getMessage());
                     }
                 }
@@ -422,16 +517,16 @@ public class OrderCompletionProcessor {
                         double newHoldingTarget = remainingAvg * 1.0003; // 0.03% above remaining avg
                         System.out.println("🔄 [OrderCompletionProcessor] Re-placing holding sell for " + symbol +
                                          " (remaining qty=" + remainingQty + ", target=₹" + String.format("%.2f", newHoldingTarget) + ")");
-                        String newSellOrderId = orderServiceV2.placeOrder(
-                                symbol, "SELL", "LIMIT", remainingQty, newHoldingTarget, 0, "CNC", strategy);
+                        String newSellOrderId = placeLimitSell(
+                                position, symbol, newHoldingTarget, remainingQty, true, strategy);
                         if (newSellOrderId != null) {
                             position.setTargetOrderId(newSellOrderId);
                             position.setTargetPlaced(true);
                             position.setSecondaryTargetOrderId(null);
                             position.setSecondaryTargetPlaced(false);
                             positionManager.updatePosition(position);
-                            PendingOrder newTargetPO = pendingOrderRepository.create(
-                                    newSellOrderId, symbol, TradeSide.SELL, strategy,
+                            PendingOrder newTargetPO = createSellPending(
+                                    position, newSellOrderId, symbol, strategy,
                                     remainingQty, newHoldingTarget, true);
                             pendingOrderRepository.save(newTargetPO);
                             System.out.println("✅ [OrderCompletionProcessor] Re-placed holding sell: " + newSellOrderId);
