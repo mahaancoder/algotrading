@@ -115,6 +115,25 @@ public class IndstocksBroker extends AbstractRestBroker {
         return symbolToSecurityId.size();
     }
 
+    /**
+     * Resolve a symbol to its INDstocks security_id, tolerating minor format
+     * differences between the caller's symbol and the instruments-master key
+     * (SYMBOL_NAME): exact match first, then trimmed/upper-cased, then with a
+     * trailing "-EQ" stripped.
+     */
+    private String resolveSecurityId(String symbol) {
+        if (symbol == null) return null;
+        String s = symbolToSecurityId.get(symbol);
+        if (s != null) return s;
+        String norm = symbol.trim().toUpperCase();
+        s = symbolToSecurityId.get(norm);
+        if (s != null) return s;
+        if (norm.endsWith("-EQ")) {
+            s = symbolToSecurityId.get(norm.substring(0, norm.length() - 3));
+        }
+        return s;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // placeOrder — POST /order
     // ─────────────────────────────────────────────────────────────────────
@@ -129,11 +148,11 @@ public class IndstocksBroker extends AbstractRestBroker {
                     .build();
         }
 
-        String securityId = symbolToSecurityId.get(request.getSymbol());
+        String securityId = resolveSecurityId(request.getSymbol());
         if (securityId == null) {
             // Self-heal: try to populate the instruments master on-demand, then retry.
             ensureInstrumentsLoaded();
-            securityId = symbolToSecurityId.get(request.getSymbol());
+            securityId = resolveSecurityId(request.getSymbol());
         }
         if (securityId == null) {
             System.out.println("⚠️ [IndstocksBroker] No security_id mapped for symbol "
@@ -316,7 +335,7 @@ public class IndstocksBroker extends AbstractRestBroker {
     @Override
     public BrokerFunds getFunds() {
         if (!indstocksConfig.isAuthenticated()) {
-            log.warn("[IndstocksBroker] getFunds skipped — not authenticated");
+            System.out.println("⚠️ [IndstocksBroker] getFunds skipped — not authenticated (no access token set)");
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
                     .availableMargin(0).usedMargin(0).freeCash(0)
@@ -325,9 +344,14 @@ public class IndstocksBroker extends AbstractRestBroker {
         try {
             JsonNode resp = getJson(indstocksConfig.getBaseUrl() + "/funds",
                     indstocksConfig.getAuthHeader());
+            // Diagnostic: print the raw funds response so a ₹0 dashboard can be
+            // traced to an API error vs. a field-name mismatch (does NOT include
+            // the auth token — only the balance payload).
+            System.out.println("🔍 [IndstocksBroker] /funds raw response → " + resp);
             String status = textOr(resp, "status", "");
             if (!"success".equals(status)) {
-                log.warn("[IndstocksBroker] getFunds failed: {}", textOr(resp, "message", ""));
+                System.out.println("⚠️ [IndstocksBroker] getFunds failed: status=" + status
+                        + " message=" + textOr(resp, "message", ""));
                 return BrokerFunds.builder()
                         .brokerName(getBrokerName())
                         .availableMargin(0).usedMargin(0).freeCash(0)
@@ -335,6 +359,7 @@ public class IndstocksBroker extends AbstractRestBroker {
             }
             JsonNode data = resp.get("data");
             if (data == null) {
+                System.out.println("⚠️ [IndstocksBroker] getFunds: status=success but 'data' node missing");
                 return BrokerFunds.builder()
                         .brokerName(getBrokerName())
                         .availableMargin(0).usedMargin(0).freeCash(0)
@@ -348,6 +373,11 @@ public class IndstocksBroker extends AbstractRestBroker {
             double usedMargin = sodBalance - withdrawalBalance;
             if (usedMargin < 0) usedMargin = 0;
 
+            if (sodBalance == 0) {
+                System.out.println("⚠️ [IndstocksBroker] getFunds: 'sod_balance' is 0 or absent — "
+                        + "check field mapping against data node keys: " + fieldNames(data));
+            }
+
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
                     .availableMargin(sodBalance)
@@ -355,12 +385,24 @@ public class IndstocksBroker extends AbstractRestBroker {
                     .freeCash(withdrawalBalance)
                     .build();
         } catch (Exception e) {
+            System.out.println("❌ [IndstocksBroker] getFunds exception: " + e.getMessage());
             log.error("[IndstocksBroker] getFunds exception: {}", e.getMessage(), e);
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
                     .availableMargin(0).usedMargin(0).freeCash(0)
                     .build();
         }
+    }
+
+    /** Comma-joined top-level field names of a JSON node (for diagnostics). */
+    private static String fieldNames(JsonNode node) {
+        if (node == null) return "<null>";
+        StringBuilder sb = new StringBuilder();
+        node.fieldNames().forEachRemaining(n -> {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(n);
+        });
+        return sb.toString();
     }
 
     // ─────────────────────────────────────────────────────────────────────

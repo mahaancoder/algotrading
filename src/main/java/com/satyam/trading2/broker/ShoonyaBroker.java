@@ -16,8 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -106,7 +105,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             }
 
             String jData = objectMapper.writeValueAsString(payload);
-            String body = "jData=" + urlEncode(jData) + "&jKey=" + urlEncode(shoonyaConfig.getAccessToken());
+            String body = norenBody(jData);
 
             JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "PlaceOrder", body);
             String stat = textOr(resp, "stat", "");
@@ -160,7 +159,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             payload.put("norenordno", brokerOrderId);
 
             String jData = objectMapper.writeValueAsString(payload);
-            String body = "jData=" + urlEncode(jData) + "&jKey=" + urlEncode(shoonyaConfig.getAccessToken());
+            String body = norenBody(jData);
 
             JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "CancelOrder", body);
             String stat = textOr(resp, "stat", "");
@@ -196,7 +195,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             payload.put("ret", "DAY");
 
             String jData = objectMapper.writeValueAsString(payload);
-            String body = "jData=" + urlEncode(jData) + "&jKey=" + urlEncode(shoonyaConfig.getAccessToken());
+            String body = norenBody(jData);
 
             JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "ModifyOrder", body);
             String stat = textOr(resp, "stat", "");
@@ -226,7 +225,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             payload.put("norenordno", brokerOrderId);
 
             String jData = objectMapper.writeValueAsString(payload);
-            String body = "jData=" + urlEncode(jData) + "&jKey=" + urlEncode(shoonyaConfig.getAccessToken());
+            String body = norenBody(jData);
 
             JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "SingleOrdStatus", body);
             String stat = textOr(resp, "stat", "");
@@ -249,7 +248,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
     @Override
     public BrokerFunds getFunds() {
         if (!shoonyaConfig.isAuthenticated()) {
-            log.warn("[ShoonyaBroker] getFunds skipped — not authenticated");
+            System.out.println("⚠️ [ShoonyaBroker] getFunds skipped — not authenticated (no jKey set)");
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
                     .availableMargin(0).usedMargin(0).freeCash(0)
@@ -261,12 +260,16 @@ public class ShoonyaBroker extends AbstractRestBroker {
             payload.put("actid", shoonyaConfig.getActid());
 
             String jData = objectMapper.writeValueAsString(payload);
-            String body = "jData=" + urlEncode(jData) + "&jKey=" + urlEncode(shoonyaConfig.getAccessToken());
+            String body = norenBody(jData);
 
             JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "Limits", body);
+            // Diagnostic: print the raw Limits response so a ₹0 dashboard can be
+            // traced to an API error vs. a field-name mismatch (does NOT include
+            // the jKey — only the balance payload).
+            System.out.println("🔍 [ShoonyaBroker] /Limits raw response → " + resp);
             String stat = textOr(resp, "stat", "");
             if ("Not_Ok".equals(stat)) {
-                log.warn("[ShoonyaBroker] getFunds failed: {}", textOr(resp, "emsg", ""));
+                System.out.println("⚠️ [ShoonyaBroker] getFunds failed: " + textOr(resp, "emsg", ""));
                 return BrokerFunds.builder()
                         .brokerName(getBrokerName())
                         .availableMargin(0).usedMargin(0).freeCash(0)
@@ -277,6 +280,11 @@ public class ShoonyaBroker extends AbstractRestBroker {
             double marginUsed = doubleOr(resp, "marginused", 0);
             double freeCash = cash - marginUsed;
 
+            if (cash == 0) {
+                System.out.println("⚠️ [ShoonyaBroker] getFunds: 'cash' is 0 or absent — "
+                        + "check field mapping against response above (stat=" + stat + ")");
+            }
+
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
                     .availableMargin(cash)
@@ -284,6 +292,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
                     .freeCash(freeCash)
                     .build();
         } catch (Exception e) {
+            System.out.println("❌ [ShoonyaBroker] getFunds exception: " + e.getMessage());
             log.error("[ShoonyaBroker] getFunds exception: {}", e.getMessage(), e);
             return BrokerFunds.builder()
                     .brokerName(getBrokerName())
@@ -348,7 +357,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             posPayload.put("uid", shoonyaConfig.getUserId());
             posPayload.put("actid", shoonyaConfig.getActid());
             String posJData = objectMapper.writeValueAsString(posPayload);
-            String posBody = "jData=" + urlEncode(posJData) + "&jKey=" + urlEncode(shoonyaConfig.getAccessToken());
+            String posBody = norenBody(posJData);
 
             JsonNode posResp = postForm(shoonyaConfig.getBaseUrl() + "PositionBook", posBody);
             if (posResp.isArray()) {
@@ -361,7 +370,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             Map<String, String> ordPayload = new HashMap<>();
             ordPayload.put("uid", shoonyaConfig.getUserId());
             String ordJData = objectMapper.writeValueAsString(ordPayload);
-            String ordBody = "jData=" + urlEncode(ordJData) + "&jKey=" + urlEncode(shoonyaConfig.getAccessToken());
+            String ordBody = norenBody(ordJData);
 
             JsonNode ordResp = postForm(shoonyaConfig.getBaseUrl() + "OrderBook", ordBody);
             if (ordResp.isArray()) {
@@ -436,8 +445,15 @@ public class ShoonyaBroker extends AbstractRestBroker {
     // JSON helpers
     // ─────────────────────────────────────────────────────────────────────
 
-    private static String urlEncode(String s) {
-        return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    /**
+     * Build the Noren form body. The Noren API parses the substring after
+     * "jData=" directly as a JSON object, so jData must be the RAW JSON string
+     * — URL-encoding it makes the server reject it with
+     * "jData is not valid json object". jKey (the token) is alphanumeric and is
+     * likewise sent as-is.
+     */
+    private String norenBody(String jData) {
+        return "jData=" + jData + "&jKey=" + shoonyaConfig.getAccessToken();
     }
 
     private String textOr(JsonNode node, String field, String def) {

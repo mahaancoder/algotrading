@@ -82,20 +82,27 @@ public class IndstocksInstrumentsService {
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
-                log.error("[IndstocksInstrumentsService] Instruments fetch failed: HTTP {}",
-                        response.statusCode());
+                System.out.println("❌ [IndstocksInstrumentsService] Instruments fetch failed: HTTP "
+                        + response.statusCode() + " body=" + truncate(response.body(), 300));
                 return 0;
             }
 
             String csv = response.body();
             int mapped = parseAndRegister(csv);
-            log.info("[IndstocksInstrumentsService] Instruments master loaded: {} symbols mapped "
-                    + "out of {} watchlist symbols", mapped, Nifty500Stocks.tradingSymbols.size());
+            System.out.println("✅ [IndstocksInstrumentsService] Instruments master loaded: " + mapped
+                    + " symbols mapped out of " + Nifty500Stocks.tradingSymbols.size() + " watchlist symbols");
             return mapped;
         } catch (Exception e) {
+            System.out.println("❌ [IndstocksInstrumentsService] Instruments fetch exception: " + e.getMessage());
             log.error("[IndstocksInstrumentsService] Instruments fetch exception: {}", e.getMessage(), e);
             return 0;
         }
+    }
+
+    /** Truncate a string for safe diagnostic logging. */
+    private static String truncate(String s, int max) {
+        if (s == null) return "<null>";
+        return s.length() <= max ? s : s.substring(0, max) + "…";
     }
 
     /**
@@ -126,11 +133,12 @@ public class IndstocksInstrumentsService {
                 }
             }
             if (idxSecurityId < 0 || idxSymbolName < 0) {
-                log.error("[IndstocksInstrumentsService] CSV missing required columns. "
-                        + "Headers: {}", headerLine);
+                System.out.println("❌ [IndstocksInstrumentsService] CSV missing required columns "
+                        + "(SECURITY_ID/SYMBOL_NAME). Header: " + headerLine);
                 return 0;
             }
 
+            java.util.Set<String> matched = new java.util.HashSet<>();
             String line;
             while ((line = reader.readLine()) != null) {
                 String[] cols = line.split(",");
@@ -152,10 +160,29 @@ public class IndstocksInstrumentsService {
                 // Only register if the symbol is in our watchlist
                 if (Nifty500Stocks.tradingSymbols.contains(symbolName)) {
                     indstocksBroker.registerSecurityId(symbolName, securityId);
+                    matched.add(symbolName);
                     mapped++;
                 }
             }
+
+            // Diagnostic: if some watchlist symbols didn't match a CSV row, list a
+            // sample so symbol-naming differences (e.g. M&M vs MM, BAJAJ-AUTO vs
+            // BAJAJAUTO) are visible and fixable.
+            if (mapped < Nifty500Stocks.tradingSymbols.size()) {
+                StringBuilder sample = new StringBuilder();
+                int shown = 0;
+                for (String w : Nifty500Stocks.tradingSymbols) {
+                    if (!matched.contains(w)) {
+                        if (shown > 0) sample.append(", ");
+                        sample.append(w);
+                        if (++shown >= 15) break;
+                    }
+                }
+                System.out.println("⚠️ [IndstocksInstrumentsService] " + shown
+                        + "+ watchlist symbols not matched in CSV (sample): " + sample);
+            }
         } catch (Exception e) {
+            System.out.println("❌ [IndstocksInstrumentsService] CSV parse exception: " + e.getMessage());
             log.error("[IndstocksInstrumentsService] CSV parse exception: {}", e.getMessage(), e);
         }
         return mapped;
