@@ -6,6 +6,7 @@ import com.satyam.trading2.datamodel.Nifty500Stocks;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -39,6 +40,27 @@ public class IndstocksInstrumentsService {
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofMillis(2000))
             .build();
+
+    /**
+     * Self-heal: runs shortly after startup and every 5 minutes. If INDstocks is
+     * authenticated but no symbols are mapped yet (startup fetch failed, returned
+     * 0, or the token was set outside the /auth/indstocks/token flow), retry the
+     * instruments fetch so orders don't keep getting rejected with
+     * "No security_id mapped". No-op once the map is populated or when not
+     * authenticated.
+     */
+    @Scheduled(initialDelay = 45_000, fixedDelay = 300_000)
+    public void ensureInstrumentsPopulated() {
+        if (!indstocksConfig.isAuthenticated()) {
+            return;
+        }
+        if (indstocksBroker.getMappedSymbolCount() > 0) {
+            return;
+        }
+        System.out.println("🔄 [IndstocksInstrumentsService] Authenticated but 0 symbols mapped — retrying instruments fetch");
+        int mapped = populateInstruments();
+        System.out.println("🔄 [IndstocksInstrumentsService] Retry mapped " + mapped + " symbols");
+    }
 
     /**
      * Fetch the instruments CSV and populate the symbol→securityId map.

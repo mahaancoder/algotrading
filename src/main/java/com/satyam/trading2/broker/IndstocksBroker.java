@@ -10,10 +10,13 @@ import com.satyam.trading2.broker.model.ProductType;
 import com.satyam.trading2.broker.model.TransactionType;
 import com.satyam.trading2.broker.ws.BrokerOrderEventListener;
 import com.satyam.trading2.broker.ws.IndstocksOrderWebSocketClient;
+import com.satyam.trading2.broker.auth.IndstocksInstrumentsService;
 import com.satyam.trading2.config.IndstocksConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -54,6 +57,13 @@ public class IndstocksBroker extends AbstractRestBroker {
     private final IndstocksConfig indstocksConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
 
+    // Lazy to break the bean-creation cycle: IndstocksInstrumentsService already
+    // depends on IndstocksBroker (to register mappings). Only used at runtime for
+    // self-healing lazy population, never during construction.
+    @Lazy
+    @Autowired
+    private IndstocksInstrumentsService indstocksInstrumentsService;
+
     // symbol → INDstocks numeric security_id. Populated from instruments master.
     // E.g. "RELIANCE" → "2885". TODO: fetch from /instruments at startup.
     private final Map<String, String> symbolToSecurityId = new ConcurrentHashMap<>();
@@ -76,6 +86,35 @@ public class IndstocksBroker extends AbstractRestBroker {
         symbolToSecurityId.put(symbol, securityId);
     }
 
+    /** Number of symbol→securityId mappings currently loaded. 0 means the
+     *  instruments master hasn't been populated (orders will be rejected). */
+    public int getMappedSymbolCount() {
+        return symbolToSecurityId.size();
+    }
+
+    /**
+     * Self-healing: if the instruments map is empty but INDstocks is authenticated,
+     * try to populate it on-demand. This covers the case where the token was set
+     * outside the /auth/indstocks/token flow, or the startup fetch failed/returned 0.
+     * @return the map size after the attempt
+     */
+    private int ensureInstrumentsLoaded() {
+        if (!symbolToSecurityId.isEmpty()) {
+            return symbolToSecurityId.size();
+        }
+        if (indstocksInstrumentsService == null || !indstocksConfig.isAuthenticated()) {
+            return 0;
+        }
+        System.out.println("🔄 [IndstocksBroker] Instruments map empty — attempting lazy populate");
+        try {
+            int mapped = indstocksInstrumentsService.populateInstruments();
+            System.out.println("🔄 [IndstocksBroker] Lazy populate mapped " + mapped + " symbols");
+        } catch (Exception e) {
+            System.out.println("❌ [IndstocksBroker] Lazy populate failed: " + e.getMessage());
+        }
+        return symbolToSecurityId.size();
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // placeOrder — POST /order
     // ─────────────────────────────────────────────────────────────────────
@@ -92,7 +131,14 @@ public class IndstocksBroker extends AbstractRestBroker {
 
         String securityId = symbolToSecurityId.get(request.getSymbol());
         if (securityId == null) {
-            log.warn("[IndstocksBroker] No security_id mapped for symbol {}", request.getSymbol());
+            // Self-heal: try to populate the instruments master on-demand, then retry.
+            ensureInstrumentsLoaded();
+            securityId = symbolToSecurityId.get(request.getSymbol());
+        }
+        if (securityId == null) {
+            System.out.println("⚠️ [IndstocksBroker] No security_id mapped for symbol "
+                    + request.getSymbol() + " (mapped symbols in table: "
+                    + symbolToSecurityId.size() + ")");
             return BrokerOrderResponse.builder()
                     .brokerName(getBrokerName())
                     .accepted(false)

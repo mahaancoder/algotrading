@@ -53,13 +53,28 @@ public class MarginFetchScheduler {
                 if ("KITE".equals(name)) continue;
                 try {
                     BrokerFunds funds = broker.getFunds();
-                    if (funds != null && funds.getAvailableMargin() > 0) {
+                    if (funds == null) {
+                        System.out.println("⚠️ [MarginFetchScheduler] " + name
+                                + " | getFunds() returned null — skipping (likely not authenticated)");
+                        continue;
+                    }
+                    // Diagnostics: show exactly what the broker reported so a blank
+                    // dashboard can be traced to auth / API / field-mapping issues.
+                    System.out.println("💰 [MarginFetchScheduler] " + name
+                            + " | getFunds() → available=₹" + String.format("%.0f", funds.getAvailableMargin())
+                            + " used=₹" + String.format("%.0f", funds.getUsedMargin())
+                            + " freeCash=₹" + String.format("%.0f", funds.getFreeCash()));
+                    if (funds.getAvailableMargin() > 0) {
                         brokerAvailableFunds.put(name, funds.getAvailableMargin());
                         // Per-broker budget uses the same time-based multiplier
                         applyTimeBasedBudget(name, funds.getAvailableMargin());
+                    } else {
+                        System.out.println("⚠️ [MarginFetchScheduler] " + name
+                                + " | availableMargin is 0 — not caching (check auth / API status / funds field mapping)");
                     }
                 } catch (Exception e) {
-                    log.warn("[MarginFetchScheduler] Failed to fetch funds for {}: {}", name, e.getMessage());
+                    System.out.println("❌ [MarginFetchScheduler] Failed to fetch funds for "
+                            + name + ": " + e.getMessage());
                 }
             }
 
