@@ -101,7 +101,7 @@ public class EMAService {
             } catch (Exception e) {
                 failureCount++;
                 if (failureCount <= 5) { // Log only first 5 failures to avoid spam
-                    log.debug("Failed to calculate EMA for {}: {}", symbol, e.getMessage());
+//                    log.debug("Failed to calculate EMA for {}: {}", symbol, e.getMessage());
                 }
             }
         }
@@ -158,7 +158,7 @@ public class EMAService {
         } catch (KiteException | IOException e) {
             // Log first few errors to help debug issues
             if (totalErrorsLogged < 5) {
-                log.warn("Failed to calculate EMA for {}: {}", symbol, e.getMessage());
+//                log.warn("Failed to calculate EMA for {}: {}", symbol, e.getMessage());
                 totalErrorsLogged++;
             }
             return null;

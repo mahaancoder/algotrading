@@ -80,8 +80,8 @@ public class ReconciliationService {
                     .filter(p -> p.getPositionType() == Position.PositionType.INTRADAY) // Only MIS
                     .collect(java.util.stream.Collectors.toList());
 
-            System.out.println("🔍 [syncBrokerPositions] Broker positions (MIS only): " + brokerPositionsMISOnly.size() +
-                             ", Broker holdings (CNC): " + brokerHoldings.size());
+//            System.out.println("🔍 [syncBrokerPositions] Broker positions (MIS only): " + brokerPositionsMISOnly.size() +
+//                             ", Broker holdings (CNC): " + brokerHoldings.size());
 
             // Merge MIS positions + Holdings (no overlap now!)
             List<Position> allBrokerPositions = new ArrayList<>();
@@ -100,11 +100,11 @@ public class ReconciliationService {
                             p -> p,
                             (p1, p2) -> {
                                 // This should NOT happen after filtering - log if it does!
-                                log.warn("⚠️ [syncBrokerPositions] Unexpected duplicate broker position: {} ({}) - Type: {}, Qty: {}, Avg: {}",
-                                        p1.getSymbol(), p1.getStrategy(), p1.getPositionType(),
-                                        p1.getTotalQuantity(), p1.getAveragePrice());
-                                log.warn("   Duplicate 2: Type: {}, Qty: {}, Avg: {}",
-                                        p2.getPositionType(), p2.getTotalQuantity(), p2.getAveragePrice());
+//                                log.warn("⚠️ [syncBrokerPositions] Unexpected duplicate broker position: {} ({}) - Type: {}, Qty: {}, Avg: {}",
+//                                        p1.getSymbol(), p1.getStrategy(), p1.getPositionType(),
+//                                        p1.getTotalQuantity(), p1.getAveragePrice());
+//                                log.warn("   Duplicate 2: Type: {}, Qty: {}, Avg: {}",
+//                                        p2.getPositionType(), p2.getTotalQuantity(), p2.getAveragePrice());
                                 // Keep first one
                                 return p1;
                             }

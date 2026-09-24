@@ -138,13 +138,15 @@ public class OrderCompletionProcessor {
                                 : com.satyam.trading2.broker.model.ProductType.INTRADAY)
                         .strategyId(strategy)
                         .build();
+        System.out.println("🎯 [OrderCompletionProcessor] Placing " + (isHolding ? "DELIVERY" : "INTRADAY")
+                + " SELL via " + route + " for " + symbol + " qty=" + qty + " @ ₹" + String.format("%.2f", price));
         com.satyam.trading2.broker.model.BrokerOrderResponse resp = broker.placeOrder(req);
         if (resp != null && resp.isAccepted() && resp.getBrokerOrderId() != null) {
             System.out.println("🎯 [OrderCompletionProcessor] " + route + " sell placed for " + symbol
                     + " @ ₹" + String.format("%.2f", price) + " (qty=" + qty + ", id=" + resp.getBrokerOrderId() + ")");
             return resp.getBrokerOrderId();
         }
-        System.err.println("❌ [OrderCompletionProcessor] " + route + " sell REJECTED for " + symbol
+        System.out.println("❌ [OrderCompletionProcessor] " + route + " sell REJECTED for " + symbol
                 + ": " + (resp != null ? resp.getRejectionReason() : "null response"));
         return null;
     }
@@ -162,8 +164,12 @@ public class OrderCompletionProcessor {
     public void onBuyCompleted(PendingOrder pendingOrder) throws IOException {
         try {
             String orderId = pendingOrder.getOrderId();
+            System.out.println("✅ [OrderCompletionProcessor] onBuyCompleted " + pendingOrder.getSymbol()
+                    + " " + pendingOrder.getStrategy() + " broker=" + pendingOrder.getBroker()
+                    + " route=" + pendingOrder.getExecutionRoute() + " qty=" + pendingOrder.getFilledQty()
+                    + " @ ₹" + String.format("%.2f", pendingOrder.getAvgPrice()));
             if(!pendingOrder.isCompleted()) {
-                System.out.println("⚠️ Order not completed, exiting onBuyCompleted");
+                System.out.println("⚠️ [OrderCompletionProcessor] Order not completed, exiting onBuyCompleted: " + orderId);
                 return;
             }
 
@@ -316,23 +322,22 @@ public class OrderCompletionProcessor {
                 // ===== INTRADAY / MIS: Single target sell order (existing logic) =====
                 double target = com.satyam.trading2.helpers.TargetMultiplierHelper.calculateTargetPrice(newAvg, false);
                 String timeWindow = com.satyam.trading2.helpers.TargetMultiplierHelper.getCurrentTimeWindow();
-                System.out.println("🎯 [OrderCompletionProcessor] Target for " + pendingOrder.getSymbol() +
-                                 " - Window: " + timeWindow + ", Target: ₹" + String.format("%.2f", target));
+                System.out.println("🎯 [OrderCompletionProcessor] Target for " + pendingOrder.getSymbol()
+                        + " route=" + routeOf(position) + " - Window: " + timeWindow + ", Target: ₹" + String.format("%.2f", target));
 
                 if (!com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), target)) {
-                    System.out.println("🚫 [OrderCompletionProcessor] SKIPPED placing target for " + pendingOrder.getSymbol() +
-                                     " - target would hit upper circuit limit. Target: ₹" + String.format("%.2f", target));
+                    System.out.println("🚫 [OrderCompletionProcessor] SKIPPED placing target for " + pendingOrder.getSymbol()
+                            + " - target would hit upper circuit limit. Target: ₹" + String.format("%.2f", target));
                     position.setTargetPlaced(false);
                     position.setTargetOrderId(null);
                 } else {
                     String oldTargetOrderId = position.getTargetOrderId();
                     if (oldTargetOrderId != null) {
-                        System.out.println("🔄 [OrderCompletionProcessor] Updating existing target order " + oldTargetOrderId +
-                                         " for " + pendingOrder.getSymbol() +
-                                         " with new qty=" + newQty + " and target=₹" + String.format("%.2f", target));
+                        System.out.println("🔄 [OrderCompletionProcessor] Updating existing target order " + oldTargetOrderId
+                                + " for " + pendingOrder.getSymbol() + " with new qty=" + newQty + " and target=₹" + String.format("%.2f", target));
                     } else {
-                        System.out.println("🆕 [OrderCompletionProcessor] Creating new target order for " + pendingOrder.getSymbol() +
-                                         " with qty=" + newQty + " and target=₹" + String.format("%.2f", target));
+                        System.out.println("🆕 [OrderCompletionProcessor] Creating new target order for " + pendingOrder.getSymbol()
+                                + " with qty=" + newQty + " and target=₹" + String.format("%.2f", target));
                     }
 
                     String newTargetOrderId = placeTargetSell(position, pendingOrder.getSymbol(), target, newQty, oldTargetOrderId, false, position.getStrategy());
@@ -343,11 +348,11 @@ public class OrderCompletionProcessor {
                                 position, newTargetOrderId, pendingOrder.getSymbol(),
                                 pendingOrder.getStrategy(), newQty, target, false);
                         pendingOrderRepository.save(targetPO);
-                        System.out.println("✅ [OrderCompletionProcessor] Successfully placed target order " + newTargetOrderId +
-                                         " for " + pendingOrder.getSymbol() + " (qty=" + newQty + ", target=₹" + String.format("%.2f", target) + ")");
+                        System.out.println("✅ [OrderCompletionProcessor] Successfully placed target order " + newTargetOrderId
+                                + " for " + pendingOrder.getSymbol() + " (qty=" + newQty + ", target=₹" + String.format("%.2f", target) + ")");
                     } else {
-                        System.err.println("❌❌❌ CRITICAL: Target order placement FAILED for " + pendingOrder.getSymbol());
-                        System.err.println("   Symbol: " + pendingOrder.getSymbol() + " | Qty: " + newQty + " | Target: ₹" + String.format("%.2f", target));
+                        System.out.println("❌❌❌ CRITICAL: Target order placement FAILED for " + pendingOrder.getSymbol()
+                                + " | Qty: " + newQty + " | Target: ₹" + String.format("%.2f", target));
                         position.setTargetPlaced(false);
                         position.setTargetOrderId(null);
                     }
@@ -411,15 +416,10 @@ public class OrderCompletionProcessor {
             broadcastService.broadcastBuy(symbol, pendingOrder.getStrategy(), pendingOrder.getAvgPrice(), pendingOrder.getFilledQty(), entryType);
 
         } catch (Exception e) {
-            System.err.println("❌❌❌ EXCEPTION in onBuyCompleted ❌❌❌");
-            System.err.println("Order ID: " + pendingOrder.getOrderId());
-            System.err.println("Symbol: " + pendingOrder.getSymbol());
-            System.err.println("Strategy: " + pendingOrder.getStrategy());
-            System.err.println("Exception Type: " + e.getClass().getName());
-            System.err.println("Exception Message: " + e.getMessage());
-            System.err.println("Stack Trace:");
+            System.out.println("❌❌❌ EXCEPTION in onBuyCompleted for " + pendingOrder.getSymbol()
+                    + " " + pendingOrder.getStrategy() + " (orderId=" + pendingOrder.getOrderId()
+                    + "): " + e.getMessage());
             e.printStackTrace();
-            System.err.println("❌❌❌ END EXCEPTION ❌❌❌");
             throw e; // Re-throw so caller knows it failed
         }
     }
