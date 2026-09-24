@@ -155,9 +155,14 @@ public class IndstocksBroker extends AbstractRestBroker {
             securityId = resolveSecurityId(request.getSymbol());
         }
         if (securityId == null) {
-            System.out.println("⚠️ [IndstocksBroker] No security_id mapped for symbol "
-                    + request.getSymbol() + " (mapped symbols in table: "
-                    + symbolToSecurityId.size() + ")");
+            // Route through the SLF4J logger (not stdout) so this INDstocks-specific
+            // rejection is visible in the log file. An empty map here (count=0) means
+            // the instruments master never populated — that's why INDstocks orders
+            // silently never reached the broker while Kite/Shoonya (no security_id
+            // lookup) worked.
+            log.warn("⚠️ [IndstocksBroker] No security_id mapped for symbol {} "
+                    + "(mapped symbols in table: {}) — order will be rejected",
+                    request.getSymbol(), symbolToSecurityId.size());
             return BrokerOrderResponse.builder()
                     .brokerName(getBrokerName())
                     .accepted(false)

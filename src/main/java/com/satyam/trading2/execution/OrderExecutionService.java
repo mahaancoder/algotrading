@@ -162,7 +162,7 @@ public class OrderExecutionService {
         // (regardless of which broker group it would route to).
         String noTradeReason = filterEngine.getNoTradeRejectionReason(signal);
         if (noTradeReason != null) {
-            System.out.println("🚫 [NoTradeFilter] " + symbol + " rejected - " + noTradeReason);
+//            System.out.println("🚫 [NoTradeFilter] " + symbol + " rejected - " + noTradeReason);
             signalAnalyticsService.recordSignal(signal, false, noTradeReason, actualCapital);
             return;
         }
@@ -187,12 +187,14 @@ public class OrderExecutionService {
         RiskManager.RiskCheckResult riskCheck = riskManager.checkSignalSafety(symbol, strategy, actualCapital, entry, state, isHolding, brokerName);
         if (!riskCheck.isSafe()) {
             signalAnalyticsService.recordSignal(signal, false, riskCheck.getRejectionReason(), actualCapital);
+            System.out.println("very risky");
             return;
         }
 
         // ===== STEP 2.6: RESERVE CAPITAL (strategy level — broker-aware) =====
         if (!riskManager.reserveCapital(strategy, actualCapital, brokerName)) {
             signalAnalyticsService.recordSignal(signal, false, "Insufficient " + brokerName + " broker capital - budget exceeded", actualCapital);
+            System.out.println("less funds1");
             return;
         }
 
@@ -200,6 +202,7 @@ public class OrderExecutionService {
         if (!riskManager.reserveCapitalForSymbol(symbol, actualCapital)) {
             riskManager.releaseCapital(strategy, actualCapital, brokerName);
             signalAnalyticsService.recordSignal(signal, false, "Symbol capital limit - exceeds 50K per symbol", actualCapital);
+            System.out.println("less funds2");
             return;
         }
 
@@ -225,6 +228,12 @@ public class OrderExecutionService {
                 riskManager.releaseCapital(strategy, actualCapital, brokerName);
                 riskManager.releaseCapitalForSymbol(symbol, actualCapital);
                 String reason = response != null ? response.getRejectionReason() : "Broker returned null response";
+                // Surface EVERY broker rejection in the log. Previously this only
+                // recorded an analytics signal, so a rejected INDSTOCKS/SHOONYA order
+                // (e.g. "No security_id mapped") produced no log line at all — the
+                // "orders silently not reaching the broker" symptom.
+                log.warn("❌ [OrderExecution] {} {} order REJECTED by {} → {}",
+                        strategy, symbol, brokerName, reason);
                 signalAnalyticsService.recordSignal(signal, false, "Order placement failed - " + reason, actualCapital);
                 return;
             }

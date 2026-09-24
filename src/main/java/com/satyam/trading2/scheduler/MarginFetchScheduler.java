@@ -147,7 +147,7 @@ public class MarginFetchScheduler {
         } else if (now.isBefore(LocalTime.of(11, 30))) {
             return new SlotMultiplier(1.0, "11:15-11:30");
         } else {
-            return new SlotMultiplier(0.2, "11:30+");
+            return new SlotMultiplier(1.0, "11:30+");
         }
     }
 
