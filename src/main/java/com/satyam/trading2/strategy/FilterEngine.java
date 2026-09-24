@@ -101,8 +101,8 @@ public class FilterEngine {
         LocalTime now = LocalTime.now();
         long minutesSinceOpen = java.time.Duration.between(MARKET_OPEN, now).toMinutes();
         if (minutesSinceOpen >= 0 && minutesSinceOpen <= 10) {
-            System.out.println(String.format("[FilterEngine] %s → Group 1 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + %dmin) → INDSTOCKS",
-                    signal.getSymbol(), minutesSinceOpen));
+//            System.out.println(String.format("[FilterEngine] %s → Group 1 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + %dmin) → INDSTOCKS",
+//                    signal.getSymbol(), minutesSinceOpen));
             return true;
         }
 
@@ -118,9 +118,9 @@ public class FilterEngine {
                 double openPrice = getOpenPrice(symbol, previousClose);
                 double gapPercent = ((openPrice - previousClose) / previousClose) * 100.0;
                 if (gapPercent <= 0.048) {
-                    System.out.println(String.format("[FilterEngine] %s → Group 1 MATCH (Sub-filter B: Nifty5d=%s%% + gap=%s%% + ATR%%=%s) → INDSTOCKS",
-                            symbol, String.format("%.2f", nifty5DayReturn),
-                            String.format("%.3f", gapPercent), String.format("%.3f", atrPercent)));
+//                    System.out.println(String.format("[FilterEngine] %s → Group 1 MATCH (Sub-filter B: Nifty5d=%s%% + gap=%s%% + ATR%%=%s) → INDSTOCKS",
+//                            symbol, String.format("%.2f", nifty5DayReturn),
+//                            String.format("%.3f", gapPercent), String.format("%.3f", atrPercent)));
                     return true;
                 }
             }
@@ -132,9 +132,9 @@ public class FilterEngine {
             if (dayLow > 0) {
                 double distanceFromDayLow = ((signal.getEntryPrice() - dayLow) / dayLow) * 100.0;
                 if (distanceFromDayLow >= 0.213) {
-                    log.info("[FilterEngine] {} → Group 1 MATCH (Sub-filter C: Nifty5d={}% + ATR%={} + distFromDayLow={}%) → INDSTOCKS",
-                            symbol, String.format("%.2f", nifty5DayReturn),
-                            String.format("%.3f", atrPercent), String.format("%.3f", distanceFromDayLow));
+//                    log.info("[FilterEngine] {} → Group 1 MATCH (Sub-filter C: Nifty5d={}% + ATR%={} + distFromDayLow={}%) → INDSTOCKS",
+//                            symbol, String.format("%.2f", nifty5DayReturn),
+//                            String.format("%.3f", atrPercent), String.format("%.3f", distanceFromDayLow));
                     return true;
                 }
             }
@@ -185,8 +185,8 @@ public class FilterEngine {
         // ── Sub-filter A: stock's relative strength (5-day return) >= 0.84% ──
         double fiveDayReturn = relativeStrengthService.getStockFiveDayReturn(symbol);
         if (fiveDayReturn >= 0.84) {
-            log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + RS={}%) → SHOONYA",
-                    symbol, String.format("%.2f", fiveDayReturn));
+//            log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter A: TOP_GAINER + 2 green candles + RS={}%) → SHOONYA",
+//                    symbol, String.format("%.2f", fiveDayReturn));
             return true;
         }
 
@@ -197,8 +197,8 @@ public class FilterEngine {
 
         // ── Sub-filter B: Nifty 5-day return + ATR ──
         if (nifty5DayReturn >= 1.384 && atrPercent >= 0.169) {
-            log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter B: Nifty5d={}% + ATR%={}) → SHOONYA",
-                    symbol, String.format("%.2f", nifty5DayReturn), String.format("%.3f", atrPercent));
+//            log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter B: Nifty5d={}% + ATR%={}) → SHOONYA",
+//                    symbol, String.format("%.2f", nifty5DayReturn), String.format("%.3f", atrPercent));
             return true;
         }
 
@@ -208,9 +208,9 @@ public class FilterEngine {
             if (dayLow > 0) {
                 double distanceFromDayLow = ((signal.getEntryPrice() - dayLow) / dayLow) * 100.0;
                 if (distanceFromDayLow >= 0.213) {
-                    log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter C: Nifty5d={}% + ATR%={} + distFromDayLow={}%) → SHOONYA",
-                            symbol, String.format("%.2f", nifty5DayReturn),
-                            String.format("%.3f", atrPercent), String.format("%.3f", distanceFromDayLow));
+//                    log.info("[FilterEngine] {} → Group 2 MATCH (Sub-filter C: Nifty5d={}% + ATR%={} + distFromDayLow={}%) → SHOONYA",
+//                            symbol, String.format("%.2f", nifty5DayReturn),
+//                            String.format("%.3f", atrPercent), String.format("%.3f", distanceFromDayLow));
                     return true;
                 }
             }
@@ -239,13 +239,13 @@ public class FilterEngine {
         }
 
         if (g1 || g2) {
-            System.out.println(String.format("[FilterEngine] %s → Group1=%s Group2=%s → Route=%s",
-                    signal.getSymbol(), g1, g2, result.getExecutionRoute()));
+//            System.out.println(String.format("[FilterEngine] %s → Group1=%s Group2=%s → Route=%s",
+//                    signal.getSymbol(), g1, g2, result.getExecutionRoute()));
         } else {
             // Previously silent — this is the case where the signal falls
             // through to the default/fallback broker (KITE).
-            System.out.println(String.format("[FilterEngine] %s → Group1=false Group2=false → NEITHER (fallback Route=%s)",
-                    signal.getSymbol(), result.getExecutionRoute()));
+//            System.out.println(String.format("[FilterEngine] %s → Group1=false Group2=false → NEITHER (fallback Route=%s)",
+//                    signal.getSymbol(), result.getExecutionRoute()));
         }
 
         return result;
@@ -357,11 +357,11 @@ public class FilterEngine {
             return;
         }
 
-        System.out.println(String.format(
-                "\n🧭 [FilterEngine] Routing summary (today): total=%d | Group1(INDSTOCKS)=%d | Group2(SHOONYA)=%d | Neither(fallback)=%d"
-                + "\n   ↳ NEITHER reasons: notTopGainer=%d | noTwoGreenCandles=%d | passedGatesButThresholdsFailed=%d",
-                total, g1, g2, neither,
-                reasonNotTopGainer.get(), reasonNoTwoGreenCandles.get(), reasonThresholdsFailed.get()));
+//        System.out.println(String.format(
+//                "\n🧭 [FilterEngine] Routing summary (today): total=%d | Group1(INDSTOCKS)=%d | Group2(SHOONYA)=%d | Neither(fallback)=%d"
+//                + "\n   ↳ NEITHER reasons: notTopGainer=%d | noTwoGreenCandles=%d | passedGatesButThresholdsFailed=%d",
+//                total, g1, g2, neither,
+//                reasonNotTopGainer.get(), reasonNoTwoGreenCandles.get(), reasonThresholdsFailed.get()));
     }
 
     /**
@@ -375,7 +375,7 @@ public class FilterEngine {
         reasonNotTopGainer.set(0);
         reasonNoTwoGreenCandles.set(0);
         reasonThresholdsFailed.set(0);
-        System.out.println("🧭 [FilterEngine] Daily routing counters reset");
+//        System.out.println("🧭 [FilterEngine] Daily routing counters reset");
     }
 
     // ─────────────────────────────────────────────────────────────────────

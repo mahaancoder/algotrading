@@ -180,8 +180,8 @@ public class OrderExecutionService {
         // Visibility into every routing decision: which broker a BUY was sent to
         // and why (entryType drives the Group1/Group2 filter). Helps diagnose
         // why orders do/don't reach INDSTOCKS/SHOONYA vs the KITE fallback.
-        log.info("🧭 [Routing]  {} entryType={} → route={}",
-                 symbol, signal.getEntryType(), route);
+//        log.info("🧭 [Routing]  {} entryType={} → route={}",
+//                 symbol, signal.getEntryType(), route);
 
         // ===== STEP 2.5: RISK CHECK (broker-aware — checks per-broker + global capital) =====
         RiskManager.RiskCheckResult riskCheck = riskManager.checkSignalSafety(symbol, strategy, actualCapital, entry, state, isHolding, brokerName);
@@ -246,6 +246,12 @@ public class OrderExecutionService {
                     qty, entry, isHolding, brokerName, route, null);
             po.setEntryType(entryType);
             pendingOrderRepository.save(po);
+
+            // Confirm exactly what lookup key was stored, so we can compare it against
+            // the order_id the broker's WS feed later reports on completion. A mismatch
+            // here vs the WS order_id is what leaves completions "unmatched" (no sell).
+            System.out.println("[OrderExecution] PendingOrder stored → key=" + brokerName + "::" + brokerOrderId
+                    + " symbol=" + symbol + " side=BUY qty=" + qty);
 
             symbolMarketContext.put(symbol, ctx);
             signalAnalyticsService.recordSignal(signal, true, null, actualCapital);

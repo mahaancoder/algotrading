@@ -209,9 +209,10 @@ public class IndstocksBroker extends AbstractRestBroker {
                 JsonNode data = resp.get("data");
                 String orderId = data != null ? textOr(data, "order_id", null) : null;
                 String orderStatus = data != null ? textOr(data, "order_status", "") : "";
-                log.info("[IndstocksBroker] Order placed: {} {} {} qty={} → order_id={} status={}",
-                        request.getTransactionType(), request.getSymbol(),
-                        request.getPrice(), request.getQuantity(), orderId, orderStatus);
+                System.out.println("[IndstocksBroker] Order placed: " + request.getTransactionType() + " "
+                        + request.getSymbol() + " " + request.getPrice() + " qty=" + request.getQuantity()
+                        + " → order_id=" + orderId + " status=" + orderStatus
+                        + " | raw=" + raw);
                 return BrokerOrderResponse.builder()
                         .brokerName(getBrokerName())
                         .brokerOrderId(orderId)
@@ -221,8 +222,8 @@ public class IndstocksBroker extends AbstractRestBroker {
             } else {
                 String reason = textOr(resp, "message",
                         textOr(resp, "error", "Unknown rejection"));
-                log.warn("[IndstocksBroker] Order rejected: {} {} → {}", request.getSymbol(),
-                        request.getTransactionType(), reason);
+                System.out.println("[IndstocksBroker] Order rejected: " + request.getSymbol() + " "
+                        + request.getTransactionType() + " → " + reason + " | raw=" + raw);
                 return BrokerOrderResponse.builder()
                         .brokerName(getBrokerName())
                         .accepted(false)

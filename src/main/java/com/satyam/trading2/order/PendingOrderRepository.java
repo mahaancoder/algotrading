@@ -95,7 +95,7 @@ public class PendingOrderRepository {
             String broker = po.getBroker() != null ? po.getBroker() : "KITE";
             String brokerOrderId = po.getBrokerOrderId() != null ? po.getBrokerOrderId() : po.getOrderId();
             if (brokerOrderId != null) {
-                ordersByBrokerOrderId.put(makeBrokerKey(broker, brokerOrderId), po);
+                indexByBrokerOrderId(broker, brokerOrderId, po);
             }
             rewriteFile();
         }
@@ -115,7 +115,17 @@ public class PendingOrderRepository {
     // (BrokerOrderEventProcessor) should use. No cross-broker collision.
     // ─────────────────────────────────────────────────────────────────────
     public Optional<PendingOrder> findByBrokerAndBrokerOrderId(String broker, String brokerOrderId) {
-        return Optional.ofNullable(ordersByBrokerOrderId.get(makeBrokerKey(broker, brokerOrderId)));
+        PendingOrder po = ordersByBrokerOrderId.get(makeBrokerKey(broker, brokerOrderId));
+        if (po == null) {
+            // Fall back to the normalized (segment-prefix-stripped) id. INDstocks
+            // returns "EQ-101177677" from REST but pushes the bare "101177677" over
+            // the order-update WebSocket — this lets either form resolve the order.
+            String normalized = normalizeBrokerOrderId(brokerOrderId);
+            if (normalized != null && !normalized.equals(brokerOrderId)) {
+                po = ordersByBrokerOrderId.get(makeBrokerKey(broker, normalized));
+            }
+        }
+        return Optional.ofNullable(po);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -129,6 +139,41 @@ public class PendingOrderRepository {
 
     private String makeBrokerKey(String broker, String brokerOrderId) {
         return broker + "::" + brokerOrderId;
+    }
+
+    /**
+     * Index a PendingOrder under (broker, brokerOrderId), and — when the id carries
+     * a segment prefix (e.g. INDstocks "EQ-101177677") — also under the bare
+     * normalized id ("101177677"). This bridges the INDstocks asymmetry where REST
+     * returns the prefixed id but the order-update WebSocket sends the bare numeric
+     * id, so completion events resolve back to the order that placed them.
+     */
+    private void indexByBrokerOrderId(String broker, String brokerOrderId, PendingOrder po) {
+        if (brokerOrderId == null) return;
+        ordersByBrokerOrderId.put(makeBrokerKey(broker, brokerOrderId), po);
+        String normalized = normalizeBrokerOrderId(brokerOrderId);
+        if (normalized != null && !normalized.equals(brokerOrderId)) {
+            ordersByBrokerOrderId.put(makeBrokerKey(broker, normalized), po);
+        }
+    }
+
+    /**
+     * Strip a leading alphabetic segment prefix + hyphen from a broker order id
+     * (e.g. "EQ-101177677" → "101177677"). Kite/Shoonya ids are plain numeric with
+     * no such prefix, so they pass through unchanged.
+     */
+    private String normalizeBrokerOrderId(String id) {
+        if (id == null) return null;
+        int dash = id.indexOf('-');
+        if (dash > 0 && dash < id.length() - 1) {
+            String prefix = id.substring(0, dash);
+            boolean allLetters = true;
+            for (int i = 0; i < prefix.length(); i++) {
+                if (!Character.isLetter(prefix.charAt(i))) { allLetters = false; break; }
+            }
+            if (allLetters) return id.substring(dash + 1);
+        }
+        return id;
     }
 
     private void loadFromFile() throws IOException {
@@ -149,9 +194,10 @@ public class PendingOrderRepository {
                         }
                         ordersByInternalId.put(internalId, po);
 
-                        // Secondary index by (broker, brokerOrderId)
+                        // Secondary index by (broker, brokerOrderId) — dual-index the
+                        // normalized id too (see indexByBrokerOrderId) for INDstocks.
                         String broker = po.getBroker() != null ? po.getBroker() : "KITE";
-                        ordersByBrokerOrderId.put(makeBrokerKey(broker, po.getOrderId()), po);
+                        indexByBrokerOrderId(broker, po.getOrderId(), po);
                     }
                 } catch (Exception e) {
                     System.err.println("⚠️ Failed to parse pending order at line " + lineNumber + ": " + line);
