@@ -617,6 +617,9 @@
         if(!brokers) return;
         brokers.forEach(item => {
             let avail = item.availableMargin || 0;
+            let capital = item.capital || 0;
+            let multiplier = item.multiplier || 0;
+            let timeSlot = item.timeSlot || '';
             let holdingsAmt = item.holdings || 0;
             let intraday = item.intraday || 0;
             html+=`
@@ -624,7 +627,8 @@
                 <div class='small'>${brokerBadge(item.broker)}</div>
                 <div class='value' style='font-size:16px; margin:4px 0;'>₹${(avail/100000).toFixed(2)}L</div>
                 <div class='small green'>Available margin</div>
-                <div class='small' style='color:#666;margin-top:6px'>Holdings: ₹${(holdingsAmt/100000).toFixed(2)}L</div>
+                <div class='small' style='color:#666;margin-top:6px'>Capital: ₹${(capital/100000).toFixed(2)}L <span style='color:#999'>(${multiplier}× • ${timeSlot})</span></div>
+                <div class='small' style='color:#666'>Holdings: ₹${(holdingsAmt/100000).toFixed(2)}L</div>
                 <div class='small' style='color:#666'>Open positions: ₹${(intraday/100000).toFixed(2)}L</div>
             </div>`;
         });

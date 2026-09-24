@@ -364,6 +364,9 @@ public class SnapshotService {
     private String buildBrokerFundsJson() {
         String[] brokers = {"KITE", "INDSTOCKS", "SHOONYA"};
         Map<String, Double> availableFunds = marginFetchScheduler.getAllBrokerAvailableFunds();
+        Map<String, Double> budgets = marginFetchScheduler.getAllBrokerBudgets();
+        double multiplier = marginFetchScheduler.getCurrentMultiplier();
+        String timeSlot = marginFetchScheduler.getCurrentTimeSlot();
 
         Map<String, Double> holdingsByBroker = new HashMap<>();
         Map<String, Double> intradayByBroker = new HashMap<>();
@@ -392,6 +395,9 @@ public class SnapshotService {
             first = false;
             sb.append("{\"broker\":\"").append(b).append("\"")
               .append(",\"availableMargin\":").append(String.format("%.2f", availableFunds.getOrDefault(b, 0.0)))
+              .append(",\"capital\":").append(String.format("%.2f", budgets.getOrDefault(b, 0.0)))
+              .append(",\"multiplier\":").append(String.format("%.1f", multiplier))
+              .append(",\"timeSlot\":\"").append(timeSlot).append("\"")
               .append(",\"holdings\":").append(String.format("%.2f", holdingsByBroker.getOrDefault(b, 0.0)))
               .append(",\"intraday\":").append(String.format("%.2f", intradayByBroker.getOrDefault(b, 0.0)))
               .append("}");

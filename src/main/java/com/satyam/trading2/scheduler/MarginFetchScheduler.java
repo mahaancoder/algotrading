@@ -44,7 +44,19 @@ public class MarginFetchScheduler {
                 if (availableFunds != null) {
                     brokerAvailableFunds.put("KITE", availableFunds);
                     applyTimeBasedBudget("KITE", availableFunds);
+                } else {
+                    // Live fetch failed this tick — still apply the current time-slot
+                    // multiplier against the last known balance so the budget stays
+                    // fresh across time slots instead of falling back to the default.
+                    Double cached = brokerAvailableFunds.get("KITE");
+                    if (cached != null && cached > 0) {
+                        applyTimeBasedBudget("KITE", cached);
+                    } else {
+                        System.out.println("⚠️ [MarginFetchScheduler] KITE | getMargin() null and no cached funds — budget not set this tick");
+                    }
                 }
+            } else {
+                System.out.println("⚠️ [MarginFetchScheduler] KITE | not authenticated — skipping budget (will retry in 5m)");
             }
 
             // Fetch funds from all other registered brokers (INDstocks, Shoonya)
@@ -69,8 +81,15 @@ public class MarginFetchScheduler {
                         // Per-broker budget uses the same time-based multiplier
                         applyTimeBasedBudget(name, funds.getAvailableMargin());
                     } else {
-                        System.out.println("⚠️ [MarginFetchScheduler] " + name
-                                + " | availableMargin is 0 — not caching (check auth / API status / funds field mapping)");
+                        // Live fetch returned 0 this tick — keep the budget fresh
+                        // against the last known balance if we have one.
+                        Double cached = brokerAvailableFunds.get(name);
+                        if (cached != null && cached > 0) {
+                            applyTimeBasedBudget(name, cached);
+                        } else {
+                            System.out.println("⚠️ [MarginFetchScheduler] " + name
+                                    + " | availableMargin is 0 — not caching (check auth / API status / funds field mapping)");
+                        }
                     }
                 } catch (Exception e) {
                     System.out.println("❌ [MarginFetchScheduler] Failed to fetch funds for "
@@ -88,23 +107,9 @@ public class MarginFetchScheduler {
      * and store the resulting budget keyed by broker::strategy.
      */
     private void applyTimeBasedBudget(String brokerName, double availableFunds) {
-        LocalTime now = LocalTime.now();
-        double multiplier;
-        String timeSlot;
-
-        if (now.isBefore(LocalTime.of(10, 0))) {
-            multiplier = 4.0; timeSlot = "9:15-10:00";
-        } else if (now.isBefore(LocalTime.of(10, 30))) {
-            multiplier = 2.0; timeSlot = "10:00-10:30";
-        } else if (now.isBefore(LocalTime.of(11, 0))) {
-            multiplier = 1.0; timeSlot = "10:30-11:00";
-        } else if (now.isBefore(LocalTime.of(11, 15))) {
-            multiplier = 0.6; timeSlot = "11:00-11:15";
-        } else if (now.isBefore(LocalTime.of(11, 30))) {
-            multiplier = 0.4; timeSlot = "11:15-11:30";
-        } else {
-            multiplier = 0.2; timeSlot = "11:30+";
-        }
+        SlotMultiplier slot = currentSlotMultiplier();
+        double multiplier = slot.multiplier;
+        String timeSlot = slot.timeSlot;
 
         double budget = availableFunds * multiplier;
 
@@ -121,6 +126,49 @@ public class MarginFetchScheduler {
                          " | Slot: " + timeSlot +
                          " | Mult: " + (multiplier * 100) + "%" +
                          " | Budget: ₹" + String.format("%.0f", budget));
+    }
+
+    /**
+     * Resolve the current time-based momentum slot and multiplier.
+     * Pinned to IST so the slot is correct regardless of the JVM's default
+     * timezone (e.g. UTC on a cloud host would otherwise always land in the
+     * earliest slot and apply the wrong multiplier).
+     */
+    private SlotMultiplier currentSlotMultiplier() {
+        LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isBefore(LocalTime.of(10, 0))) {
+            return new SlotMultiplier(5.0, "9:15-10:00");
+        } else if (now.isBefore(LocalTime.of(10, 30))) {
+            return new SlotMultiplier(4.0, "10:00-10:30");
+        } else if (now.isBefore(LocalTime.of(11, 0))) {
+            return new SlotMultiplier(3.0, "10:30-11:00");
+        } else if (now.isBefore(LocalTime.of(11, 15))) {
+            return new SlotMultiplier(2.0, "11:00-11:15");
+        } else if (now.isBefore(LocalTime.of(11, 30))) {
+            return new SlotMultiplier(1.0, "11:15-11:30");
+        } else {
+            return new SlotMultiplier(0.2, "11:30+");
+        }
+    }
+
+    /** Immutable holder for a time-slot's multiplier and its label. */
+    private static final class SlotMultiplier {
+        final double multiplier;
+        final String timeSlot;
+        SlotMultiplier(double multiplier, String timeSlot) {
+            this.multiplier = multiplier;
+            this.timeSlot = timeSlot;
+        }
+    }
+
+    /** The momentum multiplier currently in effect for the IST time-of-day. */
+    public double getCurrentMultiplier() {
+        return currentSlotMultiplier().multiplier;
+    }
+
+    /** The label of the momentum time slot currently in effect (IST). */
+    public String getCurrentTimeSlot() {
+        return currentSlotMultiplier().timeSlot;
     }
 
     /**
@@ -172,6 +220,21 @@ public class MarginFetchScheduler {
         Map<String, Double> out = new java.util.LinkedHashMap<>();
         for (String b : new String[]{"KITE", "INDSTOCKS", "SHOONYA"}) {
             out.put(b, brokerAvailableFunds.getOrDefault(b, 0.0));
+        }
+        return out;
+    }
+
+    /**
+     * Snapshot of the time-multiplied budget (available funds × current
+     * momentum multiplier) for every known broker. Used by the dashboard's
+     * "Broker Funds & Usage" section to show deployable capital, which differs
+     * from raw available margin whenever the multiplier isn't 1×.
+     */
+    public Map<String, Double> getAllBrokerBudgets() {
+        double multiplier = getCurrentMultiplier();
+        Map<String, Double> out = new java.util.LinkedHashMap<>();
+        for (String b : new String[]{"KITE", "INDSTOCKS", "SHOONYA"}) {
+            out.put(b, brokerAvailableFunds.getOrDefault(b, 0.0) * multiplier);
         }
         return out;
     }
