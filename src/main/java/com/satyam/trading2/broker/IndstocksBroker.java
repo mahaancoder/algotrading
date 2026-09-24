@@ -12,6 +12,8 @@ import com.satyam.trading2.broker.ws.BrokerOrderEventListener;
 import com.satyam.trading2.broker.ws.IndstocksOrderWebSocketClient;
 import com.satyam.trading2.broker.auth.IndstocksInstrumentsService;
 import com.satyam.trading2.config.IndstocksConfig;
+import com.satyam.trading2.datamodel.Position;
+import com.satyam.trading2.domain.service.PositionManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -56,6 +58,10 @@ public class IndstocksBroker extends AbstractRestBroker {
 
     private final IndstocksConfig indstocksConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
+    private final PositionManager positionManager;
+
+    // The portfolio endpoints carry no strategy, so a reconciled-in position uses this default.
+    private static final String DEFAULT_STRATEGY = "Dip-Accumulator-Momentum";
 
     // Lazy to break the bean-creation cycle: IndstocksInstrumentsService already
     // depends on IndstocksBroker (to register mappings). Only used at runtime for
@@ -496,9 +502,116 @@ public class IndstocksBroker extends AbstractRestBroker {
                 // (broker=INDSTOCKS, brokerOrderId) and update status if drifted.
                 // Statuses: SUCCESS→COMPLETE, CANCELLED→CANCELLED, FAILED/EXPIRED→REJECTED.
             }
+
+            // Sync portfolio (holdings + open positions) into PositionManager.
+            syncPortfolioIntoManager();
         } catch (Exception e) {
             log.error("[IndstocksBroker] reconcileOrders exception: {}", e.getMessage(), e);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Portfolio → PositionManager sync (broker = INDSTOCKS)
+    //
+    // GET /portfolio/holdings                              → HOLDING (CNC/demat)
+    // GET /portfolio/positions?segment=equity&product=intraday → INTRADAY (equity)
+    //
+    // INDstocks is the source of truth for qty/avg of its OWN positions. The
+    // portfolio payload carries no strategy, so an existing INDSTOCKS position
+    // for the symbol+type is updated in place; otherwise a new row is created
+    // with the default strategy. A flat line (qty ≤ 0) removes the tracked row.
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void syncPortfolioIntoManager() {
+        // 1. Equity holdings (CNC/demat) → HOLDING positions
+        try {
+            JsonNode resp = getJson(indstocksConfig.getBaseUrl() + "/portfolio/holdings",
+                    indstocksConfig.getAuthHeader(), SLOW_REQUEST_TIMEOUT_MS);
+            if ("success".equals(textOr(resp, "status", ""))) {
+                JsonNode data = resp.get("data");
+                if (data != null && data.isArray()) {
+                    log.info("[IndstocksBroker] Reconciliation: {} holdings from INDstocks", data.size());
+                    for (JsonNode node : data) {
+                        upsertPosition(textOr(node, "symbol", null),
+                                intOr(node, "total_qty", 0),
+                                doubleOr(node, "avg_price", 0),
+                                Position.PositionType.HOLDING);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] holdings sync failed: {}", e.getMessage());
+        }
+
+        // 2. Open intraday equity positions → INTRADAY positions
+        try {
+            JsonNode resp = getJson(indstocksConfig.getBaseUrl()
+                            + "/portfolio/positions?segment=equity&product=intraday",
+                    indstocksConfig.getAuthHeader(), SLOW_REQUEST_TIMEOUT_MS);
+            if ("success".equals(textOr(resp, "status", ""))) {
+                JsonNode data = resp.get("data");
+                if (data != null && data.isArray()) {
+                    log.info("[IndstocksBroker] Reconciliation: {} intraday positions from INDstocks", data.size());
+                    for (JsonNode node : data) {
+                        upsertPosition(textOr(node, "symbol", null),
+                                intOr(node, "net_qty", 0),
+                                doubleOr(node, "avg_price", 0),
+                                Position.PositionType.INTRADAY);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] positions sync failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Upsert a single INDSTOCKS position for symbol+type. A flat line (qty ≤ 0)
+     * removes the tracked row; otherwise the qty/avg is updated in place or a new
+     * row is added. Wrapped by callers so one malformed entry can't abort the sync.
+     */
+    private void upsertPosition(String symbol, int qty, double avg, Position.PositionType type) {
+        if (symbol == null || symbol.isEmpty()) return;
+        try {
+            Position existing = findIndstocksPosition(symbol, type);
+
+            if (qty <= 0) {
+                if (existing != null) {
+                    positionManager.removePosition(symbol, existing.getStrategy(), "INDSTOCKS");
+                    log.info("[IndstocksBroker] Reconcile: removed flat INDSTOCKS position {} ({})",
+                            symbol, existing.getStrategy());
+                }
+                return;
+            }
+
+            if (existing != null) {
+                existing.setTotalQuantity(qty);
+                existing.setAveragePrice(avg);
+                positionManager.updatePosition(existing);
+            } else {
+                Position p = new Position(symbol, qty, avg, 0, true,
+                        DEFAULT_STRATEGY, null, null, null, type);
+                p.setBroker("INDSTOCKS");
+                p.setExecutionRoute(ExecutionRoute.INDSTOCKS);
+                positionManager.addPosition(p);
+                log.info("[IndstocksBroker] Reconcile: added INDSTOCKS {} {} qty={} avg={}",
+                        type, symbol, qty, avg);
+            }
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] Failed to sync portfolio row {}: {}", symbol, e.getMessage());
+        }
+    }
+
+    /** Find an INDSTOCKS position for this symbol+type across strategies, or null. */
+    private Position findIndstocksPosition(String symbol, Position.PositionType type) {
+        Map<String, Position> strategyPositions = positionManager.getPositionsForSymbol(symbol);
+        for (Position p : strategyPositions.values()) {
+            if (p != null && p.getPositionType() == type
+                    && "INDSTOCKS".equals(p.getBroker() != null ? p.getBroker() : "KITE")) {
+                return p;
+            }
+        }
+        return null;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -573,6 +686,16 @@ public class IndstocksBroker extends AbstractRestBroker {
         if (f == null || f.isNull()) return def;
         try {
             return Double.parseDouble(f.asText());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    private int intOr(JsonNode node, String field, int def) {
+        JsonNode f = node.get(field);
+        if (f == null || f.isNull()) return def;
+        try {
+            return (int) Math.round(Double.parseDouble(f.asText().trim()));
         } catch (NumberFormatException e) {
             return def;
         }

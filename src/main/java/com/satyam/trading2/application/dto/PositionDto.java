@@ -58,7 +58,9 @@ public class PositionDto {
         long unrealizedPnL = Math.round((currentPrice - position.getAveragePrice()) * position.getTotalQuantity());
 
         return PositionDto.builder()
-                .type(position.getPositionType().name())
+                // Live handler on the dashboard keys off type==='POSITION' for intraday
+                // (getPositionType().name() would be "INTRADAY", which the client ignores).
+                .type("POSITION")
                 .symbol(position.getSymbol())
                 .entry(position.getAveragePrice())
                 .last(currentPrice)

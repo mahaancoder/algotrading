@@ -40,6 +40,24 @@ public class ReconciliationService {
         );
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Kite is the ONLY positions/holdings source (getPositions()/getHoldings()
+    // hit the Kite API). Reconciliation must therefore only touch KITE positions
+    // and must NEVER remove Shoonya/INDstocks positions just because they're
+    // absent from the Kite response. These helpers key/scope everything by broker.
+    // ─────────────────────────────────────────────────────────────────────
+    private static String brokerOf(Position p) {
+        return p.getBroker() != null ? p.getBroker() : "KITE";
+    }
+
+    private static boolean isKite(Position p) {
+        return "KITE".equals(brokerOf(p));
+    }
+
+    private static String posKey(Position p) {
+        return p.getSymbol() + "_" + p.getStrategy() + "_" + brokerOf(p);
+    }
+
     @Scheduled(fixedDelay = 900000)
     public void reconcile() {
         // Check if current time is within trading window (9:20 AM to 3:00 PM)
@@ -96,7 +114,7 @@ public class ReconciliationService {
             // (MIS positions are separate from Holdings by definition)
             Map<String, Position> brokerMap = allBrokerPositions.stream()
                     .collect(Collectors.toMap(
-                            p -> p.getSymbol() + "_" + p.getStrategy(),
+                            ReconciliationService::posKey,
                             p -> p,
                             (p1, p2) -> {
                                 // This should NOT happen after filtering - log if it does!
@@ -112,7 +130,7 @@ public class ReconciliationService {
 
             Map<String, Position> ourMap = ourPositions.stream()
                     .collect(Collectors.toMap(
-                            p -> p.getSymbol() + "_" + p.getStrategy(),
+                            ReconciliationService::posKey,
                             p -> p,
                             (p1, p2) -> {
                                 log.warn("⚠️ [syncBrokerPositions] Duplicate local position: {} ({})",
@@ -121,11 +139,13 @@ public class ReconciliationService {
                             }
                     ));
 
-            // Step 1: Add positions from broker that we don't have, or update mismatched ones
+            // Step 1: Add positions from broker that we don't have, or update mismatched ones.
+            // allBrokerPositions come from the Kite API, so they are KITE-owned; keying by
+            // broker ensures we never collide with a same-symbol Shoonya/INDstocks position.
             for (Position brokerPos : allBrokerPositions) {
                 String symbol = brokerPos.getSymbol();
                 String strategy = brokerPos.getStrategy();
-                String key = symbol + "_" + strategy;
+                String key = posKey(brokerPos);
                 Position ourPos = ourMap.get(key);
 
                 if (ourPos == null) {
@@ -151,18 +171,24 @@ public class ReconciliationService {
                 }
             }
 
-            // Step 2: Remove positions we have but broker doesn't
+            // Step 2: Remove positions we have but broker doesn't.
+            // ===== MULTI-BROKER SAFETY: only KITE positions are reconciled against the
+            // Kite API. Shoonya/INDstocks positions are NEVER removed here — they are
+            // absent from the Kite response by definition, not because they were exited.
             for (Position ourPos : ourPositions) {
+                if (!isKite(ourPos)) {
+                    continue; // never remove non-KITE positions during Kite reconciliation
+                }
                 String symbol = ourPos.getSymbol();
                 String strategy = ourPos.getStrategy();
-                String key = symbol + "_" + strategy;
+                String key = posKey(ourPos);
                 Position brokerPos = brokerMap.get(key);
 
                 if (brokerPos == null) {
                     // We have position but broker doesn't - this position was likely exited
 //                    System.out.println("⚠️ We have position " + symbol + " (" + strategy + ", " +
 //                                     ourPos.getPositionType() + ") but broker doesn't. Removing from PositionManager.");
-                    positionRepository.removePosition(symbol, ourPos.getStrategy());
+                    positionRepository.removePosition(symbol, ourPos.getStrategy(), brokerOf(ourPos));
                 }
             }
         } catch (Exception e) {
@@ -187,6 +213,14 @@ public class ReconciliationService {
             try {
                 String symbol = position.getSymbol();
                 int requiredQty = position.getTotalQuantity();
+
+                // ===== MULTI-BROKER SAFETY: this path fetches Kite orders and places Kite
+                // target sells. Non-KITE positions (Shoonya/INDstocks) have their targets
+                // managed by the broker-aware schedulers, so skip them here to avoid
+                // placing Kite orders against another broker's position.
+                if (!isKite(position)) {
+                    continue;
+                }
 
                 // ===== FIX: Skip positions that are already exit processed =====
                 if (position.isExitProcessed()) {

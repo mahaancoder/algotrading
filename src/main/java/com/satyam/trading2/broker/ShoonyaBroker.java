@@ -11,6 +11,8 @@ import com.satyam.trading2.broker.model.TransactionType;
 import com.satyam.trading2.broker.ws.BrokerOrderEventListener;
 import com.satyam.trading2.broker.ws.ShoonyaOrderWebSocketClient;
 import com.satyam.trading2.config.ShoonyaConfig;
+import com.satyam.trading2.datamodel.Position;
+import com.satyam.trading2.domain.service.PositionManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -45,6 +47,10 @@ public class ShoonyaBroker extends AbstractRestBroker {
 
     private final ShoonyaConfig shoonyaConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
+    private final PositionManager positionManager;
+
+    // PositionBook carries no strategy, so a reconciled-in position uses this default.
+    private static final String DEFAULT_STRATEGY = "Dip-Accumulator-Momentum";
 
     // WebSocket client for order updates — created on startOrderUpdates()
     private volatile ShoonyaOrderWebSocketClient wsClient;
@@ -385,8 +391,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             JsonNode posResp = postForm(shoonyaConfig.getBaseUrl() + "PositionBook", posBody);
             if (posResp.isArray()) {
                 log.info("[ShoonyaBroker] Reconciliation: {} open positions from Shoonya", posResp.size());
-                // TODO: sync each position with PositionManager keyed by broker=SHOONYA.
-                // Fields: tsym (→ strip "-EQ"), netqty, netavgprc, prd (→ ProductType), rpnl.
+                syncPositionsIntoManager(posResp);
             }
 
             // 2. Fetch order book (POST /OrderBook)
@@ -462,6 +467,92 @@ public class ShoonyaBroker extends AbstractRestBroker {
             default:
                 return BrokerOrderStatus.OPEN;
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PositionBook → PositionManager sync (broker = SHOONYA)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Sync Shoonya's PositionBook into PositionManager, keyed by broker=SHOONYA.
+     * Shoonya is the source of truth for qty/avg of its OWN positions. The
+     * PositionBook carries no strategy, so an existing SHOONYA position for the
+     * symbol+type is updated in place; otherwise a new row is created with the
+     * default strategy. A flat (netqty ≤ 0) line removes the tracked position.
+     */
+    private void syncPositionsIntoManager(JsonNode posResp) {
+        for (JsonNode node : posResp) {
+            try {
+                String tsym = textOr(node, "tsym", null);
+                if (tsym == null) continue;
+
+                String symbol = fromShoonyaSymbol(tsym);
+                int netQty = parseIntSafe(textOr(node, "netqty", "0"));
+                double avg = parseDoubleSafe(textOr(node, "netavgprc", "0"));
+                Position.PositionType type = fromShoonyaProduct(textOr(node, "prd", "I"));
+
+                Position existing = findShoonyaPosition(symbol, type);
+
+                if (netQty <= 0) {
+                    // Flat/closed at Shoonya — drop our row if we still track it.
+                    if (existing != null) {
+                        positionManager.removePosition(symbol, existing.getStrategy(), "SHOONYA");
+                        log.info("[ShoonyaBroker] Reconcile: removed flat SHOONYA position {} ({})",
+                                symbol, existing.getStrategy());
+                    }
+                    continue;
+                }
+
+                if (existing != null) {
+                    existing.setTotalQuantity(netQty);
+                    existing.setAveragePrice(avg);
+                    positionManager.updatePosition(existing);
+                } else {
+                    Position p = new Position(symbol, netQty, avg, 0, true,
+                            DEFAULT_STRATEGY, null, null, null, type);
+                    p.setBroker("SHOONYA");
+                    p.setExecutionRoute(ExecutionRoute.SHOONYA);
+                    positionManager.addPosition(p);
+                    log.info("[ShoonyaBroker] Reconcile: added SHOONYA {} {} qty={} avg={}",
+                            type, symbol, netQty, avg);
+                }
+            } catch (Exception e) {
+                log.warn("[ShoonyaBroker] Failed to sync a PositionBook row: {}", e.getMessage());
+            }
+        }
+    }
+
+    /** Find a SHOONYA position for this symbol+type across strategies, or null. */
+    private Position findShoonyaPosition(String symbol, Position.PositionType type) {
+        Map<String, Position> strategyPositions = positionManager.getPositionsForSymbol(symbol);
+        for (Position p : strategyPositions.values()) {
+            if (p != null && p.getPositionType() == type
+                    && "SHOONYA".equals(p.getBroker() != null ? p.getBroker() : "KITE")) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    /** RELIANCE-EQ → RELIANCE (reverse of toShoonyaSymbol). */
+    private String fromShoonyaSymbol(String shoonyaSymbol) {
+        if (shoonyaSymbol == null) return null;
+        return shoonyaSymbol.endsWith("-EQ")
+                ? shoonyaSymbol.substring(0, shoonyaSymbol.length() - 3) : shoonyaSymbol;
+    }
+
+    /** Shoonya product code → PositionType: C(CNC)→HOLDING, else INTRADAY. */
+    private Position.PositionType fromShoonyaProduct(String prd) {
+        return "C".equalsIgnoreCase(prd)
+                ? Position.PositionType.HOLDING : Position.PositionType.INTRADAY;
+    }
+
+    private int parseIntSafe(String s) {
+        try { return (int) Math.round(Double.parseDouble(s.trim())); } catch (Exception e) { return 0; }
+    }
+
+    private double parseDoubleSafe(String s) {
+        try { return Double.parseDouble(s.trim()); } catch (Exception e) { return 0; }
     }
 
     // ─────────────────────────────────────────────────────────────────────

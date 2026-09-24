@@ -304,6 +304,26 @@ public class PositionManager {
             .orElse(null);
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // findHoldingBySymbolAndBroker — broker-aware holding lookup.
+    // The same symbol can be held at multiple brokers as independent rows
+    // (e.g. RELIANCE at KITE and at SHOONYA). A holding buy must find (and
+    // accumulate into) only its own broker's holding, never merge into another
+    // broker's. Returns the first holding for this symbol at the given broker.
+    // ─────────────────────────────────────────────────────────────────────
+    public Position findHoldingBySymbolAndBroker(String symbol, String broker) {
+        Map<String, Position> strategyPositions = positionMap.get(symbol);
+        if (strategyPositions == null || strategyPositions.isEmpty()) {
+            return null;
+        }
+        String b = broker != null ? broker : "KITE";
+        return strategyPositions.values().stream()
+            .filter(p -> p != null && p.getPositionType() == Position.PositionType.HOLDING
+                      && b.equals(p.getBroker() != null ? p.getBroker() : "KITE"))
+            .findFirst()
+            .orElse(null);
+    }
+
     /**
      * Find ALL holdings for a symbol across all brokers and strategies.
      * Per Decision #4: same symbol can be held at Kite and INDstocks

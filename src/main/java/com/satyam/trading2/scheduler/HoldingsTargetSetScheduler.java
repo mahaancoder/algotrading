@@ -5,6 +5,7 @@ import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.OrderExecutor;
 import com.satyam.trading2.domain.service.PositionManager;
+import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.service.DipAccumulatorService;
 import com.satyam.trading2.service.ExecutionEngine;
@@ -27,6 +28,7 @@ public class HoldingsTargetSetScheduler {
     private final PendingOrderRepository pendingOrderRepository;
     private final DipAccumulatorService dipAccumulatorService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
+    private final BrokerOrderRouter brokerOrderRouter;
 
 
     /**
@@ -59,17 +61,17 @@ public class HoldingsTargetSetScheduler {
             return;
         }
 
-        // Fetch fresh holdings from broker API
+        // Fetch fresh holdings from the KITE broker API (Kite is the only holdings
+        // source; Shoonya/INDstocks holdings are tracked in PositionManager and are
+        // handled in the non-KITE loop below).
         List<Position> brokerHoldings = orderServiceV2.getHoldings();
 
-        if (brokerHoldings.isEmpty()) return;
-
-        // Process each holding from the broker
+        // Process each KITE holding from the broker
         for (Position brokerHolding : brokerHoldings) {
             String symbol = brokerHolding.getSymbol();
 
-            // Reconcile with existing in-memory position to get strategy and other metadata
-            Position existingPosition = findExistingHolding(symbol);
+            // Reconcile with existing in-memory KITE position to get strategy and metadata
+            Position existingPosition = findExistingHolding(symbol, brokerHolding.getBroker());
 
             // Use existing position if found, otherwise use broker holding with default strategy
             Position holding = existingPosition != null ? existingPosition : brokerHolding;
@@ -94,23 +96,25 @@ public class HoldingsTargetSetScheduler {
 
         }
 
+        // ===== Non-KITE holdings (Shoonya/INDstocks) =====
+        // Kite getHoldings() only returns Kite holdings, so process broker holdings
+        // tracked in PositionManager separately, routing targets to their owning broker.
+        for (Position holding : positionManager.getAllHoldings()) {
+            if (brokerOrderRouter.isKite(holding)) {
+                continue; // KITE holdings already handled from the broker API above
+            }
+            placeTargetForHolding(holding, targetMultiplier);
+        }
+
     }
 
     /**
-     * Find existing holding in position manager by symbol
-     * Searches across all strategies for the symbol
+     * Find existing holding in position manager by symbol at the given broker.
+     * The same symbol can be held at multiple brokers as independent rows, so a
+     * broker-aware lookup is required to avoid merging into another broker's holding.
      */
-    private Position findExistingHolding(String symbol) {
-        Map<String, Position> strategyPositions = positionManager.getPositionsForSymbol(symbol);
-
-        // Return the first holding found for this symbol (across any strategy)
-        for (Position position : strategyPositions.values()) {
-            if (position.getPositionType() == Position.PositionType.HOLDING) {
-                return position;
-            }
-        }
-
-        return null;
+    private Position findExistingHolding(String symbol, String broker) {
+        return positionManager.findHoldingBySymbolAndBroker(symbol, broker);
     }
 
     /**
@@ -130,7 +134,7 @@ public class HoldingsTargetSetScheduler {
                 System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing target for " + holding.getSymbol() +
                                  " to update with new target (multiplier: " + targetMultiplier + ")");
                 try {
-                    orderServiceV2.cancelOrder(holding.getTargetOrderId());
+                    brokerOrderRouter.cancelViaBroker(holding, holding.getTargetOrderId());
                     holding.setTargetOrderId(null);
                     holding.setTargetPlaced(false);
                 } catch (Exception e) {
@@ -141,7 +145,7 @@ public class HoldingsTargetSetScheduler {
             if (holding.getSecondaryTargetOrderId() != null) {
                 System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing quick-exit sell for " + holding.getSymbol());
                 try {
-                    orderServiceV2.cancelOrder(holding.getSecondaryTargetOrderId());
+                    brokerOrderRouter.cancelViaBroker(holding, holding.getSecondaryTargetOrderId());
                     holding.setSecondaryTargetOrderId(null);
                     holding.setSecondaryTargetPlaced(false);
                 } catch (Exception e) {
@@ -164,21 +168,26 @@ public class HoldingsTargetSetScheduler {
                 return;
             }
             Thread.sleep(100);
-            String orderId = orderExecutor.placeTargetOrder(
+            // Route the target sell to the broker that owns this holding. KITE keeps
+            // updateTargetOrder (dedup); non-KITE places a fresh LIMIT SELL at that broker.
+            String orderId = brokerOrderRouter.placeTargetSell(
+                    holding,
                     holding.getSymbol(),
                     target,
                     holding.getTotalQuantity(),
                     null,
-                    true // isHolding = true
-                    ,holding.getStrategy()
+                    true, // isHolding = true
+                    holding.getStrategy()
             );
 
             // ✅ FIX: Add target order to PendingOrderRepository so webhooks can be processed
             if (orderId != null) {
-                PendingOrder po = pendingOrderRepository.create(
+                // Broker-tagged PendingOrder so the fill event is matched to the
+                // owning broker (KITE/SHOONYA/INDSTOCKS)
+                PendingOrder po = brokerOrderRouter.createSellPending(
+                        holding,
                         orderId,
                         holding.getSymbol(),
-                        TradeSide.SELL,
                         holding.getStrategy(),
                         holding.getTotalQuantity(),
                         target,

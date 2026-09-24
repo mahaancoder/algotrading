@@ -5,6 +5,7 @@ import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.helpers.LatestPriceHelper;
+import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.service.OrderServiceV2;
 import com.satyam.trading2.service.ReconciliationService;
@@ -28,6 +29,7 @@ public class TrailingStopScheduler {
     private final ReconciliationService reconciliationService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
     private final PendingOrderRepository pendingOrderRepository;
+    private final BrokerOrderRouter brokerOrderRouter;
 
     @Scheduled(cron = "0/10 * * * * MON-FRI")
     public void updateTrailingStops() {
@@ -112,24 +114,25 @@ public class TrailingStopScheduler {
                         String oldPrimaryOrderId = position.getTargetOrderId();
                         if (oldPrimaryOrderId != null) {
                             try {
-                                orderServiceV2.cancelOrder(oldPrimaryOrderId);
+                                brokerOrderRouter.cancelViaBroker(position, oldPrimaryOrderId);
                                 Thread.sleep(300);
                             } catch (Exception e) {
                                 System.err.println("⚠️ [TrailingStop] Failed to cancel primary sell for " + symbol + ": " + e.getMessage());
                             }
                         }
 
-                        String newOrderId = orderServiceV2.placeOrder(
-                                symbol, "SELL", "LIMIT", qty, ltp, 0, "CNC", position.getStrategy());
+                        String newOrderId = brokerOrderRouter.placeLimitSell(
+                                position, symbol, ltp, qty, true, position.getStrategy());
 
                         if (newOrderId != null) {
                             position.setTargetOrderId(newOrderId);
                             position.setTarget(ltp);
                             positionManager.updatePosition(position);
 
-                            // Create PendingOrder so webhook can find it on fill
-                            PendingOrder targetPO = pendingOrderRepository.create(
-                                    newOrderId, symbol, TradeSide.SELL,
+                            // Broker-tagged PendingOrder so the fill event is matched to the
+                            // owning broker (KITE/SHOONYA/INDSTOCKS)
+                            PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                                    position, newOrderId, symbol,
                                     position.getStrategy(), qty, ltp, true);
                             pendingOrderRepository.save(targetPO);
 
@@ -143,15 +146,27 @@ public class TrailingStopScheduler {
                             System.err.println("❌ [TrailingStop] " + symbol + " (CNC): Failed to update primary sell");
                         }
                     } else {
-                        // ===== INTRADAY/MIS: existing logic — update single target sell to LTP
+                        // ===== INTRADAY/MIS: update single target sell to LTP, routed to the
+                        // position's owning broker. KITE keeps updateTargetOrder (dedup); non-KITE
+                        // cancels the prior target then places a fresh LIMIT SELL at that broker.
                         String oldOrderId = position.getTargetOrderId();
-                        String newOrderId = orderServiceV2.updateTargetOrder(
-                                symbol, ltp, qty, oldOrderId, false, position.getStrategy());
+                        String newOrderId = brokerOrderRouter.placeTargetSell(
+                                position, symbol, ltp, qty, oldOrderId, false, position.getStrategy());
 
                         if (newOrderId != null) {
                             position.setTargetOrderId(newOrderId);
                             position.setTarget(ltp);
                             positionManager.updatePosition(position);
+
+                            // For non-KITE brokers a NEW sell order was placed, so register a
+                            // broker-tagged PendingOrder to match its fill. KITE's updateTargetOrder
+                            // dedups and is reconciled separately, so keep its behavior unchanged.
+                            if (!brokerOrderRouter.isKite(position)) {
+                                PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                                        position, newOrderId, symbol,
+                                        position.getStrategy(), qty, ltp, false);
+                                pendingOrderRepository.save(targetPO);
+                            }
 
                             updatedCount++;
 //                            System.out.println("✅ [TrailingStop] " + symbol +

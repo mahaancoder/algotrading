@@ -178,11 +178,18 @@ public class OrderCompletionProcessor {
             // For intraday, find by symbol + strategy (can have multiple strategies for same symbol)
             Position position;
             if (pendingOrder.getPositionType() == Position.PositionType.HOLDING) {
-                position = positionManager.findHoldingBySymbol(pendingOrder.getSymbol());
+                // Broker-aware: same symbol can be held at multiple brokers as
+                // separate rows. Accumulate into this broker's holding only.
+                String lookupBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+                position = positionManager.findHoldingBySymbolAndBroker(pendingOrder.getSymbol(), lookupBroker);
                 System.out.println("🔍 [OrderCompletionProcessor] Looking for HOLDING: " + pendingOrder.getSymbol() +
-                                 " - Found: " + (position != null));
+                                 " broker=" + lookupBroker + " - Found: " + (position != null));
             } else {
-                position = positionManager.findBySymbolAndStrategy(pendingOrder.getSymbol(), pendingOrder.getStrategy());
+                // Broker-aware lookup: a Shoonya/INDSTOCKS buy must find (and accumulate into)
+                // its own position, not the KITE-keyed one. The 2-arg overload defaults to KITE.
+                String lookupBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+                position = positionManager.findBySymbolAndStrategy(
+                        pendingOrder.getSymbol(), pendingOrder.getStrategy(), lookupBroker);
             }
 
             if(position == null) {

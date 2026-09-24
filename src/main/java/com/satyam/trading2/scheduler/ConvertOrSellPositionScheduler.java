@@ -8,6 +8,7 @@ import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.datamodel.TradeSignal;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.infrastructure.messaging.BroadcastService;
+import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.repository.HoldingMetadataRepository;
 import com.satyam.trading2.service.DipAccumulatorService;
@@ -38,6 +39,7 @@ public class ConvertOrSellPositionScheduler {
     private final PendingOrderRepository pendingOrderRepository;
     private final HoldingMetadataRepository holdingMetadataRepository;
     private final com.satyam.trading2.service.EntryTypeAnalyticsService entryTypeAnalytics;
+    private final BrokerOrderRouter brokerOrderRouter;
 
     // ===== FIX: Use ExecutionEngine's locks to prevent race conditions =====
     private Object getSymbolStrategyLock(String symbol, String strategy) {
@@ -99,8 +101,11 @@ public class ConvertOrSellPositionScheduler {
                             continue;
                         }
 
-                        // Update existing target order to LTP instead of creating a new sell order
-                        String updatedTargetOrderId = orderServiceV2.updateTargetOrder(
+                        // Update existing target order to LTP, routed to the position's owning
+                        // broker. KITE keeps updateTargetOrder (dedup); non-KITE cancels the prior
+                        // target then places a fresh LIMIT SELL at that broker.
+                        String updatedTargetOrderId = brokerOrderRouter.placeTargetSell(
+                                position,
                                 symbol,
                                 ltp,
                                 position.getTotalQuantity(),
@@ -113,11 +118,12 @@ public class ConvertOrSellPositionScheduler {
                             // Update the position with new target order ID
                             position.setTargetOrderId(updatedTargetOrderId);
 
-                            // Create PendingOrder for the new target order so webhook can find it
-                            PendingOrder targetPO = pendingOrderRepository.create(
+                            // Broker-tagged PendingOrder so the fill event is matched to the
+                            // owning broker (KITE/SHOONYA/INDSTOCKS)
+                            PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                                    position,
                                     updatedTargetOrderId,
                                     symbol,
-                                    TradeSide.SELL,
                                     strategy,
                                     position.getTotalQuantity(),
                                     ltp,
@@ -151,11 +157,19 @@ public class ConvertOrSellPositionScheduler {
 
             try {
                 position.setPositionType(HOLDING);
-                orderServiceV2.convertToHolding(symbol, position.getTotalQuantity());
+                // convertToHolding (MIS→CNC) is a Kite-only API. Non-KITE brokers
+                // (Shoonya/INDstocks) have no product-conversion endpoint on the Broker
+                // interface, so for them we only flip the position type internally.
+                if (brokerOrderRouter.isKite(position)) {
+                    orderServiceV2.convertToHolding(symbol, position.getTotalQuantity());
+                } else {
+                    System.out.println("ℹ️ [ConvertOrSellPositionScheduler] " + brokerOrderRouter.brokerOf(position) +
+                            " has no MIS→CNC convert API — marking " + symbol + " as HOLDING internally only.");
+                }
 
-                // Cancel target and SL orders using OrderExecutor
-                orderServiceV2.cancelOrder(position.getTargetOrderId());
-                orderServiceV2.cancelOrder(position.getStopLossOrderId());
+                // Cancel target and SL orders at the broker that owns this position
+                brokerOrderRouter.cancelViaBroker(position, position.getTargetOrderId());
+                brokerOrderRouter.cancelViaBroker(position, position.getStopLossOrderId());
                 position.setTargetOrderId(null);
                 position.setStopLossOrderId(null);
 
