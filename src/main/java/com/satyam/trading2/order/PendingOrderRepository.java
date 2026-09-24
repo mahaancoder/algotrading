@@ -210,7 +210,11 @@ public class PendingOrderRepository {
     }
 
     private PendingOrder fromCsv(String line){
-        String[] p = line.split(",");
+        // Use limit -1 so a trailing empty field (e.g. an empty signalId written
+        // as "...,SHOONYA,") is preserved. Default split(",") drops trailing
+        // empties, yielding 13 tokens for a 14-column row, which misaligns the
+        // parser into the legacy 10-field branch (symbol read as side, etc.).
+        String[] p = line.split(",", -1);
 
         // New schema: 14 fields. Old schema: 10 fields (no broker/route/signalId/internalId).
         // Handle both for backward compat with existing CSV files on disk.
