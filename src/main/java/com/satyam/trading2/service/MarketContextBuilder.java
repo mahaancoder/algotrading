@@ -53,7 +53,6 @@ public class MarketContextBuilder {
                 .previousClose(previousCloseMap.getOrDefault(symbol, 0.0))
                 .candle(latest)
                 .tickWindow(TickWindow.getTickWindow(symbol))
-                .Vwap(tick.getAverageTradePrice())
                 .build();
     }
 

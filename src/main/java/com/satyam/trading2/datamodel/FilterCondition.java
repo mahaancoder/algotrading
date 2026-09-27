@@ -118,8 +118,6 @@ public class FilterCondition {
                 return metrics.getGapPercent();
             case "distanceFromOpenPrice":
                 return metrics.getDistanceFromOpenPrice();
-            case "distanceFromVwap":
-                return metrics.getDistanceFromVwap();
             case "volumeRatio":
                 return metrics.getVolumeRatio();
             case "stock5DayReturn":
@@ -146,8 +144,6 @@ public class FilterCondition {
                 return metrics.getPreviousClose();
             case "openPrice":
                 return metrics.getOpenPrice();
-            case "vwap":
-                return metrics.getVwap();
             case "dayLow":
                 return metrics.getDayLow();
             case "atr":

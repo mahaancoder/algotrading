@@ -31,11 +31,7 @@ public class TradeEntryMetrics {
     private double openPrice;
     private double gapPercent;  // (Open - PreviousClose) / PreviousClose * 100
     private double distanceFromOpenPrice;  // (BuyPrice - OpenPrice) / OpenPrice * 100
-    
-    // ===== VWAP =====
-    private double vwap;
-    private double distanceFromVwap;  // (CurrentPrice - VWAP) / VWAP * 100
-    
+
     // ===== EMA =====
     private double ema20;
     private double ema50;
@@ -101,8 +97,6 @@ public class TradeEntryMetrics {
                openPrice + "," +
                gapPercent + "," +
                distanceFromOpenPrice + "," +
-               vwap + "," +
-               distanceFromVwap + "," +
                ema20 + "," +
                ema50 + "," +
                aboveEma20 + "," +
@@ -140,7 +134,6 @@ public class TradeEntryMetrics {
     public static String csvHeader() {
         return "symbol,strategy,buyPrice,sellPrice,quantity,buyTime,sellTime,orderId,status," +
                "previousClose,openPrice,gapPercent,distanceFromOpenPrice," +
-               "vwap,distanceFromVwap," +
                "ema20,ema50,aboveEma20,aboveEma50," +
                "currentVolume,averageVolume20,volumeRatio," +
                "stock5DayReturn,nifty5DayReturn,relativeStrength," +
@@ -163,7 +156,7 @@ public class TradeEntryMetrics {
             // Split by comma, handling quoted fields
             String[] parts = parseCsvLine(csvLine);
 
-            if (parts.length < 41) {
+            if (parts.length < 39) {
                 return null; // Invalid line
             }
 
@@ -181,36 +174,34 @@ public class TradeEntryMetrics {
                 .openPrice(parseDouble(parts[10]))
                 .gapPercent(parseDouble(parts[11]))
                 .distanceFromOpenPrice(parseDouble(parts[12]))
-                .vwap(parseDouble(parts[13]))
-                .distanceFromVwap(parseDouble(parts[14]))
-                .ema20(parseDouble(parts[15]))
-                .ema50(parseDouble(parts[16]))
-                .aboveEma20(parseBoolean(parts[17]))
-                .aboveEma50(parseBoolean(parts[18]))
-                .currentVolume(parseDouble(parts[19]))
-                .averageVolume20(parseDouble(parts[20]))
-                .volumeRatio(parseDouble(parts[21]))
-                .stock5DayReturn(parseDouble(parts[22]))
-                .nifty5DayReturn(parseDouble(parts[23]))
-                .relativeStrength(parseDouble(parts[24]))
-                .twoGreenCandles(parseBoolean(parts[25]))
-                .dayLow(parseDouble(parts[26]))
-                .distanceFromDayLow(parseDouble(parts[27]))
-                .atr(parseDouble(parts[28]))
-                .atrPercent(parseDouble(parts[29]))
-                .openingRangeHigh(parseDouble(parts[30]))
-                .openingRangeLow(parseDouble(parts[31]))
-                .buyAboveOpeningRangeHigh(parseBoolean(parts[32]))
-                .yesterdayHigh(parseDouble(parts[33]))
-                .buyAboveYesterdayHigh(parseBoolean(parts[34]))
-                .entryType(parseEntryType(parts[35]))
-                .convertedToHolding(parseBooleanOrNull(parts[36]))
-                .atrTarget(parseDouble(parts[37]))
-                .atrTargetTouched(parseBoolean(parts[38]))
-                .daysToTarget(parseIntegerOrNull(parts[39]))
-                .pnl(parseDoubleOrNull(parts[40]))
-                .positionType(parts.length>41 ? parts[41]: null)
-                .broker(parts.length>42 ? unquote(parts[42]) : null)
+                .ema20(parseDouble(parts[13]))
+                .ema50(parseDouble(parts[14]))
+                .aboveEma20(parseBoolean(parts[15]))
+                .aboveEma50(parseBoolean(parts[16]))
+                .currentVolume(parseDouble(parts[17]))
+                .averageVolume20(parseDouble(parts[18]))
+                .volumeRatio(parseDouble(parts[19]))
+                .stock5DayReturn(parseDouble(parts[20]))
+                .nifty5DayReturn(parseDouble(parts[21]))
+                .relativeStrength(parseDouble(parts[22]))
+                .twoGreenCandles(parseBoolean(parts[23]))
+                .dayLow(parseDouble(parts[24]))
+                .distanceFromDayLow(parseDouble(parts[25]))
+                .atr(parseDouble(parts[26]))
+                .atrPercent(parseDouble(parts[27]))
+                .openingRangeHigh(parseDouble(parts[28]))
+                .openingRangeLow(parseDouble(parts[29]))
+                .buyAboveOpeningRangeHigh(parseBoolean(parts[30]))
+                .yesterdayHigh(parseDouble(parts[31]))
+                .buyAboveYesterdayHigh(parseBoolean(parts[32]))
+                .entryType(parseEntryType(parts[33]))
+                .convertedToHolding(parseBooleanOrNull(parts[34]))
+                .atrTarget(parseDouble(parts[35]))
+                .atrTargetTouched(parseBoolean(parts[36]))
+                .daysToTarget(parseIntegerOrNull(parts[37]))
+                .pnl(parseDoubleOrNull(parts[38]))
+                .positionType(parts.length>39 ? parts[39]: null)
+                .broker(parts.length>40 ? unquote(parts[40]) : null)
                 .build();
         } catch (Exception e) {
             // Log error and return null for invalid lines

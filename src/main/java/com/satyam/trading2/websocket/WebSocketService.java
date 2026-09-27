@@ -7,6 +7,7 @@ import com.satyam.trading2.infrastructure.messaging.BroadcastService;
 import com.satyam.trading2.service.*;
 import com.satyam.trading2.strategy.StrategyEngine;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import com.zerodhatech.ticker.KiteTicker;
 
@@ -15,6 +16,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
@@ -25,6 +27,7 @@ import static com.satyam.trading2.helpers.LatestPriceHelper.getLatestPrice;
 import static com.satyam.trading2.risk.Exits.isExitedToday;
 import static com.satyam.trading2.risk.Exits.isSymbolExitedToday;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class WebSocketService {
@@ -39,6 +42,12 @@ public class WebSocketService {
     private final com.satyam.trading2.domain.service.PositionManager positionManager;
     private final KillSwitchService killSwitchService;
 
+    // Per-symbol throttle for strategy evaluation. Price updates, candle
+    // aggregation and ATR checks still run on every tick; only the heavier
+    // context-build + strategy-evaluate + execute path is gated by this window.
+    private final Map<String, Long> lastStrategyEvalMs = new ConcurrentHashMap<>();
+    private static final long STRATEGY_EVAL_INTERVAL_MS = 250;
+
 
     public void startTicker(String apiKey, String accessToken) {
 
@@ -52,7 +61,7 @@ public class WebSocketService {
 
             System.out.println("📡 Subscribing to " + tokens.size() + " instruments...");
             ticker.subscribe(tokens);
-            ticker.setMode(tokens, KiteTicker.modeFull);
+            ticker.setMode(tokens, KiteTicker.modeQuote);
             System.out.println("✅ Subscribed to " + tokens.size() + " instruments");
         });
 
@@ -82,16 +91,20 @@ public class WebSocketService {
                 if (symbol == null || isSymbolExitedToday(symbol)) return;
 
                 double price = tick.getLastTradedPrice();
-                double vwap = tick.getAverageTradePrice(); // Get VWAP
                 long volume = tick.getVolumeTradedToday(); // Get cumulative volume for the day
                 try {
                     updatePriceEverywhere(symbol, price);
-                    updateVwap(symbol, vwap);
 
                     candleAggregator.onTick(symbol, price, volume);
 
                     // Check ATR target for all open positions of this symbol
                     checkATRTargetForSymbol(symbol, price);
+
+                    // Throttle per-symbol strategy evaluation to cut CPU on the tick path.
+                    long nowMs = System.currentTimeMillis();
+                    Long lastEval = lastStrategyEvalMs.get(symbol);
+                    if (lastEval != null && nowMs - lastEval < STRATEGY_EVAL_INTERVAL_MS) return;
+                    lastStrategyEvalMs.put(symbol, nowMs);
 
                     MarketContext ctx = marketContextBuilder.build(symbol, tick);
                     if (ctx == null) return;
@@ -105,9 +118,8 @@ public class WebSocketService {
                         }
                     }
                 } catch (Exception e) {
-                    // Log but don't crash the tick processing
-                    System.out.println("❌ Error processing tick for " + symbol + ": " + e.getMessage());
-                    e.printStackTrace();
+                    // Log but don't crash the tick processing (debug to avoid hot-path noise)
+                    log.debug("Error processing tick for {}: {}", symbol, e.getMessage());
                 }
             });
         });
@@ -120,10 +132,6 @@ public class WebSocketService {
         StockSelectionService.updateLtp(symbol, price);
         TickWindow.addTickWindow(symbol, price);
         broadcastService.DoBroadcashOnEachTickReceiving(symbol, price);
-    }
-
-    private void updateVwap(String symbol, double vwap) {
-        com.satyam.trading2.helpers.LatestVwapHelper.updateVwap(symbol, vwap);
     }
 
     /**

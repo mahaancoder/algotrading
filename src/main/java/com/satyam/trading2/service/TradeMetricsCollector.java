@@ -69,9 +69,6 @@ public class TradeMetricsCollector {
             // Calculate open price (first candle's open of the day, or use previous close)
             double openPrice = getOpenPrice(symbol, candles, previousClose);
 
-            // Get VWAP
-            double vwap = ctx.getVwap();
-
             // Get EMA data
             EMAService.EMAData emaData = emaService.getEMAData(symbol);
             double ema20 = emaData != null ? emaData.getEma20() : 0;
@@ -114,10 +111,6 @@ public class TradeMetricsCollector {
                 .openPrice(openPrice)
                 .gapPercent(TradeEntryMetrics.percentDiff(openPrice, previousClose))
                 .distanceFromOpenPrice(TradeEntryMetrics.percentDiff(entryPrice, openPrice))
-
-                // VWAP
-                .vwap(vwap)
-                .distanceFromVwap(TradeEntryMetrics.percentDiff(entryPrice, vwap))
 
                 // EMA
                 .ema20(ema20)
@@ -170,8 +163,8 @@ public class TradeMetricsCollector {
             // Append to file (efficient - no need to rewrite)
             appendMetricsToFile(metrics);
 
-            log.info("📊 Collected trade metrics for {} @ {} - Gap: {:.2f}%, VWAP Dist: {:.2f}%, Vol Ratio: {:.2f}x",
-                symbol, entryPrice, metrics.getGapPercent(), metrics.getDistanceFromVwap(), metrics.getVolumeRatio());
+            log.info("📊 Collected trade metrics for {} @ {} - Gap: {:.2f}%, Vol Ratio: {:.2f}x",
+                symbol, entryPrice, metrics.getGapPercent(), metrics.getVolumeRatio());
 
             return metrics;
 

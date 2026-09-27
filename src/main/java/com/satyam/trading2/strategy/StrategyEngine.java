@@ -3,6 +3,7 @@ package com.satyam.trading2.strategy;
 
 import com.satyam.trading2.datamodel.TradeSignal;
 import com.satyam.trading2.datamodel.MarketContext;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+@Slf4j
 @Component
 public class StrategyEngine {
     private final List<TradingStrategy> equityStrategies;
@@ -40,11 +42,10 @@ public class StrategyEngine {
                     if (signal.getType() == TradeSignal.SignalType.BUY) {
                         return signal; // BUY signal found
                     } else if (signal.getType() == TradeSignal.SignalType.HOLD) {
-                        System.out.println("⏸️  [" + strategy.getName() + "] HOLD " + ctx.getSymbol() + " - " + signal.getReason());
+                        log.debug("HOLD [{}] {} - {}", strategy.getName(), ctx.getSymbol(), signal.getReason());
                     }
                 } catch (Exception e) {
-                    System.out.println("❌ [" + strategy.getName() + "] Exception for " + ctx.getSymbol() + ": " + e.getMessage());
-                    e.printStackTrace();  // Print full stack trace to see exactly where it's failing
+                    log.debug("Exception [{}] for {}: {}", strategy.getName(), ctx.getSymbol(), e.getMessage());
                 }
                 return null;
             })

@@ -21,7 +21,6 @@ public class MarketContext {
     private final double atr;           // ATR (14-period) — volatility measure
     private Candle candle;
     private double previousClose;
-    private double Vwap;
     private TickWindow tickWindow;
 
     // ---- Market Time ----

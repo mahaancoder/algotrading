@@ -137,9 +137,6 @@ public class StockFilterService {
             double openPrice = candles.get(0).getOpen();
             if (openPrice <= 0) openPrice = previousClose;
 
-            // Get VWAP from latest tick data
-            double vwap = com.satyam.trading2.helpers.LatestVwapHelper.getLatestVwap(symbol);
-            
             // Get EMA data
             EMAService.EMAData emaData = emaService.getEMAData(symbol);
             double ema20 = emaData != null ? emaData.ema20 : 0;
@@ -172,8 +169,6 @@ public class StockFilterService {
                     .openPrice(openPrice)
                     .gapPercent(calculatePercentDiff(openPrice, previousClose))
                     .distanceFromOpenPrice(calculatePercentDiff(currentPrice, openPrice))
-                    .vwap(vwap)
-                    .distanceFromVwap(calculatePercentDiff(currentPrice, vwap))
                     .ema20(ema20)
                     .ema50(ema50)
                     .aboveEma20(currentPrice > ema20)
