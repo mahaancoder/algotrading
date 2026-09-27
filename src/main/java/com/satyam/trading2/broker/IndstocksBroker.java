@@ -12,8 +12,11 @@ import com.satyam.trading2.broker.ws.BrokerOrderEventListener;
 import com.satyam.trading2.broker.ws.IndstocksOrderWebSocketClient;
 import com.satyam.trading2.broker.auth.IndstocksInstrumentsService;
 import com.satyam.trading2.config.IndstocksConfig;
+import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
+import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
+import com.satyam.trading2.order.PendingOrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,7 +25,9 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -59,6 +64,11 @@ public class IndstocksBroker extends AbstractRestBroker {
     private final IndstocksConfig indstocksConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
     private final PositionManager positionManager;
+
+    // Field-injected (no cycle: PendingOrderRepository has no broker deps) so the
+    // reconcile safety net can persist the recovered target SELL for fill matching.
+    @Autowired
+    private PendingOrderRepository pendingOrderRepository;
 
     // The portfolio endpoints carry no strategy, so a reconciled-in position uses this default.
     private static final String DEFAULT_STRATEGY = "Dip-Accumulator-Momentum";
@@ -493,10 +503,11 @@ public class IndstocksBroker extends AbstractRestBroker {
         try {
             JsonNode resp = getJson(indstocksConfig.getBaseUrl() + "/order-book",
                     indstocksConfig.getAuthHeader());
+            JsonNode orderBookData = null;
             String status = textOr(resp, "status", "");
             if ("success".equals(status)) {
-                JsonNode data = resp.get("data");
-                int count = data != null && data.isArray() ? data.size() : 0;
+                orderBookData = resp.get("data");
+                int count = orderBookData != null && orderBookData.isArray() ? orderBookData.size() : 0;
                 log.info("[IndstocksBroker] Reconciliation: {} orders from INDstocks order book", count);
                 // TODO: match each order's id against PendingOrderRepository by
                 // (broker=INDSTOCKS, brokerOrderId) and update status if drifted.
@@ -505,8 +516,105 @@ public class IndstocksBroker extends AbstractRestBroker {
 
             // Sync portfolio (holdings + open positions) into PositionManager.
             syncPortfolioIntoManager();
+
+            // Safety net: re-arm any missing intraday target sells. A buy fill can
+            // arrive on the order-update WS before its PendingOrder is saved and be
+            // dropped as unmatched, so onBuyCompleted never runs and no target sell
+            // is placed. Recover here off the broker order book (source of truth).
+            ensureTargetSellsForOpenPositions(orderBookData);
         } catch (Exception e) {
             log.error("[IndstocksBroker] reconcileOrders exception: {}", e.getMessage(), e);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Target-sell safety net
+    //
+    // For every open INDSTOCKS intraday position with no resting SELL in the
+    // broker order book, place the standard MIS target (avg × time-window
+    // multiplier — identical to OrderCompletionProcessor.onBuyCompleted).
+    // Matching is by security_id so symbol-format differences can't fool it, and
+    // any non-terminal SELL blocks a re-place so we never oversell.
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void ensureTargetSellsForOpenPositions(JsonNode orderBookData) {
+        try {
+            Set<String> secIdsWithOpenSell = new HashSet<>();
+            if (orderBookData != null && orderBookData.isArray()) {
+                for (JsonNode o : orderBookData) {
+                    if (!"SELL".equalsIgnoreCase(textOr(o, "txn_type", ""))) continue;
+                    BrokerOrderStatus st = mapIndStatus(textOr(o, "status", ""));
+                    // Anything not clearly terminal counts as a resting sell (oversell-safe).
+                    if (st != BrokerOrderStatus.COMPLETE
+                            && st != BrokerOrderStatus.REJECTED
+                            && st != BrokerOrderStatus.CANCELLED) {
+                        String secId = textOr(o, "security_id", null);
+                        if (secId != null) secIdsWithOpenSell.add(secId);
+                    }
+                }
+            }
+
+            for (Position pos : positionManager.getAllIntradayPositions()) {
+                if (pos == null || !"INDSTOCKS".equals(pos.getBroker())) continue;
+                if (pos.getTotalQuantity() <= 0) continue;
+
+                String secId = resolveSecurityId(pos.getSymbol());
+                if (secId != null && secIdsWithOpenSell.contains(secId)) {
+                    continue; // already has a resting target sell — nothing to recover
+                }
+                placeRecoveredTargetSell(pos);
+            }
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] ensureTargetSells failed: {}", e.getMessage());
+        }
+    }
+
+    /** Place the MIS target SELL for a position that lost its target, then persist
+     *  a broker-tagged SELL PendingOrder so the eventual fill is matched. */
+    private void placeRecoveredTargetSell(Position pos) {
+        String symbol = pos.getSymbol();
+        int qty = pos.getTotalQuantity();
+        double target = com.satyam.trading2.helpers.TargetMultiplierHelper
+                .calculateTargetPrice(pos.getAveragePrice(), false);
+
+        if (!com.satyam.trading2.helpers.CircuitLimitChecker
+                .isSpecificTargetWithinCircuitLimits(symbol, target)) {
+            log.warn("[IndstocksBroker] Recover target SKIPPED for {} — target ₹{} hits upper circuit",
+                    symbol, String.format("%.2f", target));
+            return;
+        }
+
+        OrderRequest req = OrderRequest.builder()
+                .symbol(symbol)
+                .exchange("NSE")
+                .transactionType(TransactionType.SELL)
+                .orderType(OrderType.LIMIT)
+                .quantity(qty)
+                .price(target)
+                .productType(ProductType.INTRADAY)
+                .strategyId(pos.getStrategy())
+                .build();
+
+        log.info("[IndstocksBroker] Recover target: placing SELL {} qty={} @ ₹{}",
+                symbol, qty, String.format("%.2f", target));
+        BrokerOrderResponse resp = placeOrder(req);
+        if (resp != null && resp.isAccepted() && resp.getBrokerOrderId() != null) {
+            String orderId = resp.getBrokerOrderId();
+            pos.setTargetOrderId(orderId);
+            pos.setTargetPlaced(true);
+            positionManager.updatePosition(pos);
+            try {
+                PendingOrder po = pendingOrderRepository.create(orderId, symbol, TradeSide.SELL,
+                        pos.getStrategy(), qty, target, false, "INDSTOCKS", ExecutionRoute.INDSTOCKS, null);
+                pendingOrderRepository.save(po);
+            } catch (Exception e) {
+                log.warn("[IndstocksBroker] Recover target: PendingOrder persist failed for {}: {}",
+                        symbol, e.getMessage());
+            }
+            log.info("[IndstocksBroker] Recover target: SELL placed for {} id={}", symbol, orderId);
+        } else {
+            log.warn("[IndstocksBroker] Recover target: SELL REJECTED for {} ({})",
+                    symbol, resp != null ? resp.getRejectionReason() : "null response");
         }
     }
 

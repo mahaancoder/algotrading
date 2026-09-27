@@ -11,16 +11,22 @@ import com.satyam.trading2.broker.model.TransactionType;
 import com.satyam.trading2.broker.ws.BrokerOrderEventListener;
 import com.satyam.trading2.broker.ws.ShoonyaOrderWebSocketClient;
 import com.satyam.trading2.config.ShoonyaConfig;
+import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
+import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
+import com.satyam.trading2.order.PendingOrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Shoonya (Finvasia) execution broker — Group 2.
@@ -48,6 +54,11 @@ public class ShoonyaBroker extends AbstractRestBroker {
     private final ShoonyaConfig shoonyaConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
     private final PositionManager positionManager;
+
+    // Field-injected (no cycle: PendingOrderRepository has no broker deps) so the
+    // reconcile safety net can persist the recovered target SELL for fill matching.
+    @Autowired
+    private PendingOrderRepository pendingOrderRepository;
 
     // PositionBook carries no strategy, so a reconciled-in position uses this default.
     private static final String DEFAULT_STRATEGY = "Dip-Accumulator-Momentum";
@@ -406,8 +417,118 @@ public class ShoonyaBroker extends AbstractRestBroker {
                 // TODO: match each order's norenordno against PendingOrderRepository
                 // by (broker=SHOONYA, brokerOrderId) and update status if drifted.
             }
+
+            // 3. Fetch demat holdings (POST /Holdings) — settled CNC stock that does
+            //    NOT appear in the intraday PositionBook. Needed so the morning
+            //    HoldingsTargetSetScheduler can place targets for overnight Shoonya
+            //    holdings.
+            Map<String, String> holdPayload = new HashMap<>();
+            holdPayload.put("uid", shoonyaConfig.getUserId());
+            holdPayload.put("actid", shoonyaConfig.getActid());
+            holdPayload.put("prd", "C"); // CNC / delivery holdings
+            String holdJData = objectMapper.writeValueAsString(holdPayload);
+            String holdBody = norenBody(holdJData);
+
+            JsonNode holdResp = postForm(shoonyaConfig.getBaseUrl() + "Holdings", holdBody, SLOW_REQUEST_TIMEOUT_MS);
+            if (holdResp.isArray()) {
+                log.info("[ShoonyaBroker] Reconciliation: {} demat holdings from Shoonya", holdResp.size());
+                syncHoldingsIntoManager(holdResp);
+            }
+
+            // Safety net: re-arm any missing intraday target sells. A buy fill can
+            // arrive on the order-update WS before its PendingOrder is saved and be
+            // dropped as unmatched, so onBuyCompleted never runs and no target sell
+            // is placed. Recover here off the broker order book (source of truth).
+            ensureTargetSellsForOpenPositions(ordResp);
         } catch (Exception e) {
             log.error("[ShoonyaBroker] reconcileOrders exception: {}", e.getMessage(), e);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Target-sell safety net
+    //
+    // For every open SHOONYA intraday position with no resting SELL in the broker
+    // order book, place the standard MIS target (avg × time-window multiplier —
+    // identical to OrderCompletionProcessor.onBuyCompleted). Any non-terminal SELL
+    // for the symbol blocks a re-place so we never oversell.
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void ensureTargetSellsForOpenPositions(JsonNode orderBook) {
+        try {
+            Set<String> symbolsWithOpenSell = new HashSet<>();
+            if (orderBook != null && orderBook.isArray()) {
+                for (JsonNode o : orderBook) {
+                    if (!"S".equalsIgnoreCase(textOr(o, "trantype", ""))) continue;
+                    String st = textOr(o, "status", "").toUpperCase();
+                    boolean terminal = st.equals("COMPLETE") || st.equals("FILLED")
+                            || st.equals("REJECTED") || st.equals("CANCELLED") || st.equals("CANCELED");
+                    if (!terminal) {
+                        String sym = fromShoonyaSymbol(textOr(o, "tsym", null));
+                        if (sym != null) symbolsWithOpenSell.add(sym);
+                    }
+                }
+            }
+
+            for (Position pos : positionManager.getAllIntradayPositions()) {
+                if (pos == null || !"SHOONYA".equals(pos.getBroker())) continue;
+                if (pos.getTotalQuantity() <= 0) continue;
+                if (symbolsWithOpenSell.contains(pos.getSymbol())) {
+                    continue; // already has a resting target sell — nothing to recover
+                }
+                placeRecoveredTargetSell(pos);
+            }
+        } catch (Exception e) {
+            log.warn("[ShoonyaBroker] ensureTargetSells failed: {}", e.getMessage());
+        }
+    }
+
+    /** Place the MIS target SELL for a position that lost its target, then persist
+     *  a broker-tagged SELL PendingOrder so the eventual fill is matched. */
+    private void placeRecoveredTargetSell(Position pos) {
+        String symbol = pos.getSymbol();
+        int qty = pos.getTotalQuantity();
+        double target = com.satyam.trading2.helpers.TargetMultiplierHelper
+                .calculateTargetPrice(pos.getAveragePrice(), false);
+
+        if (!com.satyam.trading2.helpers.CircuitLimitChecker
+                .isSpecificTargetWithinCircuitLimits(symbol, target)) {
+            log.warn("[ShoonyaBroker] Recover target SKIPPED for {} — target ₹{} hits upper circuit",
+                    symbol, String.format("%.2f", target));
+            return;
+        }
+
+        OrderRequest req = OrderRequest.builder()
+                .symbol(symbol)
+                .exchange("NSE")
+                .transactionType(TransactionType.SELL)
+                .orderType(OrderType.LIMIT)
+                .quantity(qty)
+                .price(target)
+                .productType(ProductType.INTRADAY)
+                .strategyId(pos.getStrategy())
+                .build();
+
+        log.info("[ShoonyaBroker] Recover target: placing SELL {} qty={} @ ₹{}",
+                symbol, qty, String.format("%.2f", target));
+        BrokerOrderResponse resp = placeOrder(req);
+        if (resp != null && resp.isAccepted() && resp.getBrokerOrderId() != null) {
+            String orderId = resp.getBrokerOrderId();
+            pos.setTargetOrderId(orderId);
+            pos.setTargetPlaced(true);
+            positionManager.updatePosition(pos);
+            try {
+                PendingOrder po = pendingOrderRepository.create(orderId, symbol, TradeSide.SELL,
+                        pos.getStrategy(), qty, target, false, "SHOONYA", ExecutionRoute.SHOONYA, null);
+                pendingOrderRepository.save(po);
+            } catch (Exception e) {
+                log.warn("[ShoonyaBroker] Recover target: PendingOrder persist failed for {}: {}",
+                        symbol, e.getMessage());
+            }
+            log.info("[ShoonyaBroker] Recover target: SELL placed for {} id={}", symbol, orderId);
+        } else {
+            log.warn("[ShoonyaBroker] Recover target: SELL REJECTED for {} ({})",
+                    symbol, resp != null ? resp.getRejectionReason() : "null response");
         }
     }
 
@@ -520,6 +641,74 @@ public class ShoonyaBroker extends AbstractRestBroker {
                 log.warn("[ShoonyaBroker] Failed to sync a PositionBook row: {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * Sync Shoonya's demat Holdings (POST /Holdings) into PositionManager as
+     * HOLDING positions keyed by broker=SHOONYA. Unlike PositionBook (intraday
+     * day positions), Holdings carries the settled overnight demat stock that the
+     * morning HoldingsTargetSetScheduler must place targets for.
+     *
+     * Sellable qty = holdqty + btstqty - usedqty (usedqty is what was already sold
+     * today). A dually-listed scrip carries multiple exch_tsym entries; the NSE
+     * trading symbol is used since our system is NSE Kite-symbol based. A row with
+     * no sellable qty removes the tracked position.
+     */
+    private void syncHoldingsIntoManager(JsonNode holdResp) {
+        for (JsonNode node : holdResp) {
+            try {
+                if ("Not_Ok".equalsIgnoreCase(textOr(node, "stat", "Ok"))) continue;
+
+                String tsym = nseTradingSymbol(node.get("exch_tsym"));
+                if (tsym == null) continue;
+
+                String symbol = fromShoonyaSymbol(tsym);
+                int holdQty = parseIntSafe(textOr(node, "holdqty", "0"));
+                int btstQty = parseIntSafe(textOr(node, "btstqty", "0"));
+                int usedQty = parseIntSafe(textOr(node, "usedqty", "0"));
+                int sellableQty = holdQty + btstQty - usedQty;
+                double avg = parseDoubleSafe(textOr(node, "upldprc", "0"));
+
+                Position existing = findShoonyaPosition(symbol, Position.PositionType.HOLDING);
+
+                if (sellableQty <= 0) {
+                    // Nothing left to sell (fully used today) — drop our row if tracked.
+                    if (existing != null) {
+                        positionManager.removePosition(symbol, existing.getStrategy(), "SHOONYA");
+                        log.info("[ShoonyaBroker] Reconcile: removed zero-qty SHOONYA holding {} ({})",
+                                symbol, existing.getStrategy());
+                    }
+                    continue;
+                }
+
+                if (existing != null) {
+                    existing.setTotalQuantity(sellableQty);
+                    existing.setAveragePrice(avg);
+                    positionManager.updatePosition(existing);
+                } else {
+                    Position p = new Position(symbol, sellableQty, avg, 0, true,
+                            DEFAULT_STRATEGY, null, null, null, Position.PositionType.HOLDING);
+                    p.setBroker("SHOONYA");
+                    p.setExecutionRoute(ExecutionRoute.SHOONYA);
+                    positionManager.addPosition(p);
+                    log.info("[ShoonyaBroker] Reconcile: added SHOONYA HOLDING {} qty={} avg={}",
+                            symbol, sellableQty, avg);
+                }
+            } catch (Exception e) {
+                log.warn("[ShoonyaBroker] Failed to sync a Holdings row: {}", e.getMessage());
+            }
+        }
+    }
+
+    /** Pick the NSE trading symbol from a Shoonya exch_tsym array (fallback: first). */
+    private String nseTradingSymbol(JsonNode exchTsym) {
+        if (exchTsym == null || !exchTsym.isArray() || exchTsym.size() == 0) return null;
+        for (JsonNode e : exchTsym) {
+            if ("NSE".equalsIgnoreCase(textOr(e, "exch", ""))) {
+                return textOr(e, "tsym", null);
+            }
+        }
+        return textOr(exchTsym.get(0), "tsym", null);
     }
 
     /** Find a SHOONYA position for this symbol+type across strategies, or null. */

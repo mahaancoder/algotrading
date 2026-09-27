@@ -1,5 +1,8 @@
 package com.satyam.trading2.scheduler;
 
+import com.satyam.trading2.broker.Broker;
+import com.satyam.trading2.broker.BrokerRouter;
+import com.satyam.trading2.broker.ExecutionRoute;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSide;
@@ -29,6 +32,7 @@ public class HoldingsTargetSetScheduler {
     private final DipAccumulatorService dipAccumulatorService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
     private final BrokerOrderRouter brokerOrderRouter;
+    private final BrokerRouter brokerRouter;
 
 
     /**
@@ -99,6 +103,14 @@ public class HoldingsTargetSetScheduler {
         // ===== Non-KITE holdings (Shoonya/INDstocks) =====
         // Kite getHoldings() only returns Kite holdings, so process broker holdings
         // tracked in PositionManager separately, routing targets to their owning broker.
+        //
+        // This scheduler runs at 9:05 AM, but the periodic reconciliation that loads
+        // Shoonya/INDstocks holdings into PositionManager is gated to 9:20 AM+. Pull a
+        // fresh sync from each non-KITE broker here so their holdings exist before we
+        // look them up — otherwise getAllHoldings() has no non-KITE rows yet and their
+        // targets are silently skipped.
+        refreshNonKiteHoldings();
+
         for (Position holding : positionManager.getAllHoldings()) {
             if (brokerOrderRouter.isKite(holding)) {
                 continue; // KITE holdings already handled from the broker API above
@@ -106,6 +118,25 @@ public class HoldingsTargetSetScheduler {
             placeTargetForHolding(holding, targetMultiplier);
         }
 
+    }
+
+    /**
+     * Reconcile each non-KITE broker so its holdings/positions are loaded into
+     * PositionManager before we place targets. Safe to call independently of the
+     * periodic reconciliation cycle; each broker skips itself if not authenticated.
+     */
+    private void refreshNonKiteHoldings() {
+        for (Broker broker : brokerRouter.getAllBrokers()) {
+            if (broker.getRoute() == ExecutionRoute.KITE) {
+                continue; // KITE holdings come straight from orderServiceV2.getHoldings()
+            }
+            try {
+                broker.reconcileOrders();
+            } catch (Exception e) {
+                System.out.println("⚠️ [HoldingsTargetSetScheduler] Failed to refresh holdings for "
+                        + broker.getBrokerName() + ": " + e.getMessage());
+            }
+        }
     }
 
     /**
