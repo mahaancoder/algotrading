@@ -123,23 +123,23 @@ public class StockSelectionService {
 //            System.out.println("📊 STOCK SELECTION UPDATE - " + new java.util.Date());
 
             if (!topLosers.isEmpty()) {
-//                System.out.println("\n🔻 TOP " + topLosers.size() + " LOSERS (sorted by biggest loss):");
-//                System.out.println("-".repeat(100));
+                System.out.println("\n🔻 TOP " + topLosers.size() + " LOSERS (sorted by biggest loss):");
+                System.out.println("-".repeat(100));
                 for (int i = 0; i < topLosers.size(); i++) {
                     StockChange stock = topLosers.get(i);
-//                    System.out.printf("  %2d. %-15s %6.2f%%", (i + 1), stock.getSymbol(), stock.getChange());
-//                    System.out.println();
+                    System.out.printf("  %2d. %-15s %6.2f%%", (i + 1), stock.getSymbol(), stock.getChange());
+                    System.out.println();
                 }
             } else {
                 System.out.println("\n🔻 TOP LOSERS: None");
             }
 
             if (!topGainers.isEmpty()) {
-//                System.out.println("\n🔺 TOP " + topGainers.size() + " GAINERS (sorted by biggest gain):");
-//                System.out.println("-".repeat(100));
+                System.out.println("\n🔺 TOP " + topGainers.size() + " GAINERS (sorted by biggest gain):");
+                System.out.println("-".repeat(100));
                 for (int i = 0; i < topGainers.size(); i++) {
                     StockChange stock = topGainers.get(i);
-//                    System.out.printf("  %2d. %-15s %6.2f%%", (i + 1), stock.getSymbol(), stock.getChange());
+                    System.out.printf("  %2d. %-15s %6.2f%%", (i + 1), stock.getSymbol(), stock.getChange());
                     System.out.println();
                 }
             } else {
