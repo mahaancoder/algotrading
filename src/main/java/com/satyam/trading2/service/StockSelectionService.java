@@ -85,7 +85,7 @@ public class StockSelectionService {
                     double ltp = ltpMap.getOrDefault(s.getSymbol(), 0.0);
                     return stockFilterService.passesLoserFilter(s.getSymbol(), ltp, s.getChange());
                 })
-                .limit(30)                                   // Top 20 biggest losers
+                .limit(50)                                   // Top 20 biggest losers
                 .forEach(s -> {
                     newLosers.add(s.getSymbol());
                     topLosers.add(s);
@@ -95,7 +95,7 @@ public class StockSelectionService {
         Set<String> newGainers = ConcurrentHashMap.newKeySet();
         List<StockChange> topGainers = new ArrayList<>();
         int count = 0;
-        for (int i = list.size() - 1; i >= 0 && count < 0; i--) {
+        for (int i = list.size() - 1; i >= 0 && count < 50; i--) {
             StockChange stock = list.get(i);
             if (stock.getChange() < 1) {
                 break;
