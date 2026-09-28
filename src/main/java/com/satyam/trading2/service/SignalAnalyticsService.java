@@ -62,10 +62,10 @@ public class SignalAnalyticsService {
             // accumulation, circuit limit, product toggle, no-trade veto, broker
             // disabled, risk check, insufficient broker capital, or a broker
             // placement rejection from INDSTOCKS/SHOONYA).
-            log.warn("🚫 [SignalRejected] {} {} @ {} entryType={} cap=₹{} → {}",
-                    strategy, signal.getSymbol(), signal.getEntryPrice(),
-                    signal.getEntryType(), String.format("%.0f", capitalRequired),
-                    rejectionReason);
+            System.out.println("🚫 [SignalRejected] " + strategy + " " + signal.getSymbol()
+                    + " @ " + signal.getEntryPrice() + " entryType=" + signal.getEntryType()
+                    + " cap=₹" + String.format("%.0f", capitalRequired)
+                    + " → " + rejectionReason);
         }
 
         // Persist to file
