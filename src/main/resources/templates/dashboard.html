@@ -638,34 +638,17 @@
     function renderReservedCapitalCards(data) {
         let html = '';
 
-        let totalStrategy = data.totalReservedStrategy || 0;
-        let totalSymbol = data.totalReservedSymbol || 0;
-
-        html += `
-        <div class='strat'>
-            <div class='small'>Total Reserved (Strategy)</div>
-            <div class='value' style='font-size:16px; margin:4px 0;'>₹${(totalStrategy/100000).toFixed(2)}L</div>
-            <div class='small' style='color:#666'>reservedCapitalPerStrategy</div>
-        </div>`;
-
-        html += `
-        <div class='strat'>
-            <div class='small'>Total Reserved (Symbol)</div>
-            <div class='value' style='font-size:16px; margin:4px 0;'>₹${(totalSymbol/100000).toFixed(2)}L</div>
-            <div class='small' style='color:#666'>reservedCapitalPerSymbol</div>
-        </div>`;
-
-        const byStrategy = data.reservedByStrategy || {};
-        const keys = Object.keys(byStrategy);
+        const byBroker = data.reservedByBroker || {};
+        const keys = Object.keys(byBroker);
         if (keys.length === 0) {
             html += `
             <div class='strat'>
-                <div class='small'>Reserved by Strategy</div>
+                <div class='small'>Reserved by Broker</div>
                 <div class='small' style='color:#666; margin-top:6px'>No reservations</div>
             </div>`;
         } else {
             keys.forEach(k => {
-                let v = byStrategy[k] || 0;
+                let v = byBroker[k] || 0;
                 html += `
                 <div class='strat'>
                     <div class='small'>${k}</div>

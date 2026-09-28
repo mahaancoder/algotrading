@@ -89,15 +89,13 @@ public class DashboardController {
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Get current reserved capital snapshot (strategy + symbol)
+     * Get current reserved capital snapshot (broker-wise)
      */
     @GetMapping("/api/risk/reserved-capital")
     @ResponseBody
     public ResponseEntity<Map<String, Object>> getReservedCapital() {
         Map<String, Object> response = new HashMap<>();
-        response.put("totalReservedStrategy", riskManager.getTotalReservedCapital());
-        response.put("totalReservedSymbol", riskManager.getTotalReservedCapitalBySymbol());
-        response.put("reservedByStrategy", riskManager.getReservedCapitalPerStrategySnapshot());
+        response.put("reservedByBroker", riskManager.getReservedCapitalPerBrokerSnapshot());
         response.put("timestamp", System.currentTimeMillis());
         return ResponseEntity.ok(response);
     }

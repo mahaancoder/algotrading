@@ -433,8 +433,10 @@ public class OrderExecutionService {
     }
 
     private boolean isBuyAllowed() {
+        // No buy orders before 9:14:59 — placing them earlier (e.g. from 9:10)
+        // just gets them rejected by the broker since the market opens at 9:15.
         LocalTime now = LocalTime.now();
-        return !now.isBefore(LocalTime.of(9, 10)) && now.isBefore(LocalTime.of(15, 0));
+        return !now.isBefore(LocalTime.of(9, 14, 59)) && now.isBefore(LocalTime.of(15, 0));
     }
 
     private static int calculateQty(TradeSignal signal) {

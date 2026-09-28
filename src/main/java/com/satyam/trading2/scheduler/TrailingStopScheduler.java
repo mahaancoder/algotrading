@@ -50,9 +50,9 @@ public class TrailingStopScheduler {
 
         double threshold;
         if (!now.isBefore(LocalTime.of(14, 0))) { // >= 14:00
-            threshold = 0.2;
+            threshold = 0.1;
         } else if (!now.isBefore(LocalTime.of(13, 0))) { // >= 13:00
-            threshold = 0.25;
+            threshold = 0.2;
         } else if (!now.isBefore(LocalTime.of(12, 0))) { // >= 12:00
             threshold = 0.3;
         } else {

@@ -38,6 +38,15 @@ public class MarginFetchScheduler {
     @Scheduled(initialDelay = 30_000, fixedDelay = 300_000)
     public void setDailyBudgets() {
         try {
+            // Skip the market-open window (9:14–9:20 AM IST): available margin is
+            // volatile as opening orders settle, so we avoid caching a misleading
+            // budget during this period. Pinned to IST regardless of JVM timezone.
+            LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+            if (!now.isBefore(LocalTime.of(9, 14)) && now.isBefore(LocalTime.of(9, 20))) {
+                System.out.println("⏸️ [MarginFetchScheduler] Skipping budget fetch during 9:14–9:20 AM IST window");
+                return;
+            }
+
             // Fetch Kite funds only when logged in (avoids noisy 401s off-hours)
             if (kiteConfig.isAuthenticated()) {
                 Double availableFunds = brokerService.getMargin();

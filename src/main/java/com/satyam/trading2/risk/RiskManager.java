@@ -138,8 +138,15 @@ public class RiskManager {
             double brokerFundsAvailable = brokerMaxCapital - brokerCommitted;
 
             if (actualCapital > brokerFundsAvailable) {
+                // Breakdown so a too-low "avail" can be traced to which term is
+                // inflated: budget (max), open-position capital (used), or stuck
+                // reservations (reserved). A large `reserved` here vs. few live
+                // orders points to leaked reservations.
                 return RiskCheckResult.rejected("Insufficient " + b + " broker capital (need ₹"
-                    + String.format("%.0f", actualCapital) + ", avail ₹" + String.format("%.0f", brokerFundsAvailable) + ")");
+                    + String.format("%.0f", actualCapital) + ", avail ₹" + String.format("%.0f", brokerFundsAvailable)
+                    + " | max ₹" + String.format("%.0f", brokerMaxCapital)
+                    + ", used ₹" + String.format("%.0f", brokerStrategyCapitalUsed)
+                    + ", reserved ₹" + String.format("%.0f", brokerReserved) + ")");
             }
 
             // Global cross-broker strategy cap removed — capital is now enforced solely
@@ -286,19 +293,20 @@ public class RiskManager {
     // Dashboard diagnostics helpers
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /** Total reserved capital across all strategies */
-    public double getTotalReservedCapital() {
-        return reservedCapitalPerStrategy.values().stream().mapToDouble(Double::doubleValue).sum();
-    }
-
-    /** Total reserved capital across all symbols */
-    public double getTotalReservedCapitalBySymbol() {
-        return reservedCapitalPerSymbol.values().stream().mapToDouble(Double::doubleValue).sum();
-    }
-
-    /** Snapshot reserved capital per strategy */
-    public Map<String, Double> getReservedCapitalPerStrategySnapshot() {
-        return new HashMap<>(reservedCapitalPerStrategy);
+    /**
+     * Snapshot reserved capital aggregated per broker. Keys of the underlying
+     * map are "broker::strategy"; since there is a single strategy we collapse
+     * to just the broker so the dashboard can show reserved amount broker-wise.
+     */
+    public Map<String, Double> getReservedCapitalPerBrokerSnapshot() {
+        Map<String, Double> byBroker = new HashMap<>();
+        for (Map.Entry<String, Double> e : reservedCapitalPerBrokerStrategy.entrySet()) {
+            String key = e.getKey();
+            int idx = key.indexOf("::");
+            String broker = idx >= 0 ? key.substring(0, idx) : key;
+            byBroker.merge(broker, e.getValue(), Double::sum);
+        }
+        return byBroker;
     }
 
     /**
@@ -308,7 +316,8 @@ public class RiskManager {
     public synchronized void releaseAllReservedCapital() {
         reservedCapitalPerStrategy.clear();
         reservedCapitalPerSymbol.clear();
-        System.out.println("🧹 [RiskManager] Released ALL reserved capital (strategy + symbol maps cleared)");
+        reservedCapitalPerBrokerStrategy.clear();
+        System.out.println("🧹 [RiskManager] Released ALL reserved capital (strategy + symbol + broker maps cleared)");
     }
 
 }
