@@ -166,8 +166,14 @@ public class BrokerOrderEventProcessor {
         double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
         String symbol = pendingOrder.getSymbol();
         String strategy = pendingOrder.getStrategy();
+        // Release against the order's OWN broker. The broker-unaware overload
+        // defaults to KITE, which left INDSTOCKS/SHOONYA reservations stuck in
+        // reservedCapitalPerBrokerStrategy on cancel/reject — the per-broker
+        // available capital then shrank over the day until every new signal was
+        // wrongly rejected with "Insufficient <broker> broker capital".
+        String broker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
 
-        riskManager.releaseCapital(strategy, reservedCapital);
+        riskManager.releaseCapital(strategy, reservedCapital, broker);
         riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
 
         // Remove DipState if this was a BUY order
