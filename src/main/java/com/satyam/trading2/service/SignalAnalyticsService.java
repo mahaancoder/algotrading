@@ -57,6 +57,15 @@ public class SignalAnalyticsService {
             if (rejectionReason != null) {
                 rejectionReasonCounts.merge(rejectionReason, 1, Integer::sum);
             }
+            // Surface every rejected buy signal with its exact reason so it is clear
+            // which gate blocked the trade (kill switch, buy hours, exited-today,
+            // accumulation, circuit limit, product toggle, no-trade veto, broker
+            // disabled, risk check, insufficient broker capital, or a broker
+            // placement rejection from INDSTOCKS/SHOONYA).
+            log.warn("🚫 [SignalRejected] {} {} @ {} entryType={} cap=₹{} → {}",
+                    strategy, signal.getSymbol(), signal.getEntryPrice(),
+                    signal.getEntryType(), String.format("%.0f", capitalRequired),
+                    rejectionReason);
         }
 
         // Persist to file
