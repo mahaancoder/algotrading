@@ -142,18 +142,10 @@ public class RiskManager {
                     + String.format("%.0f", actualCapital) + ", avail ₹" + String.format("%.0f", brokerFundsAvailable) + ")");
             }
 
-            // ===== GLOBAL STRATEGY CAPITAL LIMIT (safety net across all brokers) =====
-            double strategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(strategy);
-            double reservedCapital = reservedCapitalPerStrategy.getOrDefault(strategy, 0.0);
-            double totalCommittedCapital = strategyCapitalUsed + reservedCapital;
-
-            double maxCapital = marginFetchScheduler.getMaxCapitalPerStrategy(strategy);
-            double fundsAvailableforTrading = maxCapital - totalCommittedCapital;
-
-            if (actualCapital > fundsAvailableforTrading) {
-                return RiskCheckResult.rejected("Insufficient strategy capital available (global limit)");
-            }
-
+            // Global cross-broker strategy cap removed — capital is now enforced solely
+            // by the per-broker strategy limit (above) and the per-symbol limit. This
+            // stops INDSTOCKS/SHOONYA orders from being blocked by Kite's (decaying)
+            // global budget once total usage across brokers exceeds it.
             return RiskCheckResult.safe();
         } // End symbol lock
     }
@@ -190,20 +182,9 @@ public class RiskManager {
         // Update per-broker+strategy map
         reservedCapitalPerBrokerStrategy.merge(brokerStrategyKey, capitalAmount, Double::sum);
 
-        // Global strategy-level safety net across all brokers (uses the global budget).
-        double maxCapital = marginFetchScheduler.getMaxCapitalPerStrategy(strategy);
-        double globalStrategyCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(strategy);
-        double globalReserved = reservedCapitalPerStrategy.getOrDefault(strategy, 0.0);
-        double globalCommitted = globalStrategyCapitalUsed + globalReserved;
-        double globalFundsAvailable = maxCapital - globalCommitted;
-
-        if (capitalAmount > globalFundsAvailable) {
-            // Roll back the per-broker reservation
-            double cur = reservedCapitalPerBrokerStrategy.getOrDefault(brokerStrategyKey, 0.0);
-            reservedCapitalPerBrokerStrategy.put(brokerStrategyKey, Math.max(0, cur - capitalAmount));
-            return false;
-        }
-
+        // Global cross-broker safety net removed — only the per-broker limit (above)
+        // gates reservations now. We still track the strategy-level reserved total for
+        // dashboard diagnostics and for releaseCapital()'s bookkeeping.
         reservedCapitalPerStrategy.merge(strategy, capitalAmount, Double::sum);
         return true;
     }

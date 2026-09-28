@@ -4,8 +4,6 @@ import com.satyam.trading2.datamodel.DipState;
 import com.satyam.trading2.datamodel.EntryType;
 import com.satyam.trading2.datamodel.MarketContext;
 import com.satyam.trading2.datamodel.TradeSignal;
-import com.satyam.trading2.domain.service.PositionManager;
-import com.satyam.trading2.scheduler.MarginFetchScheduler;
 import com.satyam.trading2.service.DipAccumulatorService;
 import com.satyam.trading2.service.StockSelectionService;
 import lombok.RequiredArgsConstructor;
@@ -17,12 +15,8 @@ import static com.satyam.trading2.datamodel.TradeSignal.SignalType.BUY;
 @RequiredArgsConstructor
 public class MomentumDipAccumulatorStrategy implements TradingStrategy {
 
-    private static final double CAPITAL_PER_BUY = 25000; // Capital per buy signal
-
     private final StockSelectionService selectionService;
     private final DipAccumulatorService dipService;
-    private final MarginFetchScheduler marginFetchScheduler;
-    private final PositionManager positionManager;
 
     @Override
     public String getName() {
@@ -33,19 +27,6 @@ public class MomentumDipAccumulatorStrategy implements TradingStrategy {
     public TradeSignal evaluate(MarketContext ctx) {
 
         String symbol = ctx.getSymbol();
-
-        // ===== Broker-aware capital pre-check =====
-        // The strategy doesn't know which broker the signal will route to yet
-        // (that's decided by FilterEngine in OrderExecutionService). So we check
-        // against the MAX available funds across all brokers as a quick pre-filter.
-        // The real per-broker check happens in RiskManager.checkSignalSafety()
-        // after the broker is determined.
-        double strategyIntradayCapitalUsed = positionManager.getIntradayCapitalUsedByStrategy(getName());
-        double maxIntradayCapital = marginFetchScheduler.getMaxCapitalPerStrategy(getName());
-        double availableFundsToTrade = maxIntradayCapital - strategyIntradayCapitalUsed;
-        if (CAPITAL_PER_BUY > availableFundsToTrade) {
-            return null;
-        }
 
         double ltp = ctx.getCandle().getClose();
         double prevClose = ctx.getPreviousClose();
