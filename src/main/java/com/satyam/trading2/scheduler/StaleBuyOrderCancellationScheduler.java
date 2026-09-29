@@ -35,7 +35,7 @@ public class StaleBuyOrderCancellationScheduler {
      */
     @Scheduled(cron = "0 0/2 * * * MON-FRI")
     public void cancelStaleBuyOrders() {
-        System.out.println("🔄 [StaleBuyOrder] Running stale BUY order cancellation check...");
+//        System.out.println("🔄 [StaleBuyOrder] Running stale BUY order cancellation check...");
 
         try {
             // Fetch all orders from broker
@@ -52,10 +52,10 @@ public class StaleBuyOrderCancellationScheduler {
                     .filter(Order::isOpen) // OPEN or TRIGGER PENDING status
                     .collect(Collectors.toList());
 
-            System.out.println("📊 [StaleBuyOrder] Found " + openBuyOrders.size() + " open BUY orders");
+//            System.out.println("📊 [StaleBuyOrder] Found " + openBuyOrders.size() + " open BUY orders");
 
             if (openBuyOrders.isEmpty()) {
-                System.out.println("⏭️ [StaleBuyOrder] No open BUY orders - skipping");
+//                System.out.println("⏭️ [StaleBuyOrder] No open BUY orders - skipping");
                 return;
             }
 
@@ -69,8 +69,8 @@ public class StaleBuyOrderCancellationScheduler {
                     String timestampStr = order.getOrderTimestamp();
                     
                     if (timestampStr == null || timestampStr.isEmpty()) {
-                        System.out.println("⚠️ [StaleBuyOrder] " + order.getTradingSymbol() + 
-                                         " (orderId: " + order.getOrderId() + "): No timestamp, skipping");
+//                        System.out.println("⚠️ [StaleBuyOrder] " + order.getTradingSymbol() +
+//                                         " (orderId: " + order.getOrderId() + "): No timestamp, skipping");
                         skippedCount++;
                         continue;
                     }
@@ -78,9 +78,9 @@ public class StaleBuyOrderCancellationScheduler {
                     // Parse timestamp
                     LocalDateTime orderTime = parseTimestamp(timestampStr);
                     if (orderTime == null) {
-                        System.out.println("⚠️ [StaleBuyOrder] " + order.getTradingSymbol() + 
-                                         " (orderId: " + order.getOrderId() + "): Failed to parse timestamp '" + 
-                                         timestampStr + "', skipping");
+//                        System.out.println("⚠️ [StaleBuyOrder] " + order.getTradingSymbol() +
+//                                         " (orderId: " + order.getOrderId() + "): Failed to parse timestamp '" +
+//                                         timestampStr + "', skipping");
                         skippedCount++;
                         continue;
                     }
@@ -92,37 +92,37 @@ public class StaleBuyOrderCancellationScheduler {
                     if (minutesSinceOrder >= 10) {
                         orderServiceV2.cancelOrder(order.getOrderId());
                         cancelledCount++;
-                        System.out.println("✅ [StaleBuyOrder] Cancelled " + order.getTradingSymbol() + 
-                                         " @ ₹" + String.format("%.2f", order.getPrice()) +
-                                         " (orderId: " + order.getOrderId() + 
-                                         ", age: " + minutesSinceOrder + " min)");
+//                        System.out.println("✅ [StaleBuyOrder] Cancelled " + order.getTradingSymbol() +
+//                                         " @ ₹" + String.format("%.2f", order.getPrice()) +
+//                                         " (orderId: " + order.getOrderId() +
+//                                         ", age: " + minutesSinceOrder + " min)");
                         
                         // Small delay to avoid rate limiting
                         Thread.sleep(100);
                     } else {
-                        System.out.println("⏭️ [StaleBuyOrder] " + order.getTradingSymbol() + 
-                                         " (orderId: " + order.getOrderId() + "): Only " + 
-                                         minutesSinceOrder + " min old, keeping");
+//                        System.out.println("⏭️ [StaleBuyOrder] " + order.getTradingSymbol() +
+//                                         " (orderId: " + order.getOrderId() + "): Only " +
+//                                         minutesSinceOrder + " min old, keeping");
                         skippedCount++;
                     }
 
                 } catch (Exception e) {
                     failedCount++;
-                    System.err.println("❌ [StaleBuyOrder] Error processing order " + 
-                                     order.getOrderId() + " for " + order.getTradingSymbol() + 
-                                     ": " + e.getMessage());
+//                    System.err.println("❌ [StaleBuyOrder] Error processing order " +
+//                                     order.getOrderId() + " for " + order.getTradingSymbol() +
+//                                     ": " + e.getMessage());
                 }
             }
 
             // Summary
-            String summary = String.format(
-                "[StaleBuyOrder] Complete - Cancelled: %d, Skipped: %d, Failed: %d",
-                cancelledCount, skippedCount, failedCount
-            );
-            System.out.println("📊 " + summary);
+//            String summary = String.format(
+//                "[StaleBuyOrder] Complete - Cancelled: %d, Skipped: %d, Failed: %d",
+//                cancelledCount, skippedCount, failedCount
+//            );
+//            System.out.println("📊 " + summary);
 
         } catch (Exception e) {
-            System.err.println("❌ [StaleBuyOrder] Error in cancelStaleBuyOrders: " + e.getMessage());
+//            System.err.println("❌ [StaleBuyOrder] Error in cancelStaleBuyOrders: " + e.getMessage());
             e.printStackTrace();
         }
     }

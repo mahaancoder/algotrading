@@ -20,11 +20,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class RateLimiter {
 
     // Rate limits (conservative - broker allows 10/sec, we use 6/sec for safety)
-    private static final int MAX_REQUESTS_PER_SECOND = 6;  // Reduced from 8 to 6
-    private static final int MAX_REQUESTS_PER_MINUTE = 350;
+    private static final int MAX_REQUESTS_PER_SECOND = 9;  // Reduced from 8 to 6
+    private static final int MAX_REQUESTS_PER_MINUTE = 400;
     private static final long SECOND_WINDOW_MS = 1000; // 1 second window
     private static final long MINUTE_WINDOW_MS = 60000; // 60 second window
-    private static final long CIRCUIT_BREAKER_COOLDOWN_MS = 12000; // 12 second cooldown after rate limit error
+    private static final long CIRCUIT_BREAKER_COOLDOWN_MS = 5000; // 12 second cooldown after rate limit error
     private static final int MAX_RETRIES = 10; // Maximum retry attempts to prevent infinite loops
 
     // Thread-safe queues to track request timestamps
@@ -224,10 +224,8 @@ public class RateLimiter {
         circuitBreakerUntil = now + CIRCUIT_BREAKER_COOLDOWN_MS;
         circuitBreakerTrips.incrementAndGet();
 
-        log.error("🚨🚨🚨 CIRCUIT BREAKER TRIPPED! Blocking all API calls for {}ms due to Kite rate limit error",
-                CIRCUIT_BREAKER_COOLDOWN_MS);
-        log.error("       All pending/new requests will wait until: {}",
-                new java.util.Date(circuitBreakerUntil));
+        System.out.println("🚨🚨🚨 CIRCUIT BREAKER TRIPPED! Blocking all API calls for" + CIRCUIT_BREAKER_COOLDOWN_MS +"ms due to Kite rate limit error");
+        System.out.println("       All pending/new requests will wait until: "+new java.util.Date(circuitBreakerUntil));
     }
 
     /**

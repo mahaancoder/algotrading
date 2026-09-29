@@ -17,6 +17,7 @@ import com.satyam.trading2.datamodel.TradeSignal;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.risk.Exits;
+import com.satyam.trading2.risk.RejectedSymbols;
 import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.service.DefaultBrokerService;
 import com.satyam.trading2.service.DipAccumulatorService;
@@ -180,14 +181,20 @@ public class OrderExecutionService {
         // Visibility into every routing decision: which broker a BUY was sent to
         // and why (entryType drives the Group1/Group2 filter). Helps diagnose
         // why orders do/don't reach INDSTOCKS/SHOONYA vs the KITE fallback.
-        System.out.println("🧭 [Routing]  " + symbol + " entryType=" + signal.getEntryType()
-                + " → route=" + route);
+//        System.out.println("🧭 [Routing]  " + symbol + " entryType=" + signal.getEntryType()
+//                + " → route=" + route);
 
         // ===== STEP 2.5: RISK CHECK (broker-aware — checks per-broker + global capital) =====
         RiskManager.RiskCheckResult riskCheck = riskManager.checkSignalSafety(symbol, strategy, actualCapital, entry, state, isHolding, brokerName);
         if (!riskCheck.isSafe()) {
             signalAnalyticsService.recordSignal(signal, false, riskCheck.getRejectionReason(), actualCapital);
-            System.out.println(riskCheck.getRejectionReason());
+            // TERMINAL rejection: skip this symbol for the rest of the day so the
+            // tick path stops re-evaluating it (avoids repeated log spam).
+            if (riskCheck.isTerminal()) {
+                RejectedSymbols.markRejectedToday(symbol, riskCheck.getRejectionReason());
+            } else {
+                System.out.println(riskCheck.getRejectionReason());
+            }
             return;
         }
 
@@ -250,8 +257,8 @@ public class OrderExecutionService {
             // Confirm exactly what lookup key was stored, so we can compare it against
             // the order_id the broker's WS feed later reports on completion. A mismatch
             // here vs the WS order_id is what leaves completions "unmatched" (no sell).
-            System.out.println("[OrderExecution] PendingOrder stored → key=" + brokerName + "::" + brokerOrderId
-                    + " symbol=" + symbol + " side=BUY qty=" + qty);
+//            System.out.println("[OrderExecution] PendingOrder stored → key=" + brokerName + "::" + brokerOrderId
+//                    + " symbol=" + symbol + " side=BUY qty=" + qty);
 
             symbolMarketContext.put(symbol, ctx);
             signalAnalyticsService.recordSignal(signal, true, null, actualCapital);
@@ -329,7 +336,7 @@ public class OrderExecutionService {
             if (!brokerToggleService.isEnabled(existingRoute)) {
                 log.info("🛑 [BrokerToggle] {} disabled — cannot average existing position at {} for {}",
                         existingRoute, symbol, strategy);
-                return null; // signals rejection to caller
+                return ExecutionRoute.KITE; // signals rejection to caller
             }
             return existingRoute;
         }

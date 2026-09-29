@@ -14,7 +14,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static com.satyam.trading2.risk.Exits.isExitedToday;
-import static com.satyam.trading2.risk.Exits.markAsExitedToday;
 import static org.apache.commons.collections.MapUtils.isNotEmpty;
 
 
@@ -24,7 +23,7 @@ public class RiskManager {
 
     // Maximum capital allowed per symbol (across all strategies)
     // Set to 50K to allow 2 levels of dip accumulation (25K each)
-    private static final double MAX_CAPITAL_PER_SYMBOL = 50000;
+    private static final double MAX_CAPITAL_PER_SYMBOL = 100000;
 
     private final MarginFetchScheduler marginFetchScheduler;
     private final PositionManager positionManager;
@@ -54,13 +53,21 @@ public class RiskManager {
     public static class RiskCheckResult {
         private final boolean safe;
         private final String rejectionReason;
+        // TERMINAL: this rejection cannot change for the rest of the day (only a
+        // SELL could undo it, which already skips the symbol). Used to add the
+        // symbol to RejectedSymbols so the tick path stops processing it today.
+        private final boolean terminal;
 
         public static RiskCheckResult safe() {
-            return new RiskCheckResult(true, null);
+            return new RiskCheckResult(true, null, false);
         }
 
         public static RiskCheckResult rejected(String reason) {
-            return new RiskCheckResult(false, reason);
+            return new RiskCheckResult(false, reason, false);
+        }
+
+        public static RiskCheckResult rejectedTerminal(String reason) {
+            return new RiskCheckResult(false, reason, true);
         }
     }
 
@@ -87,10 +94,12 @@ public class RiskManager {
             // ===== RISK CHECKS (using RiskManager) - PER STRATEGY =====
             if(state != null) {
                 if ((state.getTotalCapital() + actualCapital) > 100000) {
-                    return RiskCheckResult.rejected("Total capital exceeds 100K limit");
+                    // TERMINAL: dip-state total capital only grows during the day.
+                    return RiskCheckResult.rejectedTerminal("Total capital exceeds 100K limit");
                 }
                 if (state.getLevelFilled() >= 4) {
-                    return RiskCheckResult.rejected("Max accumulation levels reached (4)");
+                    // TERMINAL: dip-state level only ever increases during the day.
+                    return RiskCheckResult.rejectedTerminal("Max accumulation levels reached (4)");
                 }
 
                 // ===== COOLDOWN CHECK (15 seconds between buys) =====
@@ -119,7 +128,20 @@ public class RiskManager {
             double totalCommittedForSymbol = totalCapitalInSymbol + reservedForSymbol;
 
             if((totalCommittedForSymbol + actualCapital) > MAX_CAPITAL_PER_SYMBOL) {
-                markAsExitedToday(symbol, strategy);
+                // NOTE: A per-symbol capital-cap rejection is a SIZING decision, not an
+                // exit. Do NOT mark the symbol exited-today here — the position is still
+                // held (e.g. an existing 24K holding), and using the no-price
+                // markAsExitedToday(...) would set buyPrice=0, which permanently blocks
+                // any re-entry for the rest of the day (isReEntryAllowed returns false)
+                // and corrupts the exit-tracking state for a symbol that never exited.
+                //
+                // TERMINAL only when the capital ALREADY HELD (excluding transient
+                // reservations, which get released) leaves no room for even a single
+                // share — that condition can't improve today without a SELL. If it's
+                // only the transient reservation pushing it over, keep it transient.
+                if (totalCapitalInSymbol + entryPrice > MAX_CAPITAL_PER_SYMBOL) {
+                    return RiskCheckResult.rejectedTerminal("Symbol capital limit - exceeds ₹50K per symbol");
+                }
                 return RiskCheckResult.rejected("Symbol capital limit - exceeds ₹50K per symbol");
             }
 

@@ -184,8 +184,8 @@ public class OrderServiceV2 {
             // ✅ FIX: Place new LIMIT SELL
             String newOrderId = placeOrder(symbol, "SELL", "LIMIT", qty, target, 0, product, strategy);
             if (newOrderId != null) {
-                System.out.println("🎯 Target updated for " + symbol + " → ₹" + String.format("%.2f", target) +
-                                 " (qty=" + qty + ", orderId=" + newOrderId + ", product=" + product + ")");
+//                System.out.println("🎯 Target updated for " + symbol + " → ₹" + String.format("%.2f", target) +
+//                                 " (qty=" + qty + ", orderId=" + newOrderId + ", product=" + product + ")");
             }
             return newOrderId;
 

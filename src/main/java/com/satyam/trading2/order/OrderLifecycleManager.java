@@ -21,7 +21,7 @@ public class OrderLifecycleManager {
     private final DipAccumulatorService dipAccumulatorService;
 
     public void handle(BrokerWebhookEvent event) throws IOException {
-        System.out.println("orderliefcycle called : "+ event.getSymbol() + "  " + event.getSide() );
+//        System.out.println("orderliefcycle called : "+ event.getSymbol() + "  " + event.getSide() );
         PendingOrder pendingOrder = pendingOrderRepository.findByBrokerOrderId(event.getBrokerOrderId()).orElse(null);
         if (pendingOrder == null) {
             return;

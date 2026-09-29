@@ -26,6 +26,7 @@ import static com.satyam.trading2.datamodel.Position.PositionType.HOLDING;
 import static com.satyam.trading2.helpers.LatestPriceHelper.getLatestPrice;
 import static com.satyam.trading2.risk.Exits.isExitedToday;
 import static com.satyam.trading2.risk.Exits.isSymbolExitedToday;
+import static com.satyam.trading2.risk.RejectedSymbols.isRejectedToday;
 
 @Slf4j
 @Service
@@ -88,7 +89,7 @@ public class WebSocketService {
                 Instrument instrument = getInstrumentFromToken(tick.getInstrumentToken());
                 String symbol = instrument.getTradingSymbol();
                 Nifty500Stocks.tradingSymbols.add(symbol);
-                if (symbol == null || isSymbolExitedToday(symbol)) return;
+                if (symbol == null || isSymbolExitedToday(symbol) || isRejectedToday(symbol)) return;
 
                 double price = tick.getLastTradedPrice();
                 long volume = tick.getVolumeTradedToday(); // Get cumulative volume for the day

@@ -196,10 +196,10 @@ public class TradeJournalService {
             System.out.println("🧹 Trimmed events list to " + MAX_EVENTS_IN_MEMORY + " (removed oldest)");
         }
 
-        System.out.println("💾 Saving event to CSV: " + e.getType() + " " + e.getSymbol() + " " +
-                          e.getStrategy() + " Price:" + e.getPrice() + " Qty:" + e.getQty() + " P&L:" + e.getPnl() +
-                          " EntryType:" + (e.getEntryType() != null ? e.getEntryType() : "") +
-                          " Broker:" + (e.getBroker() != null ? e.getBroker() : "KITE"));
+//        System.out.println("💾 Saving event to CSV: " + e.getType() + " " + e.getSymbol() + " " +
+//                          e.getStrategy() + " Price:" + e.getPrice() + " Qty:" + e.getQty() + " P&L:" + e.getPnl() +
+//                          " EntryType:" + (e.getEntryType() != null ? e.getEntryType() : "") +
+//                          " Broker:" + (e.getBroker() != null ? e.getBroker() : "KITE"));
 
         String eventFile = getEventFile();
         try(FileWriter fw = new FileWriter(eventFile, true)){

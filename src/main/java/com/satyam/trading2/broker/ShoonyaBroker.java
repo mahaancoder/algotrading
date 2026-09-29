@@ -317,7 +317,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
             double marginUsed = doubleOr(resp, "marginused", 0);
 
             double credit = cash + payin + collateral;
-            double available = credit - marginUsed - payout;
+            double available = credit - marginUsed + payout;
             if (available < 0) available = 0;
 
             if (credit == 0) {
@@ -433,6 +433,11 @@ public class ShoonyaBroker extends AbstractRestBroker {
             if (holdResp.isArray()) {
                 log.info("[ShoonyaBroker] Reconciliation: {} demat holdings from Shoonya", holdResp.size());
                 syncHoldingsIntoManager(holdResp);
+            } else {
+                // Non-array = error/empty payload (e.g. {"stat":"Not_Ok","emsg":...}).
+                // Log it so a missing-holdings dashboard can be traced to an API error
+                // rather than a silent skip (does NOT include the jKey).
+                System.out.println("🔍 [ShoonyaBroker] /Holdings non-array response → " + holdResp);
             }
 
             // Safety net: re-arm any missing intraday target sells. A buy fill can
@@ -649,10 +654,15 @@ public class ShoonyaBroker extends AbstractRestBroker {
      * day positions), Holdings carries the settled overnight demat stock that the
      * morning HoldingsTargetSetScheduler must place targets for.
      *
-     * Sellable qty = holdqty + btstqty - usedqty (usedqty is what was already sold
-     * today). A dually-listed scrip carries multiple exch_tsym entries; the NSE
-     * trading symbol is used since our system is NSE Kite-symbol based. A row with
-     * no sellable qty removes the tracked position.
+     * Sellable qty follows Shoonya's documented holding valuation quantity:
+     *   holdqty + brkcolqty + unplgdqty + benqty + max(npoadqty, dpqty) + btstqty
+     *   - usedqty          (usedqty = quantity already sold today)
+     * A POA-free / DP-settled account reports "0" in holdqty and carries the real
+     * quantity in dpqty/npoadqty, so summing only holdqty wrongly drops the holding
+     * (which is why such Shoonya holdings never appeared on the dashboard). A
+     * dually-listed scrip carries multiple exch_tsym entries; the NSE trading symbol
+     * is used since our system is NSE Kite-symbol based. A row with no sellable qty
+     * removes the tracked position.
      */
     private void syncHoldingsIntoManager(JsonNode holdResp) {
         for (JsonNode node : holdResp) {
@@ -664,9 +674,17 @@ public class ShoonyaBroker extends AbstractRestBroker {
 
                 String symbol = fromShoonyaSymbol(tsym);
                 int holdQty = parseIntSafe(textOr(node, "holdqty", "0"));
+                int dpQty = parseIntSafe(textOr(node, "dpqty", "0"));
+                int npoadQty = parseIntSafe(textOr(node, "npoadqty", "0"));
+                int benQty = parseIntSafe(textOr(node, "benqty", "0"));
+                int unplgdQty = parseIntSafe(textOr(node, "unplgdqty", "0"));
+                int brkcolQty = parseIntSafe(textOr(node, "brkcolqty", "0"));
                 int btstQty = parseIntSafe(textOr(node, "btstqty", "0"));
                 int usedQty = parseIntSafe(textOr(node, "usedqty", "0"));
-                int sellableQty = holdQty + btstQty - usedQty;
+                // Shoonya documented valuation quantity — captures holdings regardless
+                // of which bucket they settle in (holdqty is 0 on POA-free accounts).
+                int sellableQty = holdQty + brkcolQty + unplgdQty + benQty
+                        + Math.max(npoadQty, dpQty) + btstQty - usedQty;
                 double avg = parseDoubleSafe(textOr(node, "upldprc", "0"));
 
                 Position existing = findShoonyaPosition(symbol, Position.PositionType.HOLDING);

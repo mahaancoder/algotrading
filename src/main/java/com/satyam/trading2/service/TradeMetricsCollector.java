@@ -74,8 +74,8 @@ public class TradeMetricsCollector {
             double ema20 = emaData != null ? emaData.getEma20() : 0;
             double ema50 = emaData != null ? emaData.getEma50() : 0;
 
-            log.info("📊 EMA Data for {}: EMA20={}, EMA50={}, EMAData={}",
-                symbol, ema20, ema50, emaData != null ? "available" : "null");
+//            log.info("📊 EMA Data for {}: EMA20={}, EMA50={}, EMAData={}",
+//                symbol, ema20, ema50, emaData != null ? "available" : "null");
 
             // Get volume data
             VolumeMetrics volumeMetrics = calculateVolumeMetrics(symbol, candles, latestCandle);

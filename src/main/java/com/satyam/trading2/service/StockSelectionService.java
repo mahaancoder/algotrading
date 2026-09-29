@@ -38,7 +38,7 @@ public class StockSelectionService {
 
         LocalTime now = LocalTime.now();
         LocalTime startTime = LocalTime.of(9, 5);
-        LocalTime endTime = LocalTime.of(15, 15);
+        LocalTime endTime = LocalTime.of(15, 0);
 
         if (now.isBefore(startTime) || now.isAfter(endTime)) {
             return;
@@ -50,24 +50,16 @@ public class StockSelectionService {
         LocalTime now = LocalTime.now();
         List<StockChange> list = new ArrayList<>();
 
-        int validStocks = 0;
-        int missingLtp = 0;
-        int invalidPrevClose = 0;
-
         for (String symbol : prevCloseMap.keySet()) {
             double prev = prevCloseMap.get(symbol);
             double ltp = ltpMap.getOrDefault(symbol, 0.0);
 
             if (prev <= 0) {
-                invalidPrevClose++;
                 continue;
             }
             if (ltp <= 0) {
-                missingLtp++;
                 continue;
             }
-
-            validStocks++;
             double change = ((ltp - prev) / prev) * 100;
             list.add(new StockChange(symbol, change));
         }
@@ -79,7 +71,7 @@ public class StockSelectionService {
         Set<String> newLosers = ConcurrentHashMap.newKeySet();
         List<StockChange> topLosers = new ArrayList<>();
         list.stream()
-                .filter(s -> s.getChange() <= -2)           // Only stocks down 2% or more
+                .filter(s -> s.getChange() <= -0.25)           // Only stocks down 2% or more
                 .filter(s -> !Exits.isSymbolExitedToday(s.getSymbol()))  // Skip symbols exited today
                 .filter(s -> {
                     double ltp = ltpMap.getOrDefault(s.getSymbol(), 0.0);
@@ -97,10 +89,10 @@ public class StockSelectionService {
         int count = 0;
         for (int i = list.size() - 1; i >= 0 && count < 50; i--) {
             StockChange stock = list.get(i);
-            if (stock.getChange() < 1) {
+            if (stock.getChange() < 0.25) {
                 break;
             }
-            if (stock.getChange() >= 1) {
+            if (stock.getChange() >= 0.25) {
                 if (!Exits.isSymbolExitedToday(stock.getSymbol())) {
                     double ltp = ltpMap.getOrDefault(stock.getSymbol(), 0.0);
                     if (stockFilterService.passesGainerFilter(stock.getSymbol(), ltp, stock.getChange())) {

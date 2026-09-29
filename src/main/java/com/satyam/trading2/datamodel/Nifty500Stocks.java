@@ -223,6 +223,7 @@ public class Nifty500Stocks {
         tradingSymbols.add( "IDFCFIRSTB");
         tradingSymbols.add( "IFCI");
         tradingSymbols.add( "IIFL");
+        tradingSymbols.add( "INFY");
         tradingSymbols.add( "IRB");
         tradingSymbols.add( "IRCON");
         tradingSymbols.add( "ITCHOTELS");
@@ -441,7 +442,7 @@ public class Nifty500Stocks {
         tradingSymbols.add( "USHAMART");
         tradingSymbols.add( "VTL");
         tradingSymbols.add( "VBL");
-        tradingSymbols.add( "VEDL");
+        tradingSymbols.add( "VAML");
         tradingSymbols.add( "VIJAYA");
         tradingSymbols.add( "VOLTAS");
         tradingSymbols.add( "WAAREEENER");
