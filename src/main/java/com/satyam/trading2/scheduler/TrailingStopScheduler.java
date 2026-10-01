@@ -31,7 +31,7 @@ public class TrailingStopScheduler {
     private final PendingOrderRepository pendingOrderRepository;
     private final BrokerOrderRouter brokerOrderRouter;
 
-    @Scheduled(cron = "0/10 * * * * MON-FRI")
+    @Scheduled(cron = "0/5 * * * * MON-FRI")
     public void updateTrailingStops() {
         if (killSwitchService.isActive()) {
             System.out.println("🛑 [TrailingStopScheduler] Skipped - Kill switch is ACTIVE");
@@ -39,7 +39,7 @@ public class TrailingStopScheduler {
         }
 
         LocalTime now = LocalTime.now();
-        if (now.isBefore(LocalTime.of(9, 17))) {
+        if (now.isBefore(LocalTime.of(9, 15,30))) {
             return;
         }
 
@@ -50,13 +50,17 @@ public class TrailingStopScheduler {
 
         double threshold;
         if (!now.isBefore(LocalTime.of(14, 0))) { // >= 14:00
-            threshold = 0.1;
+            threshold = 0.05;
         } else if (!now.isBefore(LocalTime.of(13, 0))) { // >= 13:00
-            threshold = 0.2;
+            threshold = 0.1;
         } else if (!now.isBefore(LocalTime.of(12, 0))) { // >= 12:00
+            threshold = 0.2;
+        } else if (!now.isBefore(LocalTime.of(11, 0))) { // >= 11:00
             threshold = 0.3;
-        } else {
+        } else if (!now.isBefore(LocalTime.of(10, 0))) { // >= 10:00
             threshold = 0.4;
+        } else {
+            threshold = 0.5;
         }
 
 //        System.out.println("🔄 [TrailingStop] Running at " + now + " - threshold: " + threshold + "%");
