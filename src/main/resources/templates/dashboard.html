@@ -164,6 +164,9 @@
     <button id="misOnlyToggleBtn" class="product-toggle-btn disabled" onclick="toggleMisOnly()">
         MIS-ONLY OFF
     </button>
+    <button id="cashFlowModeBtn" class="product-toggle-btn enabled" onclick="cycleCashFlowMode()">
+        CASHFLOW: HIGH
+    </button>
     <button id="kiteToggleBtn" class="broker-toggle-btn kite-locked" disabled>
         KITE 🔒
     </button>
@@ -988,6 +991,56 @@
     }
 
     fetchProductStatus();
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Cash-Flow Mode (HIGH / MEDIUM / LOW budget regime)
+    // ─────────────────────────────────────────────────────────────────────
+    const CASHFLOW_MODES = ['HIGH', 'MEDIUM', 'LOW'];
+    let currentCashFlowMode = 'HIGH';
+
+    function cycleCashFlowMode() {
+        const btn = document.getElementById('cashFlowModeBtn');
+        btn.disabled = true;
+
+        const nextMode = CASHFLOW_MODES[(CASHFLOW_MODES.indexOf(currentCashFlowMode) + 1) % CASHFLOW_MODES.length];
+
+        fetch('/api/cashflow/mode?mode=' + nextMode, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.mode) updateCashFlowModeUI(data.mode);
+            btn.disabled = false;
+        })
+        .catch(error => {
+            console.error('Error setting cash-flow mode:', error);
+            btn.disabled = false;
+            alert('Failed to set cash-flow mode. Please try again.');
+        });
+    }
+
+    function updateCashFlowModeUI(mode) {
+        currentCashFlowMode = mode;
+        const btn = document.getElementById('cashFlowModeBtn');
+        btn.innerHTML = 'CASHFLOW: ' + mode;
+        btn.className = (mode === 'HIGH')
+            ? 'product-toggle-btn enabled'
+            : 'product-toggle-btn disabled';
+    }
+
+    function fetchCashFlowStatus() {
+        fetch('/api/cashflow/status')
+        .then(response => response.json())
+        .then(data => {
+            if (data.mode) updateCashFlowModeUI(data.mode);
+        })
+        .catch(error => {
+            console.error('Error fetching cash-flow status:', error);
+        });
+    }
+
+    fetchCashFlowStatus();
 
     // ─────────────────────────────────────────────────────────────────────
     // Broker Toggle Functions (enable/disable trading per broker)

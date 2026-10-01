@@ -40,6 +40,9 @@ public class DashboardController {
     private DefaultBrokerService defaultBrokerService;
 
     @Autowired
+    private CashFlowModeService cashFlowModeService;
+
+    @Autowired
     private BroadcastService broadcastService;
 
     @Autowired
@@ -265,6 +268,38 @@ public class DashboardController {
     public ResponseEntity<Map<String, Object>> getDefaultBroker() {
         Map<String, Object> response = new HashMap<>();
         response.put("broker", defaultBrokerService.getDefaultRoute().name());
+        return ResponseEntity.ok(response);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  CASH-FLOW MODE API (HIGH / MEDIUM / LOW budget regime)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    @GetMapping("/api/cashflow/status")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> getCashFlowStatus() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("mode", cashFlowModeService.getMode().name());
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/api/cashflow/mode")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> setCashFlowMode(@RequestParam String mode) {
+        CashFlowMode parsed;
+        try {
+            parsed = CashFlowMode.valueOf(mode.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("success", false);
+            err.put("message", "Unknown cash-flow mode: " + mode);
+            return ResponseEntity.badRequest().body(err);
+        }
+        CashFlowMode applied = cashFlowModeService.setMode(parsed);
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("mode", applied.name());
+        response.put("message", "Cash-flow mode set to " + applied.name());
         return ResponseEntity.ok(response);
     }
 

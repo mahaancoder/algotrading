@@ -5,6 +5,8 @@ import com.satyam.trading2.broker.BrokerRouter;
 import com.satyam.trading2.broker.ExecutionRoute;
 import com.satyam.trading2.broker.model.BrokerFunds;
 import com.satyam.trading2.config.KiteConfig;
+import com.satyam.trading2.service.CashFlowMode;
+import com.satyam.trading2.service.CashFlowModeService;
 import com.satyam.trading2.service.OrderServiceV2;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +26,7 @@ public class MarginFetchScheduler {
     private final OrderServiceV2 brokerService;
     private final BrokerRouter brokerRouter;
     private final KiteConfig kiteConfig;
+    private final CashFlowModeService cashFlowModeService;
 
     // strategy → max capital (Kite funds × time multiplier) — legacy global map
     private static final Map<String, Double> MAX_CAPITAL_PER_STRATEGY = new ConcurrentHashMap<>();
@@ -145,18 +148,21 @@ public class MarginFetchScheduler {
      */
     private SlotMultiplier currentSlotMultiplier() {
         LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        // MEDIUM and LOW share the conservative multiplier curve; HIGH keeps the
+        // aggressive one. The slot boundaries are identical across all modes.
+        boolean conservative = cashFlowModeService.getMode() != CashFlowMode.HIGH;
         if (now.isBefore(LocalTime.of(10, 0))) {
-            return new SlotMultiplier(5.0, "9:15-10:00");
+            return new SlotMultiplier(conservative ? 1.0 : 5.0, "9:15-10:00");
         } else if (now.isBefore(LocalTime.of(10, 30))) {
-            return new SlotMultiplier(4.0, "10:00-10:30");
+            return new SlotMultiplier(conservative ? 0.8 : 4.0, "10:00-10:30");
         } else if (now.isBefore(LocalTime.of(11, 0))) {
-            return new SlotMultiplier(3.0, "10:30-11:00");
+            return new SlotMultiplier(conservative ? 0.6 : 3.0, "10:30-11:00");
         } else if (now.isBefore(LocalTime.of(11, 15))) {
-            return new SlotMultiplier(2.0, "11:00-11:15");
+            return new SlotMultiplier(conservative ? 0.5 : 2.0, "11:00-11:15");
         } else if (now.isBefore(LocalTime.of(11, 30))) {
-            return new SlotMultiplier(1.0, "11:15-11:30");
+            return new SlotMultiplier(conservative ? 0.3 : 1.0, "11:15-11:30");
         } else {
-            return new SlotMultiplier(1.0, "11:30+");
+            return new SlotMultiplier(conservative ? 0.2 : 1.0, "11:30+");
         }
     }
 

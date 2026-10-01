@@ -30,6 +30,7 @@ public class OrderServiceV2 {
     private final RateLimiter rateLimiter;
     private final OrderSanitizer orderSanitizer;
     private final HoldingMetadataRepository holdingMetadataRepository;
+    private final CashFlowModeService cashFlowModeService;
 
     // ===== PERFORMANCE OPTIMIZATION: HTTP Client with connection pooling and timeouts =====
     // Connection pooling dramatically reduces latency for order placement
@@ -707,9 +708,11 @@ public class OrderServiceV2 {
             String collateralValue = (String) collateralField.get(available);
             double collateral = Double.parseDouble(collateralValue);
 
-            // Logic: If (net - collateral) >= 3 lakhs, return net; otherwise return (net - collateral)
+            // Logic: If (net - collateral) >= 3 lakhs, return net; otherwise return (net - collateral).
+            // In LOW cash-flow mode the 3L "return net" rule is skipped entirely —
+            // we always return the (net - collateral) difference.
             double difference = net - collateral;
-            if (difference >= 300000) {
+            if (!cashFlowModeService.isSkipNetThreshold() && difference >= 300000) {
                 System.out.println("💰 Margin: net=" + net + ", collateral=" + collateral + " → returning net (difference >= 3L)");
                 return net;
             } else {
