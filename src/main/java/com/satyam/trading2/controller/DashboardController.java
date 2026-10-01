@@ -190,6 +190,25 @@ public class DashboardController {
     }
 
     /**
+     * Toggle MIS-only mode (force every buy + its sell to INTRADAY) and broadcast
+     * the new state to all connected WebSocket clients
+     */
+    @PostMapping("/api/product/mis-only/toggle")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> toggleMisOnly() {
+        boolean newState = productToggleService.toggleMisOnlyMode();
+
+        // Broadcast the new state to all connected WebSocket clients
+        broadcastService.broadcastProductToggle("MIS_ONLY", newState);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("enabled", newState);
+        response.put("message", newState ? "MIS-only mode ENABLED" : "MIS-only mode DISABLED");
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
      * Get current product toggle status (MIS and CNC)
      */
     @GetMapping("/api/product/status")
@@ -198,6 +217,7 @@ public class DashboardController {
         Map<String, Boolean> response = new HashMap<>();
         response.put("misEnabled", productToggleService.isMisEnabled());
         response.put("cncEnabled", productToggleService.isCncEnabled());
+        response.put("misOnlyMode", productToggleService.isMisOnlyMode());
         return ResponseEntity.ok(response);
     }
 

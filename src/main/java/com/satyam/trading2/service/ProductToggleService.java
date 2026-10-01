@@ -16,13 +16,45 @@ public class ProductToggleService {
 
     private final AtomicBoolean misEnabled = new AtomicBoolean(true);   // MIS enabled by default
     private final AtomicBoolean cncEnabled = new AtomicBoolean(true);  // CNC enabled by default - only MIS buys allowed
-    
+
+    // MIS-only mode: when ON, every buy (even for an existing holding) is forced
+    // to INTRADAY, and its corresponding sell is placed as MIS. The forced-MIS leg
+    // is tracked under a distinct strategy key so it coexists with any holding.
+    private final AtomicBoolean misOnlyMode = new AtomicBoolean(false); // OFF by default — nothing changes until flipped
+
     /**
      * Check if MIS (intraday) buy orders are enabled
      * @return true if MIS buy orders are allowed
      */
     public boolean isMisEnabled() {
         return misEnabled.get();
+    }
+
+    /**
+     * Check if MIS-only mode is active (force every buy + its sell to INTRADAY)
+     * @return true if MIS-only mode is ON
+     */
+    public boolean isMisOnlyMode() {
+        return misOnlyMode.get();
+    }
+
+    /**
+     * Toggle MIS-only mode
+     * @return new state (true = ON, false = OFF)
+     */
+    public boolean toggleMisOnlyMode() {
+        boolean newState = !misOnlyMode.get();
+        misOnlyMode.set(newState);
+
+        if (newState) {
+            log.warn("🔁 MIS-ONLY mode ENABLED - all buys (even holdings) forced to INTRADAY");
+            System.out.println("🔁 MIS-ONLY mode ENABLED - all buys (even holdings) forced to INTRADAY");
+        } else {
+            log.info("✅ MIS-ONLY mode DISABLED - buys use normal MIS/CNC logic");
+            System.out.println("✅ MIS-ONLY mode DISABLED - buys use normal MIS/CNC logic");
+        }
+
+        return newState;
     }
     
     /**

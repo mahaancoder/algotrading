@@ -37,7 +37,19 @@ public class PnLCalculator {
 
     // P&L per broker (e.g. "KITE", "INDSTOCKS", "SHOONYA")
     private final Map<String, Double> brokerPnL = new ConcurrentHashMap<>();
-    
+
+    // Suffix on a forced-MIS leg (MIS-only mode). Its realized P&L is attributed to
+    // the parent strategy so the per-strategy P&L (and the capital-allowance bonus
+    // that uses it) stays unified with the normal leg.
+    private static final String MIS_ONLY_SUFFIX = "#MIS";
+
+    private static String baseStrategy(String strategy) {
+        if (strategy != null && strategy.endsWith(MIS_ONLY_SUFFIX)) {
+            return strategy.substring(0, strategy.length() - MIS_ONLY_SUFFIX.length());
+        }
+        return strategy;
+    }
+
     /**
      * Calculate P&L for a trade
      */
@@ -56,6 +68,9 @@ public class PnLCalculator {
      * Record a completed trade with broker dimension and update all P&L metrics.
      */
     public void recordTrade(double pnl, String strategyName, String broker) {
+        // A forced-MIS leg's P&L is attributed to the parent strategy.
+        strategyName = baseStrategy(strategyName);
+
         // Update totals
         totalPnL += pnl;
         todaysPnL += pnl;
@@ -99,7 +114,7 @@ public class PnLCalculator {
      * Get P&L for a specific strategy
      */
     public Double getStrategyPnL(String strategyName) {
-        return strategyPnL.getOrDefault(strategyName, 0.0);
+        return strategyPnL.getOrDefault(baseStrategy(strategyName), 0.0);
     }
     
     /**

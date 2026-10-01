@@ -100,13 +100,27 @@ public class OrderExecutionService {
         }
     }
 
+    // Suffix appended to a strategy name to isolate a forced-MIS intraday leg from
+    // any existing holding stored under the same strategy key. See MIS-only mode.
+    private static final String MIS_ONLY_SUFFIX = "#MIS";
+
     private void executeBuy(TradeSignal signal, MarketContext ctx) throws IOException {
         String symbol = signal.getSymbol();
         String strategy = signal.getStrategyName();
         double entry = signal.getEntryPrice();
         int qty = calculateQty(signal);
         double actualCapital = qty * entry;
-        DipState state = dipAccumulatorService.get(symbol, strategy);
+
+        // ===== MIS-ONLY MODE =====
+        // When ON, every buy (even for an existing holding) is forced to INTRADAY,
+        // and the position/pending order is tracked under a distinct strategy key so
+        // it coexists with any holding row (which keeps its own CNC sell). Capital and
+        // risk stay keyed under the ORIGINAL strategy (RiskManager normalizes the
+        // suffix), so per-strategy budgets are preserved.
+        boolean misOnly = productToggleService.isMisOnlyMode();
+        String positionStrategy = misOnly ? strategy + MIS_ONLY_SUFFIX : strategy;
+
+        DipState state = dipAccumulatorService.get(symbol, positionStrategy);
 
         // ===== GATE 1: KILL SWITCH =====
         if (killSwitchService.isActive()) {
@@ -121,9 +135,9 @@ public class OrderExecutionService {
         }
 
         // ===== GATE 3: EXITED TODAY (price-aware per Decision #1) =====
-        if (Exits.isExitedToday(symbol, strategy)) {
+        if (Exits.isExitedToday(symbol, positionStrategy)) {
             // Re-entry allowed only when new buy price is lower than earlier buy price
-            if (!Exits.isReEntryAllowed(symbol, strategy, entry)) {
+            if (!Exits.isReEntryAllowed(symbol, positionStrategy, entry)) {
                 signalAnalyticsService.recordSignal(signal, false, "Symbol+Strategy exited today - re-entry price not lower", actualCapital);
                 return;
             }
@@ -132,15 +146,20 @@ public class OrderExecutionService {
         // ===== GATE 4: ACCUMULATION CHECK =====
         // Check across ALL brokers — if a position exists anywhere for this
         // symbol+strategy, accumulation rules apply. The stickiness override
-        // below will route to that broker.
-        Position existingPosition = findExistingPositionAcrossBrokers(symbol, strategy);
+        // below will route to that broker. In MIS-only mode, positionStrategy is
+        // the #MIS key, so the forced-MIS leg accumulates into itself and ignores
+        // the holding entirely.
+        Position existingPosition = findExistingPositionAcrossBrokers(symbol, positionStrategy);
         if (!isAccumulationAllowed(existingPosition, entry)) {
             signalAnalyticsService.recordSignal(signal, false, "Accumulation not allowed (price condition)", actualCapital);
             return;
         }
 
         // ===== STEP 1: Determine MIS or CNC =====
-        boolean isHolding = (existingPosition != null && existingPosition.getPositionType() == HOLDING);
+        // MIS-only mode forces INTRADAY regardless of any holding. Otherwise, an
+        // existing HOLDING position upgrades the buy to CNC/DELIVERY.
+        boolean isHolding = !misOnly
+                && (existingPosition != null && existingPosition.getPositionType() == HOLDING);
 
         // ===== STEP 1.5: Circuit Limit Check =====
         if (!com.satyam.trading2.helpers.CircuitLimitChecker.isTargetPriceWithinCircuitLimits(symbol, entry, isHolding)) {
@@ -169,7 +188,9 @@ public class OrderExecutionService {
         }
 
         // ===== STEP 2: DETERMINE BROKER FIRST (needed for broker-aware risk check) =====
-        ExecutionRoute route = determineBrokerRoute(signal, symbol, strategy);
+        // Stickiness uses positionStrategy so a forced-MIS leg sticks to the broker
+        // that owns the #MIS position, not the holding's broker.
+        ExecutionRoute route = determineBrokerRoute(signal, symbol, positionStrategy);
         if (route == null) {
             // Broker toggle rejection — existing position at a disabled broker, can't average
             signalAnalyticsService.recordSignal(signal, false, "Broker disabled — cannot average existing position", actualCapital);
@@ -224,7 +245,7 @@ public class OrderExecutionService {
                     .quantity(qty)
                     .price(entry)
                     .productType(isHolding ? ProductType.DELIVERY : ProductType.INTRADAY)
-                    .strategyId(strategy)
+                    .strategyId(positionStrategy)
                     .signalId(null) // TODO: add signalId to TradeSignal
                     .build();
 
@@ -248,8 +269,11 @@ public class OrderExecutionService {
             String brokerOrderId = response.getBrokerOrderId();
 
             // ===== STEP 6: CREATE PENDING ORDER (broker-aware) =====
+            // positionStrategy carries the #MIS suffix in MIS-only mode so the fill
+            // lands on the forced-MIS position key, not the holding's. Capital stays
+            // under the original strategy (RiskManager normalizes the suffix).
             PendingOrder po = pendingOrderRepository.create(
-                    brokerOrderId, symbol, com.satyam.trading2.datamodel.TradeSide.BUY, strategy,
+                    brokerOrderId, symbol, com.satyam.trading2.datamodel.TradeSide.BUY, positionStrategy,
                     qty, entry, isHolding, brokerName, route, null);
             po.setEntryType(entryType);
             pendingOrderRepository.save(po);
@@ -267,7 +291,7 @@ public class OrderExecutionService {
             if (state == null) {
                 state = new DipState();
                 state.setSymbol(symbol);
-                state.setOwnerStrategy(strategy);
+                state.setOwnerStrategy(positionStrategy);
                 state.setLevelFilled(1);
             } else {
                 state.setLevelFilled(state.getLevelFilled() + 1);

@@ -162,15 +162,16 @@ public class TrailingStopScheduler {
                             position.setTarget(ltp);
                             positionManager.updatePosition(position);
 
-                            // For non-KITE brokers a NEW sell order was placed, so register a
-                            // broker-tagged PendingOrder to match its fill. KITE's updateTargetOrder
-                            // dedups and is reconciled separately, so keep its behavior unchanged.
-                            if (!brokerOrderRouter.isKite(position)) {
-                                PendingOrder targetPO = brokerOrderRouter.createSellPending(
-                                        position, newOrderId, symbol,
-                                        position.getStrategy(), qty, ltp, false);
-                                pendingOrderRepository.save(targetPO);
-                            }
+                            // A NEW sell order was placed (KITE updateTargetOrder cancels the
+                            // old target and places a fresh order with a new id; non-KITE places
+                            // a fresh LIMIT SELL). Register a broker-tagged SELL PendingOrder for
+                            // ALL brokers so the fill is matched back to onSellCompleted() — P&L
+                            // recorded, dashboard updated, exit metrics written. Without this the
+                            // KITE fill arrives with an id that has no PendingOrder and is dropped.
+                            PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                                    position, newOrderId, symbol,
+                                    position.getStrategy(), qty, ltp, false);
+                            pendingOrderRepository.save(targetPO);
 
                             updatedCount++;
                             System.out.println("✅ [TrailingStop] " + symbol +

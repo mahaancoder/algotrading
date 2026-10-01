@@ -37,6 +37,20 @@ public class RiskManager {
     // ===== PER-SYMBOL LOCKS: Prevent race conditions for concurrent orders on the same symbol =====
     private final Map<String, Object> symbolLocks = new ConcurrentHashMap<>();
 
+    // Suffix on a forced-MIS leg (MIS-only mode). For capital budgeting the #MIS
+    // leg shares its parent strategy's budget, so we normalize it away before using
+    // the strategy as a reservation key. This keeps reserve/confirm/release symmetric
+    // even though onBuyCompleted passes the #MIS strategy to confirmCapitalUsage.
+    private static final String MIS_ONLY_SUFFIX = "#MIS";
+
+    /** Strip the #MIS suffix so a forced-MIS leg shares its parent budget key. */
+    private static String baseStrategy(String strategy) {
+        if (strategy != null && strategy.endsWith(MIS_ONLY_SUFFIX)) {
+            return strategy.substring(0, strategy.length() - MIS_ONLY_SUFFIX.length());
+        }
+        return strategy;
+    }
+
     /**
      * Get or create a lock object for a specific symbol
      * This ensures that all risk checks and capital reservations for the same symbol are serialized
@@ -87,6 +101,8 @@ public class RiskManager {
     public RiskCheckResult checkSignalSafety(String symbol, String strategy, double actualCapital, double entryPrice, DipState state, boolean isHolding, String broker) {
 
         String b = broker != null ? broker : "KITE";
+        // A forced-MIS leg shares its parent strategy's budget — normalize the key.
+        strategy = baseStrategy(strategy);
 
         // ===== SYMBOL-LEVEL LOCK: Serialize all checks for the same symbol =====
         synchronized (getSymbolLock(symbol)) {
@@ -191,6 +207,8 @@ public class RiskManager {
      */
     public synchronized boolean reserveCapital(String strategy, double capitalAmount, String broker) {
         String b = broker != null ? broker : "KITE";
+        // A forced-MIS leg shares its parent strategy's budget — normalize the key.
+        strategy = baseStrategy(strategy);
         String brokerStrategyKey = b + "::" + strategy;
 
         // Per-broker check — use THIS broker's own budget (available funds × time
@@ -225,6 +243,9 @@ public class RiskManager {
     /** Per-broker overload — releases from both the per-broker and global maps. */
     public synchronized void releaseCapital(String strategy, double capitalAmount, String broker) {
         String b = broker != null ? broker : "KITE";
+        // A forced-MIS leg shares its parent strategy's budget — normalize the key so
+        // confirmCapitalUsage(#MIS) releases the reservation made under the base key.
+        strategy = baseStrategy(strategy);
         String brokerStrategyKey = b + "::" + strategy;
 
         // Release per-broker+strategy

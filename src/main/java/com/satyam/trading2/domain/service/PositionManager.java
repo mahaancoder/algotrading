@@ -20,6 +20,19 @@ public class PositionManager {
     // Old callers pass strategy only → broker defaults to KITE → key is "KITE::strategy".
     private final Map<String, Map<String, Position>> positionMap = new ConcurrentHashMap<>();
 
+    // Suffix appended to a strategy name for a forced-MIS leg (MIS-only mode).
+    // For capital budgeting the #MIS leg shares its parent strategy's budget, so
+    // we strip the suffix before comparing strategies in capital-used calculations.
+    private static final String MIS_ONLY_SUFFIX = "#MIS";
+
+    /** Strip the #MIS suffix so a forced-MIS leg counts against its parent budget. */
+    private static String baseStrategy(String strategy) {
+        if (strategy != null && strategy.endsWith(MIS_ONLY_SUFFIX)) {
+            return strategy.substring(0, strategy.length() - MIS_ONLY_SUFFIX.length());
+        }
+        return strategy;
+    }
+
     /** Build the inner-map key from broker + strategy. */
     private String makeKey(String broker, String strategy) {
         return (broker != null ? broker : "KITE") + "::" + strategy;
@@ -163,10 +176,11 @@ public class PositionManager {
 
 
     public double getCapitalUsedByStrategy(String strategy) {
+        String s = baseStrategy(strategy);
         return positionMap.values().stream()
             .flatMap(strategyMap -> strategyMap.values().stream())
             .filter(p -> p != null && !p.isExitProcessed()
-                      && p.getStrategy().equals(strategy))
+                      && baseStrategy(p.getStrategy()).equals(s))
             .mapToDouble(p -> p.getAveragePrice() * p.getTotalQuantity())
             .sum();
     }
@@ -174,10 +188,11 @@ public class PositionManager {
     /** Per-broker overload (Decision #3: per-broker capital tracking). */
     public double getCapitalUsedByStrategyAndBroker(String strategy, String broker) {
         String b = broker != null ? broker : "KITE";
+        String s = baseStrategy(strategy);
         return positionMap.values().stream()
             .flatMap(strategyMap -> strategyMap.values().stream())
             .filter(p -> p != null && !p.isExitProcessed()
-                      && p.getStrategy().equals(strategy)
+                      && baseStrategy(p.getStrategy()).equals(s)
                       && b.equals(p.getBroker() != null ? p.getBroker() : "KITE"))
             .mapToDouble(p -> p.getAveragePrice() * p.getTotalQuantity())
             .sum();
@@ -185,10 +200,11 @@ public class PositionManager {
 
 
     public double getIntradayCapitalUsedByStrategy(String strategy) {
+        String s = baseStrategy(strategy);
         return positionMap.values().stream()
             .flatMap(strategyMap -> strategyMap.values().stream())
             .filter(p -> p != null && !p.isExitProcessed()
-                      && p.getStrategy().equals(strategy)
+                      && baseStrategy(p.getStrategy()).equals(s)
                       && p.getPositionType() == Position.PositionType.INTRADAY)
             .mapToDouble(p -> p.getAveragePrice() * p.getTotalQuantity())
             .sum();
@@ -197,10 +213,11 @@ public class PositionManager {
     /** Per-broker overload (Decision #3: per-broker capital tracking). */
     public double getIntradayCapitalUsedByStrategyAndBroker(String strategy, String broker) {
         String b = broker != null ? broker : "KITE";
+        String s = baseStrategy(strategy);
         return positionMap.values().stream()
             .flatMap(strategyMap -> strategyMap.values().stream())
             .filter(p -> p != null && !p.isExitProcessed()
-                      && p.getStrategy().equals(strategy)
+                      && baseStrategy(p.getStrategy()).equals(s)
                       && p.getPositionType() == Position.PositionType.INTRADAY
                       && b.equals(p.getBroker() != null ? p.getBroker() : "KITE"))
             .mapToDouble(p -> p.getAveragePrice() * p.getTotalQuantity())
