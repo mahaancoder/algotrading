@@ -4,16 +4,20 @@ import com.satyam.trading2.broker.Broker;
 import com.satyam.trading2.broker.BrokerRouter;
 import com.satyam.trading2.broker.ExecutionRoute;
 import com.satyam.trading2.broker.model.BrokerOrderResponse;
+import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.broker.model.OrderRequest;
 import com.satyam.trading2.broker.model.OrderType;
 import com.satyam.trading2.broker.model.ProductType;
 import com.satyam.trading2.broker.model.TransactionType;
+import com.satyam.trading2.datamodel.Order;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.service.OrderServiceV2;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * BrokerOrderRouter — shared, broker-aware order placement/cancellation used by
@@ -59,6 +63,61 @@ public class BrokerOrderRouter {
             orderServiceV2.cancelOrder(orderId);
         } else {
             brokerRouter.getBrokerWithFallback(routeOf(position)).cancelOrder(orderId);
+        }
+    }
+
+    /**
+     * Current status of an order at the broker that owns the position. Works for
+     * KITE too (KiteBroker.getOrderStatus reads from OrderServiceV2). Returns null
+     * if the order can't be found or the lookup fails.
+     */
+    public BrokerOrderStatus getOrderStatus(Position position, String orderId) {
+        if (orderId == null) return null;
+        try {
+            return brokerRouter.getBrokerWithFallback(routeOf(position)).getOrderStatus(orderId);
+        } catch (Exception e) {
+            System.err.println("⚠️ [BrokerOrderRouter] Failed to fetch status for order "
+                    + orderId + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Snapshot-aware status lookup. For KITE positions the status is resolved from
+     * a pre-fetched orders snapshot (one GET /orders shared across the whole cycle)
+     * instead of re-fetching per order. Non-KITE positions (or a null snapshot)
+     * fall back to the per-order broker lookup above.
+     */
+    public BrokerOrderStatus getOrderStatus(Position position, String orderId, List<Order> kiteOrdersSnapshot) {
+        if (orderId == null) return null;
+        if (!isKite(position) || kiteOrdersSnapshot == null) {
+            return getOrderStatus(position, orderId);
+        }
+        Order match = kiteOrdersSnapshot.stream()
+                .filter(o -> orderId.equals(o.getOrderId()))
+                .findFirst()
+                .orElse(null);
+        if (match == null) return null; // not in order book → treat as gone
+        return mapKiteStatus(match.getStatus(), match.getFilledQuantity(), match.getQuantity());
+    }
+
+    /** Mirrors KiteBroker.mapKiteStatus so snapshot lookups map identically. */
+    private BrokerOrderStatus mapKiteStatus(String kiteStatus, Integer filledQty, Integer totalQty) {
+        if (kiteStatus == null) return null;
+        switch (kiteStatus) {
+            case "COMPLETE":  return BrokerOrderStatus.COMPLETE;
+            case "REJECTED":  return BrokerOrderStatus.REJECTED;
+            case "CANCELLED": return BrokerOrderStatus.CANCELLED;
+            case "OPEN":
+            case "UPDATE":
+                int filled = filledQty != null ? filledQty : 0;
+                int total = totalQty != null ? totalQty : 0;
+                if (filled > 0 && filled < total) {
+                    return BrokerOrderStatus.PARTIALLY_FILLED;
+                }
+                return BrokerOrderStatus.OPEN;
+            default:
+                return BrokerOrderStatus.OPEN;
         }
     }
 

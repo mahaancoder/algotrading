@@ -1,5 +1,7 @@
 package com.satyam.trading2.scheduler;
 
+import com.satyam.trading2.broker.model.BrokerOrderStatus;
+import com.satyam.trading2.datamodel.Order;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSide;
@@ -14,6 +16,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -86,6 +89,11 @@ public class TrailingStopScheduler {
             int skippedCount = 0;
             int failedCount = 0;
 
+            // ===== PHASE 1: decide + cancel. For every position that qualifies for
+            // trailing, cancel its existing primary target sell and record a decision.
+            // All cancels are issued first so PHASE 2 can verify them with a SINGLE
+            // fetchOrders() snapshot instead of one GET /orders per position.
+            List<TrailDecision> decisions = new ArrayList<>();
             for (Position position : openPositions) {
                 try {
                     boolean isHolding = position.getPositionType() == HOLDING;
@@ -108,87 +116,87 @@ public class TrailingStopScheduler {
                         continue;
                     }
 
-                    if (isHolding) {
-                        // ===== CNC/HOLDING: Update only the primary target sell (A).
-                        // Do NOT touch the secondary quick-exit sell (B) — it should
-                        // remain at its original 1% price. We cancel only the primary
-                        // targetOrderId and place a new sell at LTP for total qty.
-                        // Using placeOrder directly instead of updateTargetOrder to
-                        // avoid the blanket "cancel all CNC SELL orders" behavior.
-                        String oldPrimaryOrderId = position.getTargetOrderId();
-                        if (oldPrimaryOrderId != null) {
-                            try {
-                                brokerOrderRouter.cancelViaBroker(position, oldPrimaryOrderId);
-                                Thread.sleep(300);
-                            } catch (Exception e) {
-                                System.err.println("⚠️ [TrailingStop] Failed to cancel primary sell for " + symbol + ": " + e.getMessage());
-                            }
+                    // CNC/HOLDING updates ONLY the primary target sell (A); the secondary
+                    // quick-exit sell (B) is left at its original 1% price. INTRADAY/MIS
+                    // cancels the prior target. Either way we cancel only the primary
+                    // targetOrderId here and place the replacement in PHASE 2, after the
+                    // short-sell guard has re-checked the cancelled order's status.
+                    String oldOrderId = position.getTargetOrderId();
+                    if (oldOrderId != null) {
+                        try {
+                            brokerOrderRouter.cancelViaBroker(position, oldOrderId);
+                        } catch (Exception e) {
+                            System.err.println("⚠️ [TrailingStop] Failed to cancel " +
+                                    (isHolding ? "primary" : "target") + " sell for " + symbol + ": " + e.getMessage());
                         }
+                    }
 
-                        String newOrderId = brokerOrderRouter.placeLimitSell(
-                                position, symbol, ltp, qty, true, position.getStrategy());
+                    decisions.add(new TrailDecision(position, symbol, avgPrice, qty, ltp, profitPercent, isHolding, oldOrderId));
 
-                        if (newOrderId != null) {
-                            position.setTargetOrderId(newOrderId);
-                            position.setTarget(ltp);
-                            positionManager.updatePosition(position);
+                } catch (Exception e) {
+                    failedCount++;
+                    System.err.println("❌ [TrailingStop] Error processing " + position.getSymbol() +
+                            ": " + e.getMessage());
+                }
+            }
 
-                            // Broker-tagged PendingOrder so the fill event is matched to the
-                            // owning broker (KITE/SHOONYA/INDSTOCKS)
-                            PendingOrder targetPO = brokerOrderRouter.createSellPending(
-                                    position, newOrderId, symbol,
-                                    position.getStrategy(), qty, ltp, true);
-                            pendingOrderRepository.save(targetPO);
+            if (decisions.isEmpty()) {
+                System.out.println("📊 " + String.format(
+                        "[TrailingStop] Complete - Updated: %d, Skipped: %d, Failed: %d",
+                        updatedCount, skippedCount, failedCount));
+                return;
+            }
 
-                            updatedCount++;
-                            System.out.println("✅ [TrailingStop] " + symbol + " (CNC)" +
-                                    ": Updated primary sell to LTP ₹" + String.format("%.2f", ltp) +
-                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
-                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
-                        } else {
-                            failedCount++;
-                            System.err.println("❌ [TrailingStop] " + symbol + " (CNC): Failed to update primary sell");
-                        }
+            // Let the cancels settle at the broker, then take ONE orders snapshot for
+            // the whole cycle. PHASE 2 reads every order's post-cancel status from this
+            // single snapshot — one GET /orders instead of one per trailed position.
+            Thread.sleep(300);
+            List<Order> ordersSnapshot = orderServiceV2.fetchOrders();
+
+            // ===== PHASE 2: verify each cancelled order against the single snapshot,
+            // then place the replacement SELL when the short-sell guard allows it.
+            for (TrailDecision d : decisions) {
+                try {
+                    // ===== SHORT-SELL GUARD: only place a replacement sell if the old
+                    // target is confirmed gone (cancelled/not-found). If it already
+                    // filled, or the cancel didn't take effect, skip to avoid shorting.
+                    if (!isSafeToPlaceReplacementSell(d.position, d.oldOrderId, ordersSnapshot)) {
+                        skippedCount++;
+                        continue;
+                    }
+
+                    String newOrderId = brokerOrderRouter.placeLimitSell(
+                            d.position, d.symbol, d.ltp, d.qty, d.isHolding, d.position.getStrategy());
+
+                    if (newOrderId != null) {
+                        d.position.setTargetOrderId(newOrderId);
+                        d.position.setTarget(d.ltp);
+                        positionManager.updatePosition(d.position);
+
+                        // Broker-tagged SELL PendingOrder so the fill event is matched to the
+                        // owning broker (KITE/SHOONYA/INDSTOCKS) and routed to onSellCompleted()
+                        // — P&L recorded, dashboard updated, exit metrics written.
+                        PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                                d.position, newOrderId, d.symbol,
+                                d.position.getStrategy(), d.qty, d.ltp, d.isHolding);
+                        pendingOrderRepository.save(targetPO);
+
+                        updatedCount++;
+                        System.out.println("✅ [TrailingStop] " + d.symbol + (d.isHolding ? " (CNC)" : "") +
+                                ": Updated " + (d.isHolding ? "primary" : "target") + " sell to LTP ₹" + String.format("%.2f", d.ltp) +
+                                " (Profit: " + String.format("%.2f", d.profitPercent) + "%, " +
+                                "Entry: ₹" + String.format("%.2f", d.avgPrice) + ")");
                     } else {
-                        // ===== INTRADAY/MIS: update single target sell to LTP, routed to the
-                        // position's owning broker. KITE keeps updateTargetOrder (dedup); non-KITE
-                        // cancels the prior target then places a fresh LIMIT SELL at that broker.
-                        String oldOrderId = position.getTargetOrderId();
-                        String newOrderId = brokerOrderRouter.placeTargetSell(
-                                position, symbol, ltp, qty, oldOrderId, false, position.getStrategy());
-
-                        if (newOrderId != null) {
-                            position.setTargetOrderId(newOrderId);
-                            position.setTarget(ltp);
-                            positionManager.updatePosition(position);
-
-                            // A NEW sell order was placed (KITE updateTargetOrder cancels the
-                            // old target and places a fresh order with a new id; non-KITE places
-                            // a fresh LIMIT SELL). Register a broker-tagged SELL PendingOrder for
-                            // ALL brokers so the fill is matched back to onSellCompleted() — P&L
-                            // recorded, dashboard updated, exit metrics written. Without this the
-                            // KITE fill arrives with an id that has no PendingOrder and is dropped.
-                            PendingOrder targetPO = brokerOrderRouter.createSellPending(
-                                    position, newOrderId, symbol,
-                                    position.getStrategy(), qty, ltp, false);
-                            pendingOrderRepository.save(targetPO);
-
-                            updatedCount++;
-                            System.out.println("✅ [TrailingStop] " + symbol +
-                                    ": Updated target to LTP ₹" + String.format("%.2f", ltp) +
-                                    " (Profit: " + String.format("%.2f", profitPercent) + "%, " +
-                                    "Entry: ₹" + String.format("%.2f", avgPrice) + ")");
-                        } else {
-                            failedCount++;
-                            System.err.println("❌ [TrailingStop] " + symbol + ": Failed to update target order");
-                        }
+                        failedCount++;
+                        System.err.println("❌ [TrailingStop] " + d.symbol + ": Failed to update " +
+                                (d.isHolding ? "primary" : "target") + " sell");
                     }
 
                     Thread.sleep(100);
 
                 } catch (Exception e) {
                     failedCount++;
-                    System.err.println("❌ [TrailingStop] Error processing " + position.getSymbol() +
+                    System.err.println("❌ [TrailingStop] Error processing " + d.position.getSymbol() +
                             ": " + e.getMessage());
                 }
             }
@@ -202,6 +210,75 @@ public class TrailingStopScheduler {
         } catch (Exception e) {
             System.err.println("❌ [TrailingStop] Error in updateTrailingStops: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    /**
+     * SHORT-SELL GUARD: decide whether it is safe to place a replacement SELL,
+     * based on the status of the existing target order (checked AFTER the cancel
+     * attempt). This prevents the 5-second trailing loop from placing a fresh sell
+     * when the old one already filled — which would short the stock.
+     *
+     *  - COMPLETE          → not safe; position already sold. Mark exitProcessed so
+     *                        we stop re-trailing; the fill handler/reconciliation closes it.
+     *  - PARTIALLY_FILLED  → not safe; skip this cycle (part already sold).
+     *  - OPEN              → not safe; cancel didn't take effect — don't stack a 2nd sell.
+     *  - CANCELLED/REJECTED/null (not found / no order) → safe to place.
+     */
+    private boolean isSafeToPlaceReplacementSell(Position position, String oldOrderId, List<Order> ordersSnapshot) {
+        if (oldOrderId == null) {
+            return true; // no existing order → safe to place
+        }
+        BrokerOrderStatus status = brokerOrderRouter.getOrderStatus(position, oldOrderId, ordersSnapshot);
+        if (status == null) {
+            return true; // order not found at broker → treat as gone → safe
+        }
+        switch (status) {
+            case COMPLETE:
+                System.err.println("🛑 [TrailingStop] " + position.getSymbol() +
+                        ": existing sell " + oldOrderId + " is COMPLETE — skipping replacement to avoid short sell. Marking exitProcessed.");
+                position.setExitProcessed(true);
+                positionManager.updatePosition(position);
+                return false;
+            case PARTIALLY_FILLED:
+                System.err.println("🛑 [TrailingStop] " + position.getSymbol() +
+                        ": existing sell " + oldOrderId + " is PARTIALLY_FILLED — skipping replacement to avoid short sell.");
+                return false;
+            case OPEN:
+                System.err.println("⚠️ [TrailingStop] " + position.getSymbol() +
+                        ": existing sell " + oldOrderId + " still OPEN after cancel — skipping replacement.");
+                return false;
+            case CANCELLED:
+            case REJECTED:
+            default:
+                return true;
+        }
+    }
+
+    /**
+     * Per-position trailing decision captured in PHASE 1 (after the cancel is issued)
+     * and consumed in PHASE 2 (after the single orders snapshot is taken).
+     */
+    private static final class TrailDecision {
+        final Position position;
+        final String symbol;
+        final double avgPrice;
+        final int qty;
+        final double ltp;
+        final double profitPercent;
+        final boolean isHolding;
+        final String oldOrderId;
+
+        TrailDecision(Position position, String symbol, double avgPrice, int qty, double ltp,
+                      double profitPercent, boolean isHolding, String oldOrderId) {
+            this.position = position;
+            this.symbol = symbol;
+            this.avgPrice = avgPrice;
+            this.qty = qty;
+            this.ltp = ltp;
+            this.profitPercent = profitPercent;
+            this.isHolding = isHolding;
+            this.oldOrderId = oldOrderId;
         }
     }
 }
