@@ -33,15 +33,6 @@ public class ReconciliationService {
     private final RiskManager riskManager;
     private final DipAccumulatorService dipAccumulatorService;
     private final MarketContextBuilder marketContextBuilder;
-    private final ExecutionEngine executionEngine;
-
-    // ===== FIX: Use ExecutionEngine's locks to prevent race conditions =====
-    private Object getSymbolStrategyLock(String symbol, String strategy) {
-        return executionEngine.getSymbolStrategyLocks().computeIfAbsent(
-            symbol + "_" + strategy,
-            k -> new Object()
-        );
-    }
 
     // ─────────────────────────────────────────────────────────────────────
     // Kite is the ONLY positions/holdings source (getPositions()/getHoldings()
