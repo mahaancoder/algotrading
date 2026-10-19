@@ -172,7 +172,7 @@ public class BrokerOrderRouter {
         }
         if ((status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED)
                 && Integer.valueOf(0).equals(filled)) {
-            return true;
+            return retirePendingSell(position, orderId);
         }
 
         cancelViaBroker(position, orderId);
@@ -200,10 +200,30 @@ public class BrokerOrderRouter {
             }
             if ((status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED)
                     && Integer.valueOf(0).equals(filled)) {
-                return true;
+                return retirePendingSell(position, orderId);
             }
         } while (System.currentTimeMillis() < deadline);
         return false;
+    }
+
+    /** Mark the matching local SELL record terminal only after broker-confirmed zero-fill cancellation. */
+    private boolean retirePendingSell(Position position, String orderId) {
+        try {
+            pendingOrderRepository.findByBrokerAndBrokerOrderId(brokerOf(position), orderId)
+                    .ifPresent(pending -> {
+                        pending.markCancelled();
+                        try {
+                            pendingOrderRepository.save(pending);
+                        } catch (java.io.IOException e) {
+                            throw new IllegalStateException("Failed to persist cancelled SELL " + orderId, e);
+                        }
+                    });
+            return true;
+        } catch (RuntimeException e) {
+            System.err.println("🛑 [BrokerOrderRouter] Cancellation was confirmed but local state could not be retired for "
+                    + orderId + ": " + e.getMessage());
+            return false;
+        }
     }
 
     /** Fetch one Kite order-book snapshot and resolve the requested order from it. */
