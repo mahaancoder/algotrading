@@ -103,11 +103,10 @@ public class OrderLifecycleManager {
             pendingOrder.markCancelled();
             pendingOrderRepository.save(pendingOrder);
 
-            double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
-            riskManager.releaseCapital(strategy, reservedCapital);
-            riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
-
             if (side == TradeSide.BUY) {
+                double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
+                riskManager.releaseCapital(strategy, reservedCapital);
+                riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
                 dipAccumulatorService.remove(symbol, strategy);
             }
         }
@@ -135,11 +134,10 @@ public class OrderLifecycleManager {
             pendingOrder.markRejected();
             pendingOrderRepository.save(pendingOrder);
 
-            double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
-            riskManager.releaseCapital(strategy, reservedCapital);
-            riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
-
-            if (pendingOrder.getSide() == TradeSide.BUY) {
+            if (side == TradeSide.BUY) {
+                double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
+                riskManager.releaseCapital(strategy, reservedCapital);
+                riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
                 dipAccumulatorService.remove(symbol, strategy);
             }
         }
