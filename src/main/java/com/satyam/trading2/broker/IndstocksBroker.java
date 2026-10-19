@@ -354,6 +354,30 @@ public class IndstocksBroker extends AbstractRestBroker {
         }
     }
 
+    @Override
+    public Integer getOrderFilledQuantity(String brokerOrderId) {
+        if (!indstocksConfig.isAuthenticated()) return null;
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("order_id", brokerOrderId);
+            payload.put("segment", "EQUITY");
+            JsonNode resp = getWithBody(indstocksConfig.getBaseUrl() + "/order",
+                    objectMapper.writeValueAsString(payload), indstocksConfig.getAuthHeader());
+            if (!"success".equals(textOr(resp, "status", ""))) return null;
+            JsonNode data = resp.get("data");
+            if (data == null || data.isNull()) return null;
+            for (String field : new String[]{"filled_quantity", "filled_qty", "fillshares", "filledQuantity"}) {
+                int value = intOr(data, field, -1);
+                if (value >= 0) return value;
+            }
+            return null;
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] Unable to verify filled quantity for {}: {}",
+                    brokerOrderId, e.getMessage());
+            return null;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // getFunds — GET /funds
     // ─────────────────────────────────────────────────────────────────────
