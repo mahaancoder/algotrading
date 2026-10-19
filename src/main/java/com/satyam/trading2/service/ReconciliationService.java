@@ -259,10 +259,16 @@ public class ReconciliationService {
                             .count();
 
                     if (existingSellOrder == null) {
-                        if (candidates.isEmpty()) {
+                        if (candidates.isEmpty() && sameSymbolPositionCount == 1) {
                             log.info("Position {} ({}) has no active SELL; creating a target",
                                     symbol, position.getPositionType());
                             createMissingTargetOrder(position);
+                            continue;
+                        }
+                        if (candidates.isEmpty()) {
+                            log.error("🛑 Multiple local {} positions exist for {} with no unambiguous target mapping; "
+                                            + "not creating overlapping SELL orders. Reconcile strategy allocations first.",
+                                    position.getPositionType(), symbol);
                             continue;
                         }
                         if (candidates.size() == 1 && sameSymbolPositionCount == 1) {
