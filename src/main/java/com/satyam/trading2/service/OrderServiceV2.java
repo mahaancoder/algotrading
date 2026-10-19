@@ -163,6 +163,16 @@ public class OrderServiceV2 {
                         .filter(o -> product.equalsIgnoreCase(o.getProduct()))
                         .filter(o -> isActiveOrderStatus(o.getStatus()))
                         .collect(java.util.stream.Collectors.toList());
+                // If the caller's previous target is no longer OPEN, still prove that
+                // it is terminal with zero fills. A cancelled-but-partially-filled
+                // holding target must never be followed by a full-quantity replacement.
+                if (oldOrderId != null
+                        && candidates.stream().noneMatch(o -> oldOrderId.equals(o.getOrderId()))
+                        && !awaitKiteSellCancellationWithZeroFills(oldOrderId, 0L)) {
+                    System.err.println("🛑 [updateTargetOrder] Previous holding SELL " + oldOrderId
+                            + " is missing or has uncertain fills; refusing replacement for " + symbol);
+                    return null;
+                }
             } else {
                 candidates = oldOrderId == null
                         ? Collections.emptyList()
