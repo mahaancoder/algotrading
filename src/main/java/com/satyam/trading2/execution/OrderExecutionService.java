@@ -351,27 +351,45 @@ public class OrderExecutionService {
 
         // Stickiness: check if a position already exists at any broker
         Position existing = findExistingPositionAcrossBrokers(symbol, strategy);
-        if (existing != null && existing.getBroker() != null && existing.getExecutionRoute() != null) {
+        if (existing != null) {
             ExecutionRoute existingRoute = existing.getExecutionRoute();
+            if (existingRoute == null && existing.getBroker() != null) {
+                try {
+                    existingRoute = ExecutionRoute.valueOf(
+                            existing.getBroker().trim().toUpperCase(java.util.Locale.ROOT));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown legacy broker identity cannot be safely inferred.
+                }
+            }
+            if (existingRoute == null || !brokerRouter.isAvailable(existingRoute)) {
+                log.error("🛑 [BrokerToggle] Cannot safely route accumulation for {}: owning broker is unknown/unavailable",
+                        symbol);
+                return null;
+            }
             if (existingRoute != preferredRoute) {
                 log.debug("[OrderExecutionService] Stickiness override: {} existing at {} → routing to {} instead of {}",
                         symbol, existing.getBroker(), existingRoute, preferredRoute);
             }
-            // If the existing broker is disabled, we can't average there.
-            // The caller will reject the buy — the position can still be exited via SELL.
+            // Never move an existing position to KITE just because its owning broker
+            // is disabled. That can create a separate position and split the inventory.
             if (!brokerToggleService.isEnabled(existingRoute)) {
-                log.info("🛑 [BrokerToggle] {} disabled — cannot average existing position at {} for {}",
+                log.info("🛑 [BrokerToggle] {} disabled — refusing to average existing position at {} for {}",
                         existingRoute, symbol, strategy);
-                return ExecutionRoute.KITE; // signals rejection to caller
+                return null;
             }
             return existingRoute;
         }
 
-        // New position: if preferred broker is disabled, fall back to KITE
-        if (!brokerToggleService.isEnabled(preferredRoute)) {
-            log.info("🔄 [BrokerToggle] {} disabled — falling back to KITE for new position in {}",
-                    preferredRoute, symbol);
-            return ExecutionRoute.KITE;
+        // New position: fall back only if KITE is both registered and enabled.
+        if (!brokerToggleService.isEnabled(preferredRoute) || !brokerRouter.isAvailable(preferredRoute)) {
+            ExecutionRoute fallback = ExecutionRoute.KITE;
+            if (brokerRouter.isAvailable(fallback) && brokerToggleService.isEnabled(fallback)) {
+                log.info("🔄 [BrokerToggle] {} unavailable/disabled — falling back to KITE for new position in {}",
+                        preferredRoute, symbol);
+                return fallback;
+            }
+            log.info("🛑 [BrokerToggle] No enabled/available broker for new position in {}", symbol);
+            return null;
         }
 
         return preferredRoute;
