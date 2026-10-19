@@ -299,10 +299,14 @@ public class ExecutionEngine {
                     pendingOrderRepository.findByBrokerAndBrokerOrderId(
                                     brokerOrderRouter.brokerOf(position), oldTargetId)
                             .ifPresent(oldPending -> {
+                                com.satyam.trading2.datamodel.PendingOrderState previousState = oldPending.getState();
+                                long previousUpdatedTime = oldPending.getUpdatedTime();
                                 oldPending.markCancelled();
                                 try {
                                     pendingOrderRepository.save(oldPending);
                                 } catch (IOException e) {
+                                    oldPending.setState(previousState);
+                                    oldPending.setUpdatedTime(previousUpdatedTime);
                                     throw new IllegalStateException("Could not persist cancelled SELL " + oldTargetId, e);
                                 }
                             });
