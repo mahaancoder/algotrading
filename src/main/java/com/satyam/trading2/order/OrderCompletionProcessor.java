@@ -204,7 +204,9 @@ public class OrderCompletionProcessor {
                 }
             }
 
-//        2. IDEMPOTENCY
+// Serialize BUY-fill position updates with the same lock used by all SELL lifecycle paths.
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            //        2. IDEMPOTENCY
             if(position.getBuyOrderIds().contains(orderId)) {
                 System.out.println("⚠️ Order already processed (idempotency check), exiting");
                 return;
@@ -424,6 +426,8 @@ public class OrderCompletionProcessor {
             // Broadcast using type-safe DTO
             String entryType = position.getEntryType() != null ? position.getEntryType().name() : null;
             broadcastService.broadcastBuy(symbol, pendingOrder.getStrategy(), pendingOrder.getAvgPrice(), pendingOrder.getFilledQty(), entryType);
+
+            }
 
         } catch (Exception e) {
             System.out.println("❌❌❌ EXCEPTION in onBuyCompleted for " + pendingOrder.getSymbol()
