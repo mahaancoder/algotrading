@@ -128,14 +128,15 @@ public class IndstocksOrderWebSocketClient extends BrokerWebSocketClient {
         int reqQuantity = intOr(data, "req_quantity", 0);
         int lot = intOr(data, "lot", 0);
 
-        // For filled quantity: if lot is present, use lot * (req_quantity / requested_lot)
-        // Otherwise just use req_quantity on success. INDstocks sends lot on execution.
-        int filledQty = 0;
+        // Do not turn missing fill metadata into zero. A CANCELLED/REJECTED
+        // order may have filled before the terminal event; unknown must fail closed.
+        Integer filledQty = null;
         if (mappedStatus == BrokerOrderStatus.COMPLETE) {
-            filledQty = reqQuantity; // full fill on S
+            filledQty = reqQuantity > 0 ? reqQuantity : null;
         } else if (mappedStatus == BrokerOrderStatus.PARTIALLY_FILLED) {
-            // lot filled so far — approximate
-            filledQty = lot > 0 ? lot : 0;
+            filledQty = lot > 0 ? lot : null;
+        } else if (data.has("lot") && !data.get("lot").isNull()) {
+            filledQty = lot >= 0 ? lot : null;
         }
 
         String errorMessage = textOr(data, "error_message", " ");
