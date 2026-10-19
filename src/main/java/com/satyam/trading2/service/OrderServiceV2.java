@@ -264,6 +264,7 @@ public class OrderServiceV2 {
      */
     private boolean awaitKiteSellCancellationWithZeroFills(String orderId, long timeoutMillis) {
         long deadline = System.currentTimeMillis() + timeoutMillis;
+        long lastCancelAttempt = System.currentTimeMillis();
         do {
             List<Order> snapshot = fetchOrders();
             Order order = snapshot == null ? null : snapshot.stream()
@@ -281,8 +282,16 @@ public class OrderServiceV2 {
             if ("CANCELLED".equalsIgnoreCase(status) || "REJECTED".equalsIgnoreCase(status)) {
                 return order.getFilledQuantity() == 0;
             }
-            if (timeoutMillis == 0L || System.currentTimeMillis() >= deadline) {
+            long now = System.currentTimeMillis();
+            if (timeoutMillis == 0L || now >= deadline) {
                 return false;
+            }
+            if (now - lastCancelAttempt >= 1000L) {
+                // The previous cancel request may have been rate-limited or lost.
+                // Retry while the order remains active, but never replace until
+                // the order book confirms terminal status and zero fills.
+                cancelOrder(orderId);
+                lastCancelAttempt = now;
             }
             try {
                 Thread.sleep(200L);
