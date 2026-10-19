@@ -55,6 +55,10 @@ class BrokerOrderEventProcessorTest {
 
         when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "sell-787"))
                 .thenReturn(Optional.of(pending));
+        // The production bean uses @Lazy field injection to break a Spring cycle;
+        // Mockito's @InjectMocks does not always populate that lazy field.
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                processor, "orderCompletionProcessor", orderCompletionProcessor);
 
         processor.process(BrokerOrderEvent.builder()
                 .broker("KITE")
