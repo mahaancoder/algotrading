@@ -64,37 +64,73 @@ public class OrderLifecycleManager {
     }
 
     private void handleComplete(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
-        // Marking a SELL complete releases its pending-order reservation. Keep that
-        // transition and the position quantity update in one broker-symbol critical
-        // section, otherwise a scheduler can submit a replacement in between them.
         synchronized (lifecycleLock(pendingOrder)) {
-            if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) return;
-            if (event.getFilledQuantity() == null
-                    || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
-                System.err.println("[OrderLifecycleManager] COMPLETE event for " + pendingOrder.getOrderId()
-                        + " has unknown/mismatched fill quantity; retaining reservation until reconciliation.");
+            if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)
+                    && pendingOrder.isCompletionProcessed()) return;
+
+            if (!pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
+                if (event.getFilledQuantity() == null
+                        || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
+                    System.err.println("[OrderLifecycleManager] COMPLETE event for " + pendingOrder.getOrderId()
+                            + " has unknown/mismatched fill quantity; retaining reservation until reconciliation.");
+                    return;
+                }
+                PendingOrderState previousState = pendingOrder.getState();
+                int previousFilledQty = pendingOrder.getFilledQty();
+                double previousAvgPrice = pendingOrder.getAvgPrice();
+                long previousUpdatedTime = pendingOrder.getUpdatedTime();
+                pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
+                try {
+                    pendingOrderRepository.save(pendingOrder);
+                } catch (IOException persistenceError) {
+                    pendingOrder.setState(previousState);
+                    pendingOrder.setFilledQty(previousFilledQty);
+                    pendingOrder.setAvgPrice(previousAvgPrice);
+                    pendingOrder.setUpdatedTime(previousUpdatedTime);
+                    throw persistenceError;
+                }
+            } else if (pendingOrder.getFilledQty() != pendingOrder.getRequestQty()) {
+                System.err.println("[OrderLifecycleManager] COMPLETE-but-unprocessed order has inconsistent fills: "
+                        + pendingOrder.getOrderId() + "; retaining reservation.");
+                restoreReservationIfUnprocessed(pendingOrder, null);
                 return;
             }
-            PendingOrderState previousState = pendingOrder.getState();
-            int previousFilledQty = pendingOrder.getFilledQty();
-            double previousAvgPrice = pendingOrder.getAvgPrice();
-            long previousUpdatedTime = pendingOrder.getUpdatedTime();
-            pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
-            try {
-                pendingOrderRepository.save(pendingOrder);
-            } catch (IOException persistenceError) {
-                pendingOrder.setState(previousState);
-                pendingOrder.setFilledQty(previousFilledQty);
-                pendingOrder.setAvgPrice(previousAvgPrice);
-                pendingOrder.setUpdatedTime(previousUpdatedTime);
-                throw persistenceError;
-            }
+
             TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
-            if (side == TradeSide.BUY) {
-                orderCompletionProcessor.onBuyCompleted(pendingOrder);
-            } else if (side == TradeSide.SELL) {
-                orderCompletionProcessor.onSellCompleted(pendingOrder);
+            if (side == null) {
+                System.err.println("[OrderLifecycleManager] PendingOrder has null side; retaining reservation: "
+                        + pendingOrder.getOrderId());
+                restoreReservationIfUnprocessed(pendingOrder, null);
+                return;
             }
+
+            try {
+                if (side == TradeSide.BUY) {
+                    orderCompletionProcessor.onBuyCompleted(pendingOrder);
+                } else if (side == TradeSide.SELL) {
+                    orderCompletionProcessor.onSellCompleted(pendingOrder);
+                }
+                if (!pendingOrder.isCompletionProcessed()) {
+                    System.err.println("[OrderLifecycleManager] Completion callback did not process "
+                            + pendingOrder.getOrderId() + "; retaining reservation until reconciliation.");
+                    restoreReservationIfUnprocessed(pendingOrder, null);
+                }
+            } catch (IOException | RuntimeException e) {
+                restoreReservationIfUnprocessed(pendingOrder, e);
+                throw e;
+            }
+        }
+    }
+
+    private void restoreReservationIfUnprocessed(PendingOrder pendingOrder, Throwable originalFailure) {
+        if (pendingOrder.isCompletionProcessed()) return;
+        pendingOrder.setState(PendingOrderState.PENDING);
+        try {
+            pendingOrderRepository.save(pendingOrder);
+        } catch (IOException persistenceError) {
+            if (originalFailure != null) originalFailure.addSuppressed(persistenceError);
+            System.err.println("[OrderLifecycleManager] CRITICAL: unable to persist retained reservation for "
+                    + pendingOrder.getOrderId() + ": " + persistenceError.getMessage());
         }
     }
 
