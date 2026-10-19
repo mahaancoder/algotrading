@@ -177,7 +177,8 @@ public class OrderServiceV2 {
                     .filter(o -> oldOrderId == null || !oldOrderId.equals(o.getOrderId()))
                     .anyMatch(o -> pendingOrderRepository
                             .findByBrokerAndBrokerOrderId("KITE", o.getOrderId())
-                            .map(pending -> !pending.isOpen())
+                            .map(pending -> !pending.isOpen()
+                                    || pending.getRequestQty() != o.getQuantity())
                             .orElse(true));
             if (untrackedActiveSell) {
                 System.err.println("🛑 [updateTargetOrder] An active " + product + " SELL for " + symbol
