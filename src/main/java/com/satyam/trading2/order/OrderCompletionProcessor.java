@@ -459,24 +459,26 @@ public class OrderCompletionProcessor {
 
             // Serialize the entire fill/cancel/position-update lifecycle against all schedulers.
             synchronized (SellLifecycleLockRegistry.lockFor(position)) {
-            // ===== DUAL SELL-ORDER: Cancel the other sell order when one fills =====
+            // ===== LEGACY DUAL SELL: confirm the other order is cancelled with zero fills =====
+            boolean otherSellCancelled = true;
+            String unresolvedOtherSellId = null;
             if (position.getTargetOrderId() != null && position.getSecondaryTargetOrderId() != null) {
-                if (isSecondarySell) {
-                    // Quick-exit (secondary) filled → cancel the holding target (primary)
-                    String primaryOrderId = position.getTargetOrderId();
-                    System.out.println("🔗 [OrderCompletionProcessor] Quick-exit sell filled for " + symbol +
-                                     " → cancelling holding target sell " + primaryOrderId);
-                    try { cancelViaBroker(position, primaryOrderId); } catch (Exception e) {
-                        System.err.println("⚠️ Failed to cancel primary sell " + primaryOrderId + ": " + e.getMessage());
-                    }
+                String otherOrderId = isSecondarySell
+                        ? position.getTargetOrderId()
+                        : position.getSecondaryTargetOrderId();
+                otherSellCancelled = brokerOrderRouter.cancelAndConfirmSell(position, otherOrderId, 2500L);
+                if (!otherSellCancelled) {
+                    unresolvedOtherSellId = otherOrderId;
+                    System.err.println("🚨 [OrderCompletionProcessor] SELL fill for " + symbol
+                            + " raced with cancellation of other SELL " + otherOrderId
+                            + ". No replacement SELL will be placed; position requires immediate broker reconciliation.");
+                } else if (isSecondarySell) {
+                    position.setTargetOrderId(null);
+                    position.setTargetPlaced(false);
                 } else {
-                    // Holding target (primary) filled → cancel the quick-exit (secondary)
-                    String secondaryOrderId = position.getSecondaryTargetOrderId();
-                    System.out.println("🔗 [OrderCompletionProcessor] Holding target sell filled for " + symbol +
-                                     " → cancelling quick-exit sell " + secondaryOrderId);
-                    try { cancelViaBroker(position, secondaryOrderId); } catch (Exception e) {
-                        System.err.println("⚠️ Failed to cancel secondary sell " + secondaryOrderId + ": " + e.getMessage());
-                    }
+                    position.setSecondaryTargetOrderId(null);
+                    position.setSecondaryTargetQty(0);
+                    position.setSecondaryTargetPlaced(false);
                 }
             }
 
@@ -494,19 +496,32 @@ public class OrderCompletionProcessor {
                     return;
                 }
             position.setRealizedPnl(pnl);
-
-            position.setExitProcessed(true);
             position.setUpdatedAt(System.currentTimeMillis());
-            if (position.getTotalQuantity() == soldQty) {
-                // Full exit
+            boolean fullExit = position.getTotalQuantity() == soldQty;
+            if (fullExit) {
                 position.setOpen(false);
-                positionManager.updatePosition(position);
-                // Broker-aware removal: use the position's broker dimension
-                String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
-                positionManager.removePosition(symbol, strategy, posBroker);
+                position.setExitProcessed(true);
+                if (otherSellCancelled) {
+                    positionManager.updatePosition(position);
+                    // Broker-aware removal: use the position's broker dimension.
+                    String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
+                    positionManager.removePosition(symbol, strategy, posBroker);
+                } else {
+                    // Keep a tombstone with the unresolved order IDs so a later broker
+                    // event/reconciliation can still find it. Never place a replacement.
+                    if (unresolvedOtherSellId != null && isSecondarySell) {
+                        position.setTargetOrderId(unresolvedOtherSellId);
+                    } else if (unresolvedOtherSellId != null) {
+                        position.setSecondaryTargetOrderId(unresolvedOtherSellId);
+                        position.setSecondaryTargetPlaced(true);
+                    }
+                    positionManager.updatePosition(position);
+                }
             } else {
-                // Partial exit
+                // Partial exit: keep the remaining long position active. If the other
+                // SELL cannot be confirmed cancelled, retain its ID and do not replace it.
                 position.setTotalQuantity(position.getTotalQuantity() - soldQty);
+                position.setExitProcessed(false);
                 positionManager.updatePosition(position);
             }
 
@@ -522,7 +537,7 @@ public class OrderCompletionProcessor {
                 // ===== DUAL SELL: If quick-exit (secondary) filled, re-place a sell
                 // for the remaining holdings (since we cancelled the holding target).
                 // The remaining qty = total - secondaryTargetQty.
-                if (isSecondarySell && position.isOpen()) {
+                if (isSecondarySell && position.isOpen() && otherSellCancelled) {
                     int remainingQty = position.getTotalQuantity(); // already reduced by partial exit
                     if (remainingQty > 0) {
                         double remainingAvg = position.getAveragePrice();
