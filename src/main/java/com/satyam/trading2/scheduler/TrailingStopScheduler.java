@@ -269,8 +269,30 @@ public class TrailingStopScheduler {
                 return false;
             case CANCELLED:
             case REJECTED:
+                // A terminal status does not imply zero fills. For Kite, inspect the
+                // order snapshot and only permit replacement when filledQuantity is
+                // explicitly zero. For other brokers this enum does not expose fills,
+                // so fail closed and let broker reconciliation resolve the position.
+                if (brokerOrderRouter.isKite(position) && ordersSnapshot != null) {
+                    Order oldOrder = ordersSnapshot.stream()
+                            .filter(o -> oldOrderId.equals(o.getOrderId()))
+                            .findFirst()
+                            .orElse(null);
+                    if (oldOrder != null && oldOrder.getFilledQuantity() != null
+                            && oldOrder.getFilledQuantity() == 0) {
+                        return true;
+                    }
+                    System.err.println("🛑 [TrailingStop] " + position.getSymbol()
+                            + ": cancelled/rejected SELL " + oldOrderId
+                            + " has unknown or non-zero filled quantity — blocking replacement.");
+                    return false;
+                }
+                System.err.println("🛑 [TrailingStop] " + position.getSymbol()
+                        + ": cannot verify fills for terminal SELL " + oldOrderId
+                        + " — blocking replacement until reconciled.");
+                return false;
             default:
-                return true;
+                return false;
         }
     }
 
