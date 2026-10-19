@@ -78,18 +78,21 @@ public class OrderCompletionProcessor {
     // ─────────────────────────────────────────────────────────────────────
 
     private com.satyam.trading2.broker.ExecutionRoute routeOf(Position position) {
-        return position.getExecutionRoute() != null
-                ? position.getExecutionRoute() : com.satyam.trading2.broker.ExecutionRoute.KITE;
+        if (position.getExecutionRoute() != null) return position.getExecutionRoute();
+        if (position.getBroker() != null) {
+            try {
+                return com.satyam.trading2.broker.ExecutionRoute.valueOf(
+                        position.getBroker().trim().toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // Legacy/unknown broker labels use the backward-compatible default.
+            }
+        }
+        return com.satyam.trading2.broker.ExecutionRoute.KITE;
     }
 
     /** Cancel an order at the broker that owns the position. */
     private void cancelViaBroker(Position position, String orderId) {
-        if (orderId == null) return;
-        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
-            orderServiceV2.cancelOrder(orderId);
-        } else {
-            brokerRouter.getBrokerWithFallback(routeOf(position)).cancelOrder(orderId);
-        }
+        brokerOrderRouter.cancelViaBroker(position, orderId);
     }
 
     /**
@@ -120,7 +123,12 @@ public class OrderCompletionProcessor {
     private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
                                            boolean isHolding, String strategy) {
         com.satyam.trading2.broker.ExecutionRoute route = routeOf(position);
-        com.satyam.trading2.broker.Broker broker = brokerRouter.getBrokerWithFallback(route);
+        com.satyam.trading2.broker.Broker broker = brokerRouter.getBroker(route);
+        if (broker == null) {
+            System.err.println("🛑 [OrderCompletionProcessor] Refusing SELL for " + symbol
+                    + ": owning broker " + route + " is unavailable; no fallback order will be placed.");
+            return null;
+        }
         com.satyam.trading2.broker.model.OrderRequest req =
                 com.satyam.trading2.broker.model.OrderRequest.builder()
                         .symbol(symbol)
