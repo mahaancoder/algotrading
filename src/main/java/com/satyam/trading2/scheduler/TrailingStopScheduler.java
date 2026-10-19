@@ -8,6 +8,7 @@ import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.helpers.LatestPriceHelper;
 import com.satyam.trading2.order.BrokerOrderRouter;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.service.OrderServiceV2;
 import com.satyam.trading2.service.ReconciliationService;
@@ -135,15 +136,9 @@ public class TrailingStopScheduler {
                     // targetOrderId here and place the replacement in PHASE 2, after the
                     // short-sell guard has re-checked the cancelled order's status.
                     String oldOrderId = position.getTargetOrderId();
-                    if (oldOrderId != null) {
-                        try {
-                            brokerOrderRouter.cancelViaBroker(position, oldOrderId);
-                        } catch (Exception e) {
-                            System.err.println("⚠️ [TrailingStop] Failed to cancel " +
-                                    (isHolding ? "primary" : "target") + " sell for " + symbol + ": " + e.getMessage());
-                        }
-                    }
-
+                    // Do not send cancellation during collection. Cancellation and
+                    // replacement must happen atomically under the shared position lock
+                    // in phase 2, with broker-confirmed zero fills between the two.
                     decisions.add(new TrailDecision(position, symbol, avgPrice, qty, ltp, profitPercent, isHolding, oldOrderId));
 
                 } catch (Exception e) {
@@ -166,20 +161,22 @@ public class TrailingStopScheduler {
             Thread.sleep(300);
             List<Order> ordersSnapshot = orderServiceV2.fetchOrders();
 
-            // ===== PHASE 2: verify each cancelled order against the single snapshot,
-            // then place the replacement SELL when the short-sell guard allows it.
+            // ===== PHASE 2: atomically cancel-confirm and replace each target SELL.
             for (TrailDecision d : decisions) {
                 try {
-                    // ===== SHORT-SELL GUARD: only place a replacement sell if the old
-                    // target is confirmed gone (cancelled/not-found). If it already
-                    // filled, or the cancel didn't take effect, skip to avoid shorting.
-                    if (!isSafeToPlaceReplacementSell(d.position, d.oldOrderId, ordersSnapshot)) {
-                        skippedCount++;
-                        continue;
-                    }
+                    synchronized (SellLifecycleLockRegistry.lockFor(d.position)) {
+                        if (d.oldOrderId != null
+                                && !brokerOrderRouter.cancelAndConfirmSell(d.position, d.oldOrderId, 2500L)) {
+                            skippedCount++;
+                            System.err.println("🛑 [TrailingStop] " + d.symbol
+                                    + ": previous SELL " + d.oldOrderId
+                                    + " is not confirmed terminal with zero fills; replacement blocked.");
+                            continue;
+                        }
 
-                    String newOrderId = brokerOrderRouter.placeLimitSell(
-                            d.position, d.symbol, d.ltp, d.qty, d.isHolding, d.position.getStrategy());
+                        String newOrderId = brokerOrderRouter.placeTargetSell(
+                                d.position, d.symbol, d.ltp, d.qty, d.oldOrderId,
+                                d.isHolding, d.position.getStrategy());
 
                     if (newOrderId != null) {
                         d.position.setTargetOrderId(newOrderId);
@@ -206,6 +203,7 @@ public class TrailingStopScheduler {
                     }
 
                     Thread.sleep(100);
+                    }
 
                 } catch (Exception e) {
                     failedCount++;
