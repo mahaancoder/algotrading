@@ -218,6 +218,7 @@ public class BrokerOrderRouter {
         // remainder. We will refuse replacement afterward unless the terminal broker
         // snapshot proves zero fills; the caller must reconcile any observed fills.
         cancelViaBroker(position, orderId);
+        long lastCancelAttempt = System.currentTimeMillis();
         long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
         do {
             try {
@@ -242,6 +243,16 @@ public class BrokerOrderRouter {
             }
             if (status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED) {
                 return Integer.valueOf(0).equals(filled) && retirePendingSell(position, orderId);
+            }
+
+            // If the broker still reports a live/unknown order after the first
+            // cancellation request, retry once per second while holding the
+            // broker-symbol lock. Never place a replacement merely because a
+            // cancel request was sent.
+            long now = System.currentTimeMillis();
+            if (now - lastCancelAttempt >= 1000L && now < deadline) {
+                cancelViaBroker(position, orderId);
+                lastCancelAttempt = now;
             }
         } while (System.currentTimeMillis() < deadline);
         return false;
