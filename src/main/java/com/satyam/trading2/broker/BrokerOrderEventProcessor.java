@@ -7,6 +7,7 @@ import com.satyam.trading2.datamodel.PendingOrderState;
 import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.order.OrderCompletionProcessor;
 import com.satyam.trading2.order.PendingOrderRepository;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.service.DipAccumulatorService;
 import lombok.RequiredArgsConstructor;
@@ -108,54 +109,84 @@ public class BrokerOrderEventProcessor {
 
     // ─────────────────────────────────────────────────────────────────────
 
+    private Object lifecycleLock(PendingOrder pendingOrder) {
+        String broker = pendingOrder.getBroker();
+        if (broker == null || broker.trim().isEmpty()) {
+            broker = pendingOrder.getExecutionRoute() != null
+                    ? pendingOrder.getExecutionRoute().name() : "KITE";
+        }
+        return SellLifecycleLockRegistry.lockFor(
+                pendingOrder.getSymbol(), pendingOrder.getStrategy(), broker,
+                pendingOrder.getPositionType());
+    }
+
     private void handleComplete(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
-        if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
-            System.out.println("[BrokerOrderEventProcessor] Already COMPLETE — idempotency skip: "
-                    + pendingOrder.getOrderId());
-            return;
-        }
+        // Keep reservation release and the position-quantity update atomic with
+        // respect to scheduler/manual SELL placement for this broker + symbol.
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
+                System.out.println("[BrokerOrderEventProcessor] Already COMPLETE — idempotency skip: "
+                        + pendingOrder.getOrderId());
+                return;
+            }
 
-        pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
-        pendingOrderRepository.save(pendingOrder);
+            pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
+            pendingOrderRepository.save(pendingOrder);
 
-        // Read side from the PendingOrder (source of truth), not the event
-        TradeSide side = pendingOrder.getSide();
-        if (side == null) {
-            System.out.println("[BrokerOrderEventProcessor] PendingOrder has null side — cannot dispatch: "
-                    + pendingOrder.getOrderId());
-            return;
-        }
+            TradeSide side = pendingOrder.getSide();
+            if (side == null) {
+                System.out.println("[BrokerOrderEventProcessor] PendingOrder has null side — cannot dispatch: "
+                        + pendingOrder.getOrderId());
+                return;
+            }
 
-        if (side.equals(TradeSide.BUY)) {
-            orderCompletionProcessor.onBuyCompleted(pendingOrder);
-        } else if (side.equals(TradeSide.SELL)) {
-            orderCompletionProcessor.onSellCompleted(pendingOrder);
+            if (side == TradeSide.BUY) {
+                orderCompletionProcessor.onBuyCompleted(pendingOrder);
+            } else if (side == TradeSide.SELL) {
+                orderCompletionProcessor.onSellCompleted(pendingOrder);
+            }
         }
     }
 
     private void handleCancelled(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
-        if (pendingOrder.getState().equals(PendingOrderState.CANCELLED)) {
-            return;
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.isClosed()) return;
+
+            // A terminal CANCELLED SELL may still have partial fills. Keep its
+            // reservation active unless the broker explicitly reports zero fills;
+            // the position may not yet reflect shares sold before cancellation.
+            if (pendingOrder.getSide() == TradeSide.SELL && event.getFilledQuantity() != 0) {
+                System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
+                        + " cancelled after/with " + event.getFilledQuantity()
+                        + " fills; retaining reservation until broker position reconciliation.");
+                return;
+            }
+
+            pendingOrder.markCancelled();
+            pendingOrderRepository.save(pendingOrder);
+            releaseCapitalAndCleanup(pendingOrder, event);
         }
-
-        pendingOrder.markCancelled();
-        pendingOrderRepository.save(pendingOrder);
-
-        releaseCapitalAndCleanup(pendingOrder, event);
     }
 
     private void handleRejected(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
-        if (pendingOrder.getState().equals(PendingOrderState.REJECTED)) {
-            return;
-        }
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.isClosed()) return;
 
-        pendingOrder.markRejected();
-        if (event.getRejectionReason() != null) {
-            pendingOrder.setRejectionReason(event.getRejectionReason());
-        }
-        pendingOrderRepository.save(pendingOrder);
+            // A rejected SELL is safe to retire only when no fills are reported.
+            if (pendingOrder.getSide() == TradeSide.SELL && event.getFilledQuantity() != 0) {
+                System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
+                        + " rejected with " + event.getFilledQuantity()
+                        + " fills; retaining reservation until broker position reconciliation.");
+                return;
+            }
 
-        releaseCapitalAndCleanup(pendingOrder, event);
+            pendingOrder.markRejected();
+            if (event.getRejectionReason() != null) {
+                pendingOrder.setRejectionReason(event.getRejectionReason());
+            }
+            pendingOrderRepository.save(pendingOrder);
+            releaseCapitalAndCleanup(pendingOrder, event);
+        }
     }
 
     /**
@@ -173,11 +204,12 @@ public class BrokerOrderEventProcessor {
         // wrongly rejected with "Insufficient <broker> broker capital".
         String broker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
 
-        riskManager.releaseCapital(strategy, reservedCapital, broker);
-        riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
-
-        // Remove DipState if this was a BUY order
-        if (pendingOrder.getSide() != null && pendingOrder.getSide().equals(TradeSide.BUY)) {
+        // SELL orders do not reserve BUY capital. Release capital only for BUY
+        // cancellation/rejection; the SELL reservation is represented by the
+        // PendingOrder state and is handled by the broker-symbol lifecycle lock.
+        if (pendingOrder.getSide() == TradeSide.BUY) {
+            riskManager.releaseCapital(strategy, reservedCapital, broker);
+            riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
             dipAccumulatorService.remove(symbol, strategy);
         }
     }
