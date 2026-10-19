@@ -168,7 +168,7 @@ public class BrokerOrderRouter {
                 // OrderServiceV2 performs the Kite order-book scan, cancellation
                 // confirmation and zero-fill check under the same broker+symbol lock.
                 String replacementId = orderServiceV2.updateTargetOrder(
-                        symbol, price, qty, oldTargetOrderId, isHolding, strategy);
+                        position, symbol, price, qty, oldTargetOrderId, isHolding, strategy);
                 if (replacementId != null && oldTargetOrderId != null
                         && !retirePendingSell(position, oldTargetOrderId)) {
                     // Keep the accepted replacement ID flowing back to the caller so
