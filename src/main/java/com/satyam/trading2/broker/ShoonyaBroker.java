@@ -270,6 +270,34 @@ public class ShoonyaBroker extends AbstractRestBroker {
         }
     }
 
+    @Override
+    public Integer getOrderFilledQuantity(String brokerOrderId) {
+        if (!shoonyaConfig.isAuthenticated()) return null;
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("uid", shoonyaConfig.getUserId());
+            payload.put("norenordno", brokerOrderId);
+            JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "SingleOrdStatus",
+                    norenBody(objectMapper.writeValueAsString(payload)));
+            if ("Not_Ok".equals(textOr(resp, "stat", ""))) return null;
+            for (String field : new String[]{"fillshares", "filled_quantity", "filled_qty", "flqty"}) {
+                JsonNode value = resp.get(field);
+                if (value != null && !value.isNull()) {
+                    try {
+                        return (int) Math.round(Double.parseDouble(value.asText().trim()));
+                    } catch (NumberFormatException ignored) {
+                        return null;
+                    }
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            log.warn("[ShoonyaBroker] Unable to verify filled quantity for {}: {}",
+                    brokerOrderId, e.getMessage());
+            return null;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // getFunds — POST /Limits
     // ─────────────────────────────────────────────────────────────────────
