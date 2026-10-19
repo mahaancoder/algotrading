@@ -7,6 +7,7 @@ import com.satyam.trading2.config.KiteConfig;
 import com.satyam.trading2.datamodel.*;
 import com.satyam.trading2.domain.service.OrderSanitizer;
 import com.satyam.trading2.infrastructure.ratelimit.RateLimiter;
+import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.repository.HoldingMetadataRepository;
 import com.zerodhatech.kiteconnect.KiteConnect;
 import com.zerodhatech.kiteconnect.kitehttp.exceptions.KiteException;
@@ -31,6 +32,7 @@ public class OrderServiceV2 {
     private final OrderSanitizer orderSanitizer;
     private final HoldingMetadataRepository holdingMetadataRepository;
     private final CashFlowModeService cashFlowModeService;
+    private final PendingOrderRepository pendingOrderRepository;
 
     // ===== PERFORMANCE OPTIMIZATION: HTTP Client with connection pooling and timeouts =====
     // Connection pooling dramatically reduces latency for order placement
@@ -171,11 +173,15 @@ public class OrderServiceV2 {
             // Multiple strategy allocations can coexist locally, but the broker
             // executes against one physical symbol position. Unknown active orders
             // must be reconciled rather than silently cancelled or overlapped.
-            boolean otherActiveSell = activeSymbolSells.stream()
-                    .anyMatch(o -> oldOrderId == null || !oldOrderId.equals(o.getOrderId()));
-            if (otherActiveSell) {
-                System.err.println("🛑 [updateTargetOrder] Another active " + product + " SELL exists for "
-                        + symbol + " outside the exact order being replaced; refusing to place/cancel orders.");
+            boolean untrackedActiveSell = activeSymbolSells.stream()
+                    .filter(o -> oldOrderId == null || !oldOrderId.equals(o.getOrderId()))
+                    .anyMatch(o -> pendingOrderRepository
+                            .findByBrokerAndBrokerOrderId("KITE", o.getOrderId())
+                            .map(pending -> !pending.isOpen())
+                            .orElse(true));
+            if (untrackedActiveSell) {
+                System.err.println("🛑 [updateTargetOrder] An active " + product + " SELL for " + symbol
+                        + " has no matching open KITE pending record; refusing replacement until reconciliation.");
                 return null;
             }
 
