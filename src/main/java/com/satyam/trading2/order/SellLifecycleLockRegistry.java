@@ -34,8 +34,9 @@ public final class SellLifecycleLockRegistry {
 
     public static Object lockFor(String symbol, String strategy, String broker,
                                  Position.PositionType positionType) {
-        String key = normalize(broker) + "::" + normalize(symbol) + "::"
-                + normalize(strategy) + "::" + String.valueOf(positionType);
+        // Position type is intentionally excluded: an intraday position can be
+        // converted to a holding while a lifecycle operation is in progress.
+        String key = normalize(broker) + "::" + normalize(symbol) + "::" + normalize(strategy);
         return LOCKS.computeIfAbsent(key, ignored -> new Object());
     }
 
