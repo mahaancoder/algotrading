@@ -156,8 +156,17 @@ public class BrokerOrderRouter {
      */
     public boolean cancelAndConfirmSell(Position position, String orderId, long timeoutMillis) {
         if (orderId == null) return true;
-        BrokerOrderStatus status = getOrderStatus(position, orderId);
-        Integer filled = getFilledQuantity(position, orderId);
+        if (position == null) return false;
+
+        Order kiteOrder = isKite(position) ? findKiteOrder(orderId) : null;
+        BrokerOrderStatus status = isKite(position)
+                ? (kiteOrder == null ? null : mapKiteStatus(
+                        kiteOrder.getStatus(), kiteOrder.getFilledQuantity(), kiteOrder.getQuantity()))
+                : getOrderStatus(position, orderId);
+        Integer filled = isKite(position)
+                ? (kiteOrder == null ? null : kiteOrder.getFilledQuantity())
+                : getFilledQuantity(position, orderId);
+
         if (status == BrokerOrderStatus.COMPLETE || (filled != null && filled > 0)) {
             return false;
         }
@@ -170,13 +179,22 @@ public class BrokerOrderRouter {
         long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
         do {
             try {
-                Thread.sleep(200L);
+                Thread.sleep(250L);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;
             }
-            status = getOrderStatus(position, orderId);
-            filled = getFilledQuantity(position, orderId);
+
+            if (isKite(position)) {
+                kiteOrder = findKiteOrder(orderId);
+                status = kiteOrder == null ? null : mapKiteStatus(
+                        kiteOrder.getStatus(), kiteOrder.getFilledQuantity(), kiteOrder.getQuantity());
+                filled = kiteOrder == null ? null : kiteOrder.getFilledQuantity();
+            } else {
+                status = getOrderStatus(position, orderId);
+                filled = getFilledQuantity(position, orderId);
+            }
+
             if (status == BrokerOrderStatus.COMPLETE || (filled != null && filled > 0)) {
                 return false;
             }
@@ -186,6 +204,17 @@ public class BrokerOrderRouter {
             }
         } while (System.currentTimeMillis() < deadline);
         return false;
+    }
+
+    /** Fetch one Kite order-book snapshot and resolve the requested order from it. */
+    private Order findKiteOrder(String orderId) {
+        List<Order> snapshot = orderServiceV2.fetchOrders();
+        if (snapshot == null) return null;
+        return snapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> orderId.equals(o.getOrderId()))
+                .findFirst()
+                .orElse(null);
     }
 
     private Integer getFilledQuantity(Position position, String orderId) {
