@@ -3,6 +3,8 @@ package com.satyam.trading2.service;
 import com.satyam.trading2.datamodel.*;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.OrderCompletionProcessor;
+import com.satyam.trading2.order.BrokerOrderRouter;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.risk.RiskManager;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +27,7 @@ public class ReconciliationService {
 
     private final OrderServiceV2 orderServiceV2;
     private final PendingOrderRepository pendingOrderRepository;
+    private final BrokerOrderRouter brokerOrderRouter;
     private final PositionManager positionRepository;
     private final OrderCompletionProcessor completionProcessor;
     private final RiskManager riskManager;
@@ -332,7 +335,7 @@ public class ReconciliationService {
         String strategy = position.getStrategy();
 
         // ===== FIX: Synchronize on symbol+strategy lock to prevent race with webhook handler =====
-        synchronized (getSymbolStrategyLock(symbol, strategy)) {
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
             try {
                 // ===== FIX: Double-check exit status after acquiring lock =====
                 if (position.isExitProcessed()) {
@@ -346,11 +349,12 @@ public class ReconciliationService {
                 double target = com.satyam.trading2.helpers.TargetMultiplierHelper.calculateTargetPrice(averagePrice, isHolding);
 
                 // Cancel old order and place new one with updated quantity
-                String newTargetOrderId = orderServiceV2.updateTargetOrder(
+                String newTargetOrderId = brokerOrderRouter.placeTargetSell(
+                        position,
                         position.getSymbol(),
                         target,
                         position.getTotalQuantity(),
-                        existingSellOrder.getOrderId(), // Cancel this old order
+                        existingSellOrder.getOrderId(),
                         isHolding,
                         position.getStrategy()
                 );
@@ -361,10 +365,10 @@ public class ReconciliationService {
                     positionRepository.updatePosition(position);
 
                     // ✅ FIX: Create PendingOrder for target so webhook can find it
-                    PendingOrder targetPO = pendingOrderRepository.create(
+                    PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                            position,
                             newTargetOrderId,
                             position.getSymbol(),
-                            TradeSide.SELL,
                             position.getStrategy(),
                             position.getTotalQuantity(),
                             target,
@@ -393,7 +397,7 @@ public class ReconciliationService {
         String strategy = position.getStrategy();
 
         // ===== FIX: Synchronize on symbol+strategy lock to prevent race with webhook handler =====
-        synchronized (getSymbolStrategyLock(symbol, strategy)) {
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
             try {
                 // ===== FIX: Double-check exit status after acquiring lock =====
                 if (position.isExitProcessed()) {
@@ -419,11 +423,12 @@ public class ReconciliationService {
                     return;
                 }
 
-                String newTargetOrderId = orderServiceV2.updateTargetOrder(
+                String newTargetOrderId = brokerOrderRouter.placeTargetSell(
+                        position,
                         position.getSymbol(),
                         target,
                         position.getTotalQuantity(),
-                        null, // No old order to cancel
+                        null,
                         isHolding,
                         position.getStrategy()
                 );
@@ -434,10 +439,10 @@ public class ReconciliationService {
                     positionRepository.updatePosition(position);
 
                     // ✅ FIX: Create PendingOrder for target so webhook can find it
-                    PendingOrder targetPO = pendingOrderRepository.create(
+                    PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                            position,
                             newTargetOrderId,
                             position.getSymbol(),
-                            TradeSide.SELL,
                             position.getStrategy(),
                             position.getTotalQuantity(),
                             target,
