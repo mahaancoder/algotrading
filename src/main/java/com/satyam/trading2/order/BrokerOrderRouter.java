@@ -330,8 +330,7 @@ public class BrokerOrderRouter {
                 return null;
             }
             if (isKite(position)) {
-                return orderServiceV2.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0,
-                        isHolding ? "CNC" : "MIS", strategy);
+                return orderServiceV2.placeRoutedSell(position, symbol, qty, price, isHolding, strategy);
             }
             return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
         }
