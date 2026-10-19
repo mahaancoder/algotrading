@@ -234,11 +234,17 @@ public class BrokerOrderRouter {
      */
     public String placeLimitSell(Position position, String symbol, double price, int qty,
                                  boolean isHolding, String strategy) {
-        if (isKite(position)) {
-            return orderServiceV2.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0,
-                    isHolding ? "CNC" : "MIS", strategy);
+        if (position == null || symbol == null || qty <= 0 || strategy == null) {
+            System.err.println("🛑 [BrokerOrderRouter] Refusing invalid plain SELL request.");
+            return null;
         }
-        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (isKite(position)) {
+                return orderServiceV2.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0,
+                        isHolding ? "CNC" : "MIS", strategy);
+            }
+            return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+        }
     }
 
     private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
