@@ -1,6 +1,5 @@
 package com.satyam.trading2.order;
 
-import com.satyam.trading2.datamodel.BrokerOrderEvent;
 import com.satyam.trading2.datamodel.BrokerOrderStatus;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.PendingOrderState;
