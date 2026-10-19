@@ -13,6 +13,7 @@ import com.satyam.trading2.datamodel.Order;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSide;
+import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.service.OrderServiceV2;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -40,6 +41,7 @@ public class BrokerOrderRouter {
     private final OrderServiceV2 orderServiceV2;
     private final BrokerRouter brokerRouter;
     private final PendingOrderRepository pendingOrderRepository;
+    private final PositionManager positionManager;
 
     /** The ExecutionRoute that owns this position (defaults to KITE). */
     public ExecutionRoute routeOf(Position position) {
@@ -134,9 +136,14 @@ public class BrokerOrderRouter {
             return null;
         }
         synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (!hasSellCapacity(position, symbol, qty, oldTargetOrderId)) {
+                System.err.println("🛑 [BrokerOrderRouter] Refusing target SELL for " + symbol
+                        + ": requested quantity exceeds broker long quantity after reservations.");
+                return null;
+            }
             if (isKite(position)) {
                 // OrderServiceV2 performs the Kite order-book scan, cancellation
-                // confirmation and zero-fill check under the same position lock.
+                // confirmation and zero-fill check under the same broker+symbol lock.
                 return orderServiceV2.updateTargetOrder(symbol, price, qty, oldTargetOrderId, isHolding, strategy);
             }
             if (oldTargetOrderId != null && !cancelAndConfirmSell(position, oldTargetOrderId, 2500L)) {
@@ -259,12 +266,48 @@ public class BrokerOrderRouter {
             return null;
         }
         synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (!hasSellCapacity(position, symbol, qty, null)) {
+                System.err.println("🛑 [BrokerOrderRouter] Refusing plain SELL for " + symbol
+                        + ": requested quantity exceeds broker long quantity after reservations.");
+                return null;
+            }
             if (isKite(position)) {
                 return orderServiceV2.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0,
                         isHolding ? "CNC" : "MIS", strategy);
             }
             return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
         }
+    }
+
+    /**
+     * Reserve quantity across all strategy allocations at the same broker/symbol.
+     * The local long quantity may lag partial-fill webhooks, so another live SELL
+     * reserves its full requested quantity until the position is reconciled. Only
+     * the exact order being replaced may be excluded from the reservation total.
+     */
+    private boolean hasSellCapacity(Position requestedPosition, String symbol, int requestedQty,
+                                    String replacedOrderId) {
+        if (requestedPosition == null || symbol == null || requestedQty <= 0) return false;
+        String broker = brokerOf(requestedPosition);
+        long availableLong = positionManager.getAllOpenPositions().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(p -> p.isOpen() && !p.isExitProcessed())
+                .filter(p -> symbol.equalsIgnoreCase(p.getSymbol()))
+                .filter(p -> broker.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
+                .mapToLong(p -> Math.max(0, p.getTotalQuantity()))
+                .sum();
+        if (availableLong <= 0) return false;
+
+        long reservedByOtherSells = pendingOrderRepository.findOpenOrders().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(p -> p.getSide() == TradeSide.SELL)
+                .filter(p -> symbol.equalsIgnoreCase(p.getSymbol()))
+                .filter(p -> broker.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
+                .filter(p -> replacedOrderId == null || !replacedOrderId.equals(
+                        p.getBrokerOrderId() != null ? p.getBrokerOrderId() : p.getOrderId()))
+                .mapToLong(p -> Math.max(0, p.getRequestQty()))
+                .sum();
+        return availableLong - reservedByOtherSells >= requestedQty;
     }
 
     private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
