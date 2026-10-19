@@ -140,8 +140,20 @@ public class BrokerOrderEventProcessor {
                             + "); retaining reservation until reconciliation.");
                     return;
                 }
+                PendingOrderState previousState = pendingOrder.getState();
+                int previousFilledQty = pendingOrder.getFilledQty();
+                double previousAvgPrice = pendingOrder.getAvgPrice();
+                long previousUpdatedTime = pendingOrder.getUpdatedTime();
                 pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
-                pendingOrderRepository.save(pendingOrder);
+                try {
+                    pendingOrderRepository.save(pendingOrder);
+                } catch (IOException persistenceError) {
+                    pendingOrder.setState(previousState);
+                    pendingOrder.setFilledQty(previousFilledQty);
+                    pendingOrder.setAvgPrice(previousAvgPrice);
+                    pendingOrder.setUpdatedTime(previousUpdatedTime);
+                    throw persistenceError;
+                }
             }
 
             TradeSide side = pendingOrder.getSide();
@@ -202,8 +214,16 @@ public class BrokerOrderEventProcessor {
                 return;
             }
 
+            PendingOrderState previousState = pendingOrder.getState();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
             pendingOrder.markCancelled();
-            pendingOrderRepository.save(pendingOrder);
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                throw persistenceError;
+            }
             releaseCapitalAndCleanup(pendingOrder, event);
         }
     }
@@ -220,11 +240,21 @@ public class BrokerOrderEventProcessor {
                 return;
             }
 
+            PendingOrderState previousState = pendingOrder.getState();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
+            String previousRejectionReason = pendingOrder.getRejectionReason();
             pendingOrder.markRejected();
             if (event.getRejectionReason() != null) {
                 pendingOrder.setRejectionReason(event.getRejectionReason());
             }
-            pendingOrderRepository.save(pendingOrder);
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                pendingOrder.setRejectionReason(previousRejectionReason);
+                throw persistenceError;
+            }
             releaseCapitalAndCleanup(pendingOrder, event);
         }
     }
