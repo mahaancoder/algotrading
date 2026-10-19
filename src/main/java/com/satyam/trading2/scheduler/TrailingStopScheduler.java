@@ -231,7 +231,13 @@ public class TrailingStopScheduler {
         }
         BrokerOrderStatus status = brokerOrderRouter.getOrderStatus(position, oldOrderId, ordersSnapshot);
         if (status == null) {
-            return true; // order not found at broker → treat as gone → safe
+            // Fail closed: null can mean an API lookup failure or a stale/incomplete
+            // order snapshot, not proof that the old SELL is gone. Reconciliation
+            // must establish the terminal state before we place another SELL.
+            System.err.println("🛑 [TrailingStop] " + position.getSymbol() +
+                    ": status for existing sell " + oldOrderId +
+                    " is unknown — blocking replacement until reconciled.");
+            return false;
         }
         switch (status) {
             case COMPLETE:
