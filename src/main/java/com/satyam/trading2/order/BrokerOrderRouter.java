@@ -365,7 +365,10 @@ public class BrokerOrderRouter {
                 .filter(id -> id != null && !id.equals(replacedOrderId))
                 .anyMatch(id -> pendingOrderRepository
                         .findByBrokerAndBrokerOrderId(broker, id)
-                        .map(pending -> !pending.isOpen())
+                        // An active order is reserved below, not orphaned. A terminal
+                        // zero-fill order is safe to ignore; a terminal order with fills
+                        // may have changed net inventory and needs reconciliation.
+                        .map(pending -> pending.isClosed() && pending.getFilledQty() > 0)
                         .orElse(true));
         if (orphanedSellReference) {
             System.err.println("🛑 [BrokerOrderRouter] Unresolved SELL reference exists for "
