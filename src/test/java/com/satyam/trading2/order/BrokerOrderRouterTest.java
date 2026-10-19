@@ -58,8 +58,8 @@ class BrokerOrderRouterTest {
     @Test
     void rejectsSellQuantityGreaterThanConfirmedLongQuantity() {
         assertNull(router.placeLimitSell(position, "RELIANCE", 101.0, 101, false, "strategy-a"));
-        verify(orderServiceV2, never()).placeOrder(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt(),
-                org.mockito.ArgumentMatchers.anyDouble(), org.mockito.ArgumentMatchers.anyDouble(), any(), any());
+        verify(orderServiceV2, never()).placeRoutedSell(any(), any(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyDouble(), org.mockito.ArgumentMatchers.anyBoolean(), any());
     }
 
     @Test
@@ -90,4 +90,16 @@ class BrokerOrderRouterTest {
         verify(orderServiceV2).placeRoutedSell(position, "RELIANCE", 100, 101.0, false,
                 "strategy-a");
     }
+    @Test
+    void refusesAnotherSellWhenPositionReferencesUnresolvedTargetOrder() {
+        position.setTargetOrderId("unknown-target");
+        when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "unknown-target"))
+                .thenReturn(java.util.Optional.empty());
+
+        assertNull(router.placeLimitSell(position, "RELIANCE", 101.0, 1, false, "strategy-a"));
+        verify(orderServiceV2, never()).placeRoutedSell(any(), any(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyDouble(),
+                org.mockito.ArgumentMatchers.anyBoolean(), any());
+    }
+
 }
