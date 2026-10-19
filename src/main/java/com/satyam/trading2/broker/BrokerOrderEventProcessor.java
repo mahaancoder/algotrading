@@ -124,35 +124,66 @@ public class BrokerOrderEventProcessor {
         // Keep reservation release and the position-quantity update atomic with
         // respect to scheduler/manual SELL placement for this broker + symbol.
         synchronized (lifecycleLock(pendingOrder)) {
-            if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
-                System.out.println("[BrokerOrderEventProcessor] Already COMPLETE — idempotency skip: "
+            if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)
+                    && pendingOrder.isCompletionProcessed()) {
+                System.out.println("[BrokerOrderEventProcessor] Already COMPLETE and processed — idempotency skip: "
                         + pendingOrder.getOrderId());
                 return;
             }
 
-            if (event.getFilledQuantity() == null
-                    || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
-                System.err.println("[BrokerOrderEventProcessor] COMPLETE event for "
-                        + pendingOrder.getOrderId() + " has unknown/mismatched fill quantity "
-                        + event.getFilledQuantity() + " (requested " + pendingOrder.getRequestQty()
-                        + "); retaining reservation until reconciliation.");
-                return;
+            if (!pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
+                if (event.getFilledQuantity() == null
+                        || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
+                    System.err.println("[BrokerOrderEventProcessor] COMPLETE event for "
+                            + pendingOrder.getOrderId() + " has unknown/mismatched fill quantity "
+                            + event.getFilledQuantity() + " (requested " + pendingOrder.getRequestQty()
+                            + "); retaining reservation until reconciliation.");
+                    return;
+                }
+                pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
+                pendingOrderRepository.save(pendingOrder);
             }
-            pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
-            pendingOrderRepository.save(pendingOrder);
 
             TradeSide side = pendingOrder.getSide();
             if (side == null) {
-                System.out.println("[BrokerOrderEventProcessor] PendingOrder has null side — cannot dispatch: "
+                System.err.println("[BrokerOrderEventProcessor] PendingOrder has null side — retaining reservation: "
                         + pendingOrder.getOrderId());
+                restoreReservationIfUnprocessed(pendingOrder, null);
                 return;
             }
 
-            if (side == TradeSide.BUY) {
-                orderCompletionProcessor.onBuyCompleted(pendingOrder);
-            } else if (side == TradeSide.SELL) {
-                orderCompletionProcessor.onSellCompleted(pendingOrder);
+            try {
+                if (side == TradeSide.BUY) {
+                    orderCompletionProcessor.onBuyCompleted(pendingOrder);
+                } else if (side == TradeSide.SELL) {
+                    orderCompletionProcessor.onSellCompleted(pendingOrder);
+                }
+
+                // A completion callback can return early (e.g. position/order ID
+                // mismatch). Never leave a COMPLETE-but-unprocessed SELL unreserved.
+                if (!pendingOrder.isCompletionProcessed()) {
+                    System.err.println("[BrokerOrderEventProcessor] Completion callback did not process "
+                            + pendingOrder.getOrderId() + "; retaining reservation for reconciliation.");
+                    restoreReservationIfUnprocessed(pendingOrder, null);
+                }
+            } catch (IOException | RuntimeException e) {
+                restoreReservationIfUnprocessed(pendingOrder, e);
+                throw e;
             }
+        }
+    }
+
+    private void restoreReservationIfUnprocessed(PendingOrder pendingOrder, Throwable originalFailure) {
+        if (pendingOrder.isCompletionProcessed()) return;
+        pendingOrder.setState(PendingOrderState.PENDING);
+        try {
+            pendingOrderRepository.save(pendingOrder);
+        } catch (IOException persistError) {
+            if (originalFailure != null) {
+                originalFailure.addSuppressed(persistError);
+            }
+            System.err.println("[BrokerOrderEventProcessor] CRITICAL: unable to persist retained SELL reservation "
+                    + pendingOrder.getOrderId() + ": " + persistError.getMessage());
         }
     }
 
