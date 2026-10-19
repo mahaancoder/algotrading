@@ -99,6 +99,18 @@ public class KiteBroker implements Broker {
     }
 
     @Override
+    public Integer getOrderFilledQuantity(String brokerOrderId) {
+        List<Order> orders = orderServiceV2.fetchOrders();
+        if (orders == null) return null;
+        Order match = orders.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> brokerOrderId.equals(o.getOrderId()))
+                .findFirst()
+                .orElse(null);
+        return match == null ? null : match.getFilledQuantity();
+    }
+
+    @Override
     public BrokerFunds getFunds() {
         Double margin = orderServiceV2.getMargin();
         if (margin == null) {
