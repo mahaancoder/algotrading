@@ -42,6 +42,15 @@ public interface Broker {
     /** Query the current status of a single order. */
     BrokerOrderStatus getOrderStatus(String brokerOrderId);
 
+    /**
+     * Return the broker-confirmed cumulative filled quantity for an order.
+     * Null means the broker/API did not provide a trustworthy value; callers
+     * must not treat null as zero when replacing a SELL order.
+     */
+    default Integer getOrderFilledQuantity(String brokerOrderId) {
+        return null;
+    }
+
     /** Fetch available funds/margin at this broker. */
     BrokerFunds getFunds();
 
