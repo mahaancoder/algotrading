@@ -305,11 +305,22 @@ public class OrderCompletionProcessor {
                 // holding quantity (new + existing shares); a concurrent quick-exit
                 // SELL can execute before the primary cancellation is confirmed and
                 // sell more shares than are owned.
-                position.setSecondaryTargetOrderId(null);
-                position.setSecondaryTargetQty(0);
-                position.setSecondaryTargetPlaced(false);
+                // Do not forget a legacy secondary order merely because cancellation
+                // was requested. Keep its ID attached until broker reconciliation confirms
+                // it is terminal and its fills have been accounted for. The trailing
+                // scheduler fails closed while this ID remains associated with the holding.
+                if (oldSecondaryOrderId == null) {
+                    position.setSecondaryTargetQty(0);
+                    position.setSecondaryTargetPlaced(false);
+                } else {
+                    position.setSecondaryTargetOrderId(oldSecondaryOrderId);
+                    position.setSecondaryTargetPlaced(true);
+                    System.err.println("🛑 [OrderCompletionProcessor] Legacy secondary SELL "
+                            + oldSecondaryOrderId + " remains unresolved for " + pendingOrder.getSymbol()
+                            + "; manual/broker reconciliation is required before another SELL is placed.");
+                }
                 System.out.println("🛡️ [OrderCompletionProcessor] Holding uses one SELL order only for "
-                        + pendingOrder.getSymbol() + " (qty=" + newQty + ").");
+                        + pendingOrder.getSymbol() + " (qty=" + newQty + ") for new orders.");
 
             } else {
                 // ===== INTRADAY / MIS: Single target sell order (existing logic) =====
