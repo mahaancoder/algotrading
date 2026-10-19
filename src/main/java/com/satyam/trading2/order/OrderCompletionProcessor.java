@@ -277,7 +277,15 @@ public class OrderCompletionProcessor {
                 }
 
                 // --- Sell Order A: holding target (total qty, 0.03% above blended avg) ---
-                if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), holdingTargetPrice)) {
+                // If a legacy secondary SELL exists, do not place a new full-quantity
+                // primary SELL until that order is reconciled. A cancel request alone is
+                // not proof that the secondary order cannot still execute.
+                if (oldSecondaryOrderId != null) {
+                    System.err.println("🛑 [OrderCompletionProcessor] Not placing a replacement holding SELL for "
+                            + pendingOrder.getSymbol() + " while legacy secondary SELL "
+                            + oldSecondaryOrderId + " is unresolved.");
+                    position.setTargetPlaced(false);
+                } else if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), holdingTargetPrice)) {
                     String holdingSellOrderId = placeTargetSell(
                             position, pendingOrder.getSymbol(), holdingTargetPrice, newQty, oldTargetOrderId, true, position.getStrategy());
                     if (holdingSellOrderId != null) {
