@@ -43,13 +43,6 @@ public class ConvertOrSellPositionScheduler {
     private final BrokerOrderRouter brokerOrderRouter;
 
     // ===== FIX: Use ExecutionEngine's locks to prevent race conditions =====
-    private Object getSymbolStrategyLock(String symbol, String strategy) {
-        return executionEngine.getSymbolStrategyLocks().computeIfAbsent(
-            symbol + "_" + strategy,
-            k -> new Object()
-        );
-    }
-
     // Suffix on a forced-MIS leg (MIS-only mode). The leg is tracked under
     // "<strategy>#MIS" intraday; when it converts to a CNC holding at EOD it is
     // re-keyed back to the base strategy so it merges with the normal holding book.
@@ -111,7 +104,7 @@ public class ConvertOrSellPositionScheduler {
 
             if (pnl >= 0) {
                 // ===== FIX: Synchronize on symbol+strategy lock to prevent race with webhook handler =====
-                synchronized (getSymbolStrategyLock(symbol, strategy)) {
+                synchronized (SellLifecycleLockRegistry.lockFor(position)) {
                     try {
                         // ===== FIX: Double-check exit status before placing order (prevent race condition) =====
                         if (position.isExitProcessed()) {
