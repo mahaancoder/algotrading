@@ -82,7 +82,7 @@ public class OrderLifecycleManager {
 
     private void handleCancelled(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
         synchronized (lifecycleLock(pendingOrder)) {
-            if (pendingOrder.getState().equals(PendingOrderState.CANCELLED)) return;
+            if (pendingOrder.isClosed()) return;
 
             String symbol = pendingOrder.getSymbol();
             String strategy = pendingOrder.getStrategy();
@@ -114,7 +114,7 @@ public class OrderLifecycleManager {
 
     private void handleRejected(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
         synchronized (lifecycleLock(pendingOrder)) {
-            if (pendingOrder.getState().equals(PendingOrderState.REJECTED)) return;
+            if (pendingOrder.isClosed()) return;
 
             String symbol = pendingOrder.getSymbol();
             String strategy = pendingOrder.getStrategy();
