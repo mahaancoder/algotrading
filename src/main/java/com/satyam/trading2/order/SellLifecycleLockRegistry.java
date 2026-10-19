@@ -24,10 +24,15 @@ public final class SellLifecycleLockRegistry {
         if (position == null) {
             throw new IllegalArgumentException("position must not be null");
         }
+        String broker = position.getBroker();
+        if (broker == null || broker.trim().isEmpty()) {
+            broker = position.getExecutionRoute() != null
+                    ? position.getExecutionRoute().name() : "KITE";
+        }
         return lockFor(
                 position.getSymbol(),
                 position.getStrategy(),
-                position.getBroker(),
+                broker,
                 position.getPositionType()
         );
     }
