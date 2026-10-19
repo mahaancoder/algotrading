@@ -71,9 +71,10 @@ public class OrderLifecycleManager {
             if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) return;
             pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
             pendingOrderRepository.save(pendingOrder);
-            if (pendingOrder.getSide() == TradeSide.BUY) {
+            TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
+            if (side == TradeSide.BUY) {
                 orderCompletionProcessor.onBuyCompleted(pendingOrder);
-            } else if (pendingOrder.getSide() == TradeSide.SELL) {
+            } else if (side == TradeSide.SELL) {
                 orderCompletionProcessor.onSellCompleted(pendingOrder);
             }
         }
@@ -86,10 +87,12 @@ public class OrderLifecycleManager {
             String symbol = pendingOrder.getSymbol();
             String strategy = pendingOrder.getStrategy();
 
+            TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
+
             // A CANCELLED SELL can have partial fills. Do not release its reservation
             // unless the event explicitly confirms zero fills; the local position may
             // not yet reflect any shares sold by the cancelled order.
-            if (pendingOrder.getSide() == TradeSide.SELL
+            if (side == TradeSide.SELL
                     && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
                 System.err.println("🚨 [OrderLifecycleManager] SELL " + pendingOrder.getOrderId()
                         + " reported CANCELLED with unknown/non-zero filled quantity ("
@@ -104,7 +107,7 @@ public class OrderLifecycleManager {
             riskManager.releaseCapital(strategy, reservedCapital);
             riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
 
-            if (pendingOrder.getSide() == TradeSide.BUY) {
+            if (side == TradeSide.BUY) {
                 dipAccumulatorService.remove(symbol, strategy);
             }
         }
@@ -117,9 +120,11 @@ public class OrderLifecycleManager {
             String symbol = pendingOrder.getSymbol();
             String strategy = pendingOrder.getStrategy();
 
+            TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
+
             // Reject is only safe to retire when the broker explicitly reports zero
             // fills. Unknown fill data fails closed for SELLs just like cancellation.
-            if (pendingOrder.getSide() == TradeSide.SELL
+            if (side == TradeSide.SELL
                     && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
                 System.err.println("🚨 [OrderLifecycleManager] SELL " + pendingOrder.getOrderId()
                         + " reported REJECTED with unknown/non-zero filled quantity ("
