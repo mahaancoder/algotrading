@@ -198,124 +198,119 @@ public class ReconciliationService {
     private void ensureTargetOrdersForOpenPositions() {
         log.info("🔍 Checking that all open positions have target SELL orders...");
 
-        // Get all open positions from our PositionManager
-        List<Position> openPositions = positionRepository.getAllOpenPositions();
+        List<Position> kiteOpenPositions = positionRepository.getAllOpenPositions().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(ReconciliationService::isKite)
+                .filter(p -> !p.isExitProcessed())
+                .collect(Collectors.toList());
 
-        Map<String, Order> sellOrdersBySymbol = getStringOrderMap();
+        List<Order> openSellOrders = getOpenSellOrders();
+        if (openSellOrders == null) {
+            log.error("🛑 Kite order book unavailable; skipping target reconciliation to avoid duplicate SELLs.");
+            return;
+        }
 
-        for (Position position : openPositions) {
-            try {
-                String symbol = position.getSymbol();
-                int requiredQty = position.getTotalQuantity();
-
-                // ===== MULTI-BROKER SAFETY: this path fetches Kite orders and places Kite
-                // target sells. Non-KITE positions (Shoonya/INDstocks) have their targets
-                // managed by the broker-aware schedulers, so skip them here to avoid
-                // placing Kite orders against another broker's position.
-                if (!isKite(position)) {
-                    continue;
-                }
-
-                // ===== FIX: Skip positions that are already exit processed =====
-                if (position.isExitProcessed()) {
-                    continue;
-                }
-
-                // Find SELL order for this symbol (if any)
-                // ✅ FIX: Use consistent key format with underscore
-                String lookupKey = symbol + "_" + position.getPositionType().name();
-                Order existingSellOrder = sellOrdersBySymbol.get(lookupKey);
-
-                if (existingSellOrder == null) {
-                    // retry once more to avoid race conditions
-                    Thread.sleep(2000);
-                    Map<String, Order> sellOrdersBySymbolRetry = getStringOrderMap();
-                    Order existingSellOrderRetry = sellOrdersBySymbolRetry.get(lookupKey);
-                    // No SELL order exists for this symbol → create one
-                    if (existingSellOrderRetry == null) {
-                        System.out.println("⚠️ Position " + symbol + " (" + position.getPositionType().name() + ") has NO target SELL order. Creating...");
-                        createMissingTargetOrder(position);
-                    } else {
-                        System.out.println("✅ Found SELL order on retry for " + symbol + " - orderId: " + existingSellOrderRetry.getOrderId());
+        for (Position position : kiteOpenPositions) {
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                try {
+                    if (!position.isOpen() || position.isExitProcessed() || position.getTotalQuantity() <= 0) {
+                        continue;
                     }
-                }else {
-                    // SELL order exists → check if quantity and price match
-                    int existingQty = existingSellOrder.getQuantity();
-                    double existingPrice = existingSellOrder.getPrice() != null ? existingSellOrder.getPrice() : 0.0;
 
-                    // Calculate expected target price based on current average price
+                    String symbol = position.getSymbol();
                     boolean isHolding = position.getPositionType() == Position.PositionType.HOLDING;
-                    double averagePrice = position.getAveragePrice();
-                    // ✅ Use TargetMultiplierHelper for consistent target pricing
-                    double expectedTarget = com.satyam.trading2.helpers.TargetMultiplierHelper.calculateTargetPrice(averagePrice, isHolding);
+                    String expectedProduct = isHolding ? "CNC" : "MIS";
+                    List<Order> candidates = openSellOrders.stream()
+                            .filter(java.util.Objects::nonNull)
+                            .filter(o -> symbol.equalsIgnoreCase(o.getTradingSymbol()))
+                            .filter(o -> expectedProduct.equalsIgnoreCase(o.getProduct()))
+                            .collect(Collectors.toList());
 
-                    // Check if both quantity AND price match (within a small tolerance)
-                    boolean qtyMatches = (existingQty == requiredQty);
-                    // ✅ Use 0.1% tolerance for price matching (both up and down)
-                    boolean priceMatches = Math.abs(existingPrice - expectedTarget) <= (expectedTarget * 0.001); // 0.1% tolerance
+                    // Prefer the exact order already recorded on this position. Never
+                    // select a random same-symbol SELL: multiple strategies can have
+                    // separate legitimate orders against an aggregate long quantity.
+                    Order existingSellOrder = null;
+                    String recordedTargetId = position.getTargetOrderId();
+                    if (recordedTargetId != null) {
+                        existingSellOrder = candidates.stream()
+                                .filter(o -> recordedTargetId.equals(o.getOrderId()))
+                                .findFirst()
+                                .orElse(null);
+
+                        if (existingSellOrder == null) {
+                            // A missing active order may have completed or partially
+                            // filled before cancellation. Only clear it if the broker
+                            // proves terminal zero-fill state.
+                            if (!brokerOrderRouter.cancelAndConfirmSell(position, recordedTargetId, 0L)) {
+                                log.error("🛑 {} has unresolved target SELL {}; leaving it tracked and skipping reconciliation",
+                                        symbol, recordedTargetId);
+                                continue;
+                            }
+                            position.setTargetOrderId(null);
+                            position.setTargetPlaced(false);
+                            positionRepository.updatePosition(position);
+                            recordedTargetId = null;
+                        }
+                    }
+
+                    long sameSymbolPositionCount = kiteOpenPositions.stream()
+                            .filter(p -> symbol.equalsIgnoreCase(p.getSymbol()))
+                            .filter(p -> p.getPositionType() == position.getPositionType())
+                            .count();
+
+                    if (existingSellOrder == null) {
+                        if (candidates.isEmpty()) {
+                            log.info("Position {} ({}) has no active SELL; creating a target",
+                                    symbol, position.getPositionType());
+                            createMissingTargetOrder(position);
+                            continue;
+                        }
+                        if (candidates.size() == 1 && sameSymbolPositionCount == 1) {
+                            // Safe adoption only when both sides are unambiguous.
+                            existingSellOrder = candidates.get(0);
+                        } else {
+                            log.error("🛑 Ambiguous active SELLs for {} {}: {} broker orders for {} local positions. "
+                                            + "Not adopting or cancelling any order; reconcile manually.",
+                                    symbol, position.getPositionType(), candidates.size(), sameSymbolPositionCount);
+                            continue;
+                        }
+                    }
+
+                    int requiredQty = position.getTotalQuantity();
+                    double existingPrice = existingSellOrder.getPrice() != null
+                            ? existingSellOrder.getPrice() : 0.0;
+                    double expectedTarget = com.satyam.trading2.helpers.TargetMultiplierHelper
+                            .calculateTargetPrice(position.getAveragePrice(), isHolding);
+                    boolean qtyMatches = existingSellOrder.getQuantity() == requiredQty;
+                    boolean priceMatches = Math.abs(existingPrice - expectedTarget) <= (expectedTarget * 0.001);
 
                     if (qtyMatches && priceMatches) {
-                        // Both quantity and price match → all good
-                        // Update our position's targetOrderId if it's different
                         String brokerOrderId = existingSellOrder.getOrderId();
                         if (!brokerOrderId.equals(position.getTargetOrderId())) {
-                            System.out.println("🔄 Updating targetOrderId for"+symbol+" from "+position.getTargetOrderId()+" to "+brokerOrderId);
                             position.setTargetOrderId(brokerOrderId);
                             position.setTargetPlaced(true);
                             positionRepository.updatePosition(position);
                         }
                     } else {
-                        // Quantity or price mismatch → update the existing order
-                        if (!qtyMatches) {
-                            System.out.println("⚠️ Position "+symbol+" has SELL order but qty mismatch: existing="+existingQty+", required="+requiredQty+". Updating...");
-                        }
-                        if (!priceMatches) {
-                            System.out.println("⚠️ Position "+symbol+" has SELL order but price mismatch: existing="+String.format("%.2f", existingPrice)+", expected="+String.format("%.2f", expectedTarget)+" (avgPrice="+String.format("%.2f", averagePrice)+"). Updating...");
-                        }
                         updateTargetOrderQuantity(position, existingSellOrder);
                     }
+                } catch (Exception e) {
+                    log.error("❌ Error reconciling target for {}: {}", position.getSymbol(), e.getMessage(), e);
                 }
-
-            } catch (Exception e) {
-                log.error("❌ Error checking position {}: {}", position.getSymbol(), e.getMessage(), e);
             }
         }
     }
 
-    @NotNull
-    private Map<String, Order> getStringOrderMap() {
+    private List<Order> getOpenSellOrders() {
         List<Order> allOrders = orderServiceV2.fetchOrders();
-        // Get all PENDING/OPEN SELL orders from broker
-        List<Order> openSellOrders = allOrders.stream()
-                .filter(o -> o != null)
+        if (allOrders == null) return null;
+        return allOrders.stream()
+                .filter(java.util.Objects::nonNull)
                 .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
-                .filter(o -> "OPEN".equalsIgnoreCase(o.getStatus()) ||
-                             "TRIGGER PENDING".equalsIgnoreCase(o.getStatus()))
+                .filter(o -> "OPEN".equalsIgnoreCase(o.getStatus())
+                        || "TRIGGER PENDING".equalsIgnoreCase(o.getStatus())
+                        || "PARTIALLY FILLED".equalsIgnoreCase(o.getStatus()))
                 .collect(Collectors.toList());
-
-        log.info("📋 Found {} open SELL orders from broker", openSellOrders.size());
-
-        // Create map by symbol for efficient lookup
-        // ✅ FIX: Use product type from order to determine INTRADAY vs HOLDING
-        Map<String, Order> sellOrdersBySymbol = openSellOrders.stream()
-                .collect(Collectors.toMap(
-                    o -> {
-                        String product = o.getProduct();
-                        String posType = "MIS".equals(product) ? "INTRADAY" : "HOLDING";
-                        String key = o.getTradingSymbol() + "_" + posType;
-                        log.debug("  Map key: {} -> OrderId: {}", key, o.getOrderId());
-                        return key;
-                    },
-                    o -> o,
-                    (o1, o2) -> {
-                        log.warn("⚠️ Duplicate SELL order for same symbol+type - keeping orderId: {}, discarding: {}",
-                                o1.getOrderId(), o2.getOrderId());
-                        return o1;
-                    }
-                ));
-
-        log.info("📋 Created lookup map with {} unique keys", sellOrdersBySymbol.size());
-        return sellOrdersBySymbol;
     }
 
     /**
