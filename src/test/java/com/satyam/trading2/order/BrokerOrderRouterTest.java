@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -52,7 +53,7 @@ class BrokerOrderRouterTest {
         when(positionManager.getAllOpenPositions()).thenReturn(List.of(position));
         when(positionManager.getPositionsForSymbol("RELIANCE"))
                 .thenReturn(Map.of("KITE::strategy-a", position));
-        when(pendingOrderRepository.findOpenOrders()).thenReturn(Collections.emptyList());
+        lenient().when(pendingOrderRepository.findOpenOrders()).thenReturn(Collections.emptyList());
     }
 
     @Test
