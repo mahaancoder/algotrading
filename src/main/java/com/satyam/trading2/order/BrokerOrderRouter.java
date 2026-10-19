@@ -180,11 +180,18 @@ public class BrokerOrderRouter {
                 }
                 return replacementId;
             }
-            if (oldTargetOrderId != null && !cancelAndConfirmSell(position, oldTargetOrderId, 2500L)) {
-                System.err.println("🛑 [BrokerOrderRouter] Refusing replacement SELL for " + symbol
-                        + ": previous order " + oldTargetOrderId
-                        + " is not confirmed terminal with zero fills.");
-                return null;
+            if (oldTargetOrderId != null) {
+                if (!cancelAndConfirmSell(position, oldTargetOrderId, 2500L)) {
+                    System.err.println("🛑 [BrokerOrderRouter] Refusing replacement SELL for " + symbol
+                            + ": previous order " + oldTargetOrderId
+                            + " is not confirmed terminal with zero fills.");
+                    return null;
+                }
+                if (!retirePendingSell(position, oldTargetOrderId)) {
+                    System.err.println("🛑 [BrokerOrderRouter] Refusing replacement SELL for " + symbol
+                            + ": confirmed cancellation could not be persisted locally for " + oldTargetOrderId);
+                    return null;
+                }
             }
             return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
         }
