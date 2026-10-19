@@ -185,14 +185,16 @@ public class BrokerOrderRouter {
                 ? (kiteOrder == null ? null : kiteOrder.getFilledQuantity())
                 : getFilledQuantity(position, orderId);
 
-        if (status == BrokerOrderStatus.COMPLETE || (filled != null && filled > 0)) {
+        if (status == BrokerOrderStatus.COMPLETE) {
             return false;
         }
-        if ((status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED)
-                && Integer.valueOf(0).equals(filled)) {
-            return retirePendingSell(position, orderId);
+        if (status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED) {
+            return Integer.valueOf(0).equals(filled) && retirePendingSell(position, orderId);
         }
 
+        // Even if the order has partial fills, request cancellation of its still-live
+        // remainder. We will refuse replacement afterward unless the terminal broker
+        // snapshot proves zero fills; the caller must reconcile any observed fills.
         cancelViaBroker(position, orderId);
         long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
         do {
@@ -213,12 +215,11 @@ public class BrokerOrderRouter {
                 filled = getFilledQuantity(position, orderId);
             }
 
-            if (status == BrokerOrderStatus.COMPLETE || (filled != null && filled > 0)) {
+            if (status == BrokerOrderStatus.COMPLETE) {
                 return false;
             }
-            if ((status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED)
-                    && Integer.valueOf(0).equals(filled)) {
-                return retirePendingSell(position, orderId);
+            if (status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED) {
+                return Integer.valueOf(0).equals(filled) && retirePendingSell(position, orderId);
             }
         } while (System.currentTimeMillis() < deadline);
         return false;
