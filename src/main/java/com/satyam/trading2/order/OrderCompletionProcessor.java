@@ -120,41 +120,6 @@ public class OrderCompletionProcessor {
         return brokerOrderRouter.placeLimitSell(position, symbol, price, qty, isHolding, strategy);
     }
 
-    private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
-                                           boolean isHolding, String strategy) {
-        com.satyam.trading2.broker.ExecutionRoute route = routeOf(position);
-        com.satyam.trading2.broker.Broker broker = brokerRouter.getBroker(route);
-        if (broker == null) {
-            System.err.println("🛑 [OrderCompletionProcessor] Refusing SELL for " + symbol
-                    + ": owning broker " + route + " is unavailable; no fallback order will be placed.");
-            return null;
-        }
-        com.satyam.trading2.broker.model.OrderRequest req =
-                com.satyam.trading2.broker.model.OrderRequest.builder()
-                        .symbol(symbol)
-                        .exchange("NSE")
-                        .transactionType(com.satyam.trading2.broker.model.TransactionType.SELL)
-                        .orderType(com.satyam.trading2.broker.model.OrderType.LIMIT)
-                        .quantity(qty)
-                        .price(price)
-                        .productType(isHolding
-                                ? com.satyam.trading2.broker.model.ProductType.DELIVERY
-                                : com.satyam.trading2.broker.model.ProductType.INTRADAY)
-                        .strategyId(strategy)
-                        .build();
-//        System.out.println("🎯 [OrderCompletionProcessor] Placing " + (isHolding ? "DELIVERY" : "INTRADAY")
-//                + " SELL via " + route + " for " + symbol + " qty=" + qty + " @ ₹" + String.format("%.2f", price));
-        com.satyam.trading2.broker.model.BrokerOrderResponse resp = broker.placeOrder(req);
-        if (resp != null && resp.isAccepted() && resp.getBrokerOrderId() != null) {
-//            System.out.println("🎯 [OrderCompletionProcessor] " + route + " sell placed for " + symbol
-//                    + " @ ₹" + String.format("%.2f", price) + " (qty=" + qty + ", id=" + resp.getBrokerOrderId() + ")");
-            return resp.getBrokerOrderId();
-        }
-//        System.out.println("❌ [OrderCompletionProcessor] " + route + " sell REJECTED for " + symbol
-//                + ": " + (resp != null ? resp.getRejectionReason() : "null response"));
-        return null;
-    }
-
     /** Create a SELL PendingOrder tagged with the position's broker + route so the
      *  fill event is matched by (broker, brokerOrderId). KITE positions record KITE. */
     private PendingOrder createSellPending(Position position, String orderId, String symbol,
