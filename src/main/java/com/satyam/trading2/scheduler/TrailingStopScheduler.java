@@ -97,6 +97,19 @@ public class TrailingStopScheduler {
             for (Position position : openPositions) {
                 try {
                     boolean isHolding = position.getPositionType() == HOLDING;
+
+                    // Legacy protection: older versions could leave a secondary quick-exit
+                    // SELL active alongside the full-quantity holding target. Do not replace
+                    // the full-quantity target while that second order is still associated
+                    // with the position; reconcile/cancel the legacy order first.
+                    if (isHolding && position.getSecondaryTargetOrderId() != null) {
+                        System.err.println("🛑 [TrailingStop] " + position.getSymbol()
+                                + ": skipping target replacement while legacy secondary SELL "
+                                + position.getSecondaryTargetOrderId() + " is associated with the holding.");
+                        skippedCount++;
+                        continue;
+                    }
+
                     String symbol = position.getSymbol();
                     double avgPrice = position.getAveragePrice();
                     int qty = position.getTotalQuantity();
