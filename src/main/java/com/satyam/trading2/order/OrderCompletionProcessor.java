@@ -459,6 +459,8 @@ public class OrderCompletionProcessor {
                 return;
             }
 
+            // Serialize the entire fill/cancel/position-update lifecycle against all schedulers.
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
             // ===== DUAL SELL-ORDER: Cancel the other sell order when one fills =====
             if (position.getTargetOrderId() != null && position.getSecondaryTargetOrderId() != null) {
                 if (isSecondarySell) {
@@ -617,6 +619,8 @@ public class OrderCompletionProcessor {
             sellEvent.setTime(System.currentTimeMillis());
             sellEvent.setBroker(position.getBroker() != null ? position.getBroker() : "KITE");
             tradeJournalService.saveEvent(sellEvent);
+
+            }
 
         } catch (Exception e) {
             System.err.println("❌❌❌ EXCEPTION in onSellCompleted ❌❌❌");
