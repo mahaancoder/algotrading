@@ -135,12 +135,22 @@ public class OrderServiceV2 {
         }
     }
 
+    /**
+     * Legacy API lacks the position inventory required to reserve SELL quantity.
+     * Fail closed; callers must use the Position-aware overload below.
+     */
+    @Deprecated
     public String updateTargetOrder(String symbol, double target, int qty, String oldOrderId,
                                     boolean isHolding, String strategy) {
-        Position.PositionType type = isHolding
-                ? Position.PositionType.HOLDING : Position.PositionType.INTRADAY;
-        synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(
-                symbol, strategy, "KITE", type)) {
+        System.err.println("🛑 [updateTargetOrder] Refusing unguarded target SELL for " + symbol
+                + "; use the Position-aware BrokerOrderRouter.");
+        return null;
+    }
+
+    public String updateTargetOrder(Position position, String symbol, double target, int qty,
+                                    String oldOrderId, boolean isHolding, String strategy) {
+        if (position == null) return null;
+        synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(position)) {
             return updateTargetOrderLocked(symbol, target, qty, oldOrderId, isHolding, strategy);
         }
     }
