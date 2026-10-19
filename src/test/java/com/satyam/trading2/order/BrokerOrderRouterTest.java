@@ -103,4 +103,24 @@ class BrokerOrderRouterTest {
                 org.mockito.ArgumentMatchers.anyBoolean(), any());
     }
 
+    @Test
+    void ignoresStaleReferenceToCancelledZeroFillSell() {
+        position.setTargetOrderId("cancelled-target");
+        PendingOrder cancelled = new PendingOrder();
+        cancelled.setOrderId("cancelled-target");
+        cancelled.setBroker("KITE");
+        cancelled.setSymbol("RELIANCE");
+        cancelled.setSide(TradeSide.SELL);
+        cancelled.setState(PendingOrderState.CANCELLED);
+        cancelled.setRequestQty(100);
+        cancelled.setFilledQty(0);
+        when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "cancelled-target"))
+                .thenReturn(java.util.Optional.of(cancelled));
+        when(orderServiceV2.placeRoutedSell(position, "RELIANCE", 100, 101.0, false,
+                "strategy-a")).thenReturn("sell-new");
+
+        assertEquals("sell-new",
+                router.placeLimitSell(position, "RELIANCE", 101.0, 100, false, "strategy-a"));
+    }
+
 }
