@@ -300,30 +300,16 @@ public class OrderCompletionProcessor {
                     position.setTargetOrderId(null);
                 }
 
-                // --- Sell Order B: quick exit (new buy qty only, 1% above new buy avg) ---
-                if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), quickExitPrice)) {
-                    String quickExitOrderId = placeLimitSell(
-                            position, pendingOrder.getSymbol(), quickExitPrice, newBuyQty, true, position.getStrategy());
-                    if (quickExitOrderId != null) {
-                        position.setSecondaryTargetOrderId(quickExitOrderId);
-                        position.setSecondaryTargetQty(newBuyQty);
-                        position.setSecondaryTargetPlaced(true);
-                        PendingOrder quickPO = createSellPending(
-                                position, quickExitOrderId, pendingOrder.getSymbol(),
-                                pendingOrder.getStrategy(), newBuyQty, quickExitPrice, true);
-                        pendingOrderRepository.save(quickPO);
-                        System.out.println("✅ [OrderCompletionProcessor] Quick-exit sell placed: " + quickExitOrderId +
-                                         " (qty=" + newBuyQty + ", price=₹" + String.format("%.2f", quickExitPrice) + ")");
-                    } else {
-                        System.err.println("❌ [OrderCompletionProcessor] Quick-exit sell FAILED for " + pendingOrder.getSymbol());
-                        position.setSecondaryTargetPlaced(false);
-                        position.setSecondaryTargetOrderId(null);
-                    }
-                } else {
-                    System.out.println("🚫 [OrderCompletionProcessor] Quick-exit price hits circuit limit — skipping sell B");
-                    position.setSecondaryTargetPlaced(false);
-                    position.setSecondaryTargetOrderId(null);
-                }
+                // SAFETY: Do not place a second, overlapping SELL order for the new
+                // buy quantity. The primary holding target already covers the full
+                // holding quantity (new + existing shares); a concurrent quick-exit
+                // SELL can execute before the primary cancellation is confirmed and
+                // sell more shares than are owned.
+                position.setSecondaryTargetOrderId(null);
+                position.setSecondaryTargetQty(0);
+                position.setSecondaryTargetPlaced(false);
+                System.out.println("🛡️ [OrderCompletionProcessor] Holding uses one SELL order only for "
+                        + pendingOrder.getSymbol() + " (qty=" + newQty + ").");
 
             } else {
                 // ===== INTRADAY / MIS: Single target sell order (existing logic) =====
