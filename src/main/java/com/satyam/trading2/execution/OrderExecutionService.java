@@ -16,6 +16,7 @@ import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSignal;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.PendingOrderRepository;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.risk.Exits;
 import com.satyam.trading2.risk.RejectedSymbols;
 import com.satyam.trading2.risk.RiskManager;
@@ -73,6 +74,7 @@ public class OrderExecutionService {
     private final ProductToggleService productToggleService;
     private final BrokerToggleService brokerToggleService;
     private final DefaultBrokerService defaultBrokerService;
+    private final com.satyam.trading2.order.BrokerOrderRouter brokerOrderRouter;
 
     // Shared lock map — same pattern as ExecutionEngine, used to serialize
     // signal processing, order completion, and reconciliation per symbol+strategy.
@@ -394,64 +396,76 @@ public class OrderExecutionService {
     // ─────────────────────────────────────────────────────────────────────
 
     public void executeSell(TradeSignal signal, Position position) throws IOException {
-        String symbol = signal.getSymbol();
-        String strategy = signal.getStrategyName();
-        int qty = position.getTotalQuantity();
-
-        if (killSwitchService.isActive()) {
-            log.info("🛑 [KILL SWITCH] Sell rejected for {}", symbol);
+        if (signal == null || position == null) {
+            log.warn("🛑 [executeSell] Refusing SELL with null signal/position");
             return;
         }
 
-        if (isOutsideTradingHours()) return;
+        String symbol = position.getSymbol();
+        String strategy = position.getStrategy() != null
+                ? position.getStrategy() : signal.getStrategyName();
 
-        if (position == null || !position.isOpen() || qty <= 0 || position.isExitProcessed()) {
-            log.info("Position not valid for sell: {}", symbol);
-            return;
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (killSwitchService.isActive()) {
+                log.info("🛑 [KILL SWITCH] Sell rejected for {}", symbol);
+                return;
+            }
+            if (isOutsideTradingHours()) return;
+
+            int qty = position.getTotalQuantity();
+            if (!position.isOpen() || qty <= 0 || position.isExitProcessed()) {
+                log.info("Position not valid for sell: {}", symbol);
+                return;
+            }
+            if (position.getPositionType() == HOLDING && position.getSecondaryTargetOrderId() != null) {
+                log.error("🛑 [executeSell] Blocking exit for {} while legacy secondary SELL {} is unresolved",
+                        symbol, position.getSecondaryTargetOrderId());
+                return;
+            }
+
+            String oldTargetId = position.getTargetOrderId();
+            if (oldTargetId != null
+                    && !brokerOrderRouter.cancelAndConfirmSell(position, oldTargetId, 2500L)) {
+                log.error("🛑 [executeSell] Existing SELL {} for {} is not confirmed terminal with zero fills",
+                        oldTargetId, symbol);
+                return;
+            }
+
+            if (oldTargetId != null) {
+                position.setTargetOrderId(null);
+                position.setTargetPlaced(false);
+            }
+
+            String brokerOrderId = brokerOrderRouter.placeLimitSell(
+                    position, symbol, signal.getEntryPrice(), qty,
+                    position.getPositionType() == HOLDING, strategy);
+            if (brokerOrderId == null) {
+                log.error("❌ [executeSell] Order placement FAILED for {}", symbol);
+                return;
+            }
+
+            PendingOrder po = brokerOrderRouter.createSellPending(
+                    position, brokerOrderId, symbol, strategy, qty,
+                    signal.getEntryPrice(), position.getPositionType() == HOLDING);
+            try {
+                pendingOrderRepository.save(po);
+            } catch (IOException e) {
+                position.setTargetOrderId(brokerOrderId);
+                position.setTargetPlaced(true);
+                positionManager.updatePosition(position);
+                log.error("🚨 SELL {} was accepted but its pending record could not be saved; reconcile immediately",
+                        brokerOrderId, e);
+                throw e;
+            }
+
+            position.setTargetOrderId(brokerOrderId);
+            position.setTargetPlaced(true);
+            positionManager.updatePosition(position);
+
+            // Do not set exitProcessed until the broker fill has been accounted for.
+            Exits.markAsExitedToday(symbol, strategy, position.getAveragePrice());
+            dipAccumulatorService.remove(symbol, strategy);
         }
-
-        boolean isHolding = position.getPositionType() == HOLDING;
-
-        // Route to the broker that owns this position
-        ExecutionRoute route = position.getExecutionRoute() != null
-                ? position.getExecutionRoute() : ExecutionRoute.KITE;
-        Broker broker = brokerRouter.getBrokerWithFallback(route);
-
-        // Cancel existing target order at that broker
-        if (position.getTargetOrderId() != null) {
-            broker.cancelOrder(position.getTargetOrderId());
-        }
-
-        // Place sell order
-        OrderRequest sellRequest = OrderRequest.builder()
-                .symbol(symbol)
-                .exchange("NSE")
-                .transactionType(TransactionType.SELL)
-                .orderType(OrderType.LIMIT)
-                .quantity(qty)
-                .price(signal.getEntryPrice())
-                .productType(isHolding ? ProductType.DELIVERY : ProductType.INTRADAY)
-                .strategyId(strategy)
-                .build();
-
-        BrokerOrderResponse response = broker.placeOrder(sellRequest);
-        if (response == null || !response.isAccepted() || response.getBrokerOrderId() == null) {
-            log.error("❌ [executeSell] Order placement FAILED for {}", symbol);
-            return;
-        }
-
-        String brokerOrderId = response.getBrokerOrderId();
-        String brokerName = broker.getBrokerName();
-
-        PendingOrder po = pendingOrderRepository.create(
-                brokerOrderId, symbol, com.satyam.trading2.datamodel.TradeSide.SELL, strategy,
-                qty, signal.getEntryPrice(), isHolding, brokerName, route, null);
-        pendingOrderRepository.save(po);
-
-        // Safety: mark exit state (also done in onSellCompleted)
-        position.setExitProcessed(true);
-        Exits.markAsExitedToday(symbol, strategy, position.getAveragePrice());
-        dipAccumulatorService.remove(symbol, strategy);
     }
 
     // ─────────────────────────────────────────────────────────────────────
