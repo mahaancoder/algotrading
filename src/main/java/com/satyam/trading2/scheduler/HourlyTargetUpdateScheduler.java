@@ -1,13 +1,12 @@
 package com.satyam.trading2.scheduler;
 
-import com.satyam.trading2.datamodel.Order;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
-import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.infrastructure.messaging.BroadcastService;
 import com.satyam.trading2.order.PendingOrderRepository;
-import com.satyam.trading2.service.OrderServiceV2;
+import com.satyam.trading2.order.BrokerOrderRouter;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.service.ReconciliationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -24,10 +23,10 @@ import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 public class HourlyTargetUpdateScheduler {
 
     private final PositionManager positionManager;
-    private final OrderServiceV2 orderServiceV2;
     private final BroadcastService broadcastService;
     private final PendingOrderRepository pendingOrderRepository;
     private final ReconciliationService reconciliationService;
+    private final BrokerOrderRouter brokerOrderRouter;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
 
     /**
@@ -95,141 +94,86 @@ public class HourlyTargetUpdateScheduler {
      * 5. Update position manager and pending orders
      */
     private void updateTargetOrders(String timeLabel) {
-        // 🛑 KILL SWITCH CHECK
         if (killSwitchService.isActive()) {
             System.out.println("🛑 [HourlyTargetUpdateScheduler] Skipped - Kill switch is ACTIVE");
             return;
         }
 
-        // ✅ Get current multiplier from helper (time-based)
         double multiplier = com.satyam.trading2.helpers.TargetMultiplierHelper.getCurrentIntradayMultiplier();
         String timeWindow = com.satyam.trading2.helpers.TargetMultiplierHelper.getCurrentTimeWindow();
-
         System.out.println("🔔 " + timeLabel + " - Updating target orders - " + timeWindow);
 
         try {
-            // ===== STEP 1: Sync broker positions (MIS only) =====
-            System.out.println("📊 Step 1: Syncing broker positions...");
             reconciliationService.syncBrokerPositions(false);
-
-            // Get all INTRADAY positions from position manager
             List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.getPositionType() == INTRADAY)
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
-            System.out.println("📊 Found " + intradayPositions.size() + " INTRADAY positions");
-
-            if (intradayPositions.isEmpty()) {
-                System.out.println("⏭️ No INTRADAY positions to update - skipping");
-                return;
-            }
-
-            // ===== STEP 2: Fetch all open MIS SELL orders =====
-            System.out.println("📊 Step 2: Fetching all open SELL orders...");
-            List<Order> allOrders = orderServiceV2.fetchOrders();
-            List<Order> misSellOrders = allOrders.stream()
-                    .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
-                    .filter(o -> "MIS".equals(o.getProduct())) // MIS = INTRADAY
-                    .filter(o -> "OPEN".equalsIgnoreCase(o.getStatus()) ||
-                               "TRIGGER PENDING".equalsIgnoreCase(o.getStatus()))
-                    .collect(Collectors.toList());
-
-            System.out.println("📊 Found " + misSellOrders.size() + " open MIS SELL orders");
-
-            // ===== STEP 3: Cancel ALL open MIS SELL orders =====
-            System.out.println("📊 Step 3: Cancelling all open MIS SELL orders...");
-            int cancelledCount = 0;
-            int cancelFailedCount = 0;
-
-            for (Order order : misSellOrders) {
-                try {
-                    orderServiceV2.cancelOrder(order.getOrderId());
-                    System.out.println("✅ Cancelled order " + order.getOrderId() + " for " + order.getTradingSymbol());
-                    cancelledCount++;
-                    Thread.sleep(100); // Small delay to avoid rate limiting
-                } catch (Exception e) {
-                    System.err.println("⚠️ Failed to cancel order " + order.getOrderId() + ": " + e.getMessage());
-                    cancelFailedCount++;
-                }
-            }
-
-            System.out.println("📊 Cancelled: " + cancelledCount + ", Failed: " + cancelFailedCount);
-
-            // Wait a moment for cancellations to process
-            if (cancelledCount > 0) {
-                System.out.println("⏳ Waiting 2 seconds for cancellations to process...");
-                Thread.sleep(2000);
-            }
-
-            // ===== STEP 4: Create fresh target orders for all MIS positions =====
-            System.out.println("📊 Step 4: Creating fresh target orders for all INTRADAY positions...");
             int createdCount = 0;
             int failedCount = 0;
+            int skippedCount = 0;
 
             for (Position position : intradayPositions) {
-                try {
-                    String symbol = position.getSymbol();
-                    double avgPrice = position.getAveragePrice();
-                    int qty = position.getTotalQuantity();
-                    double newTarget = avgPrice * (1.0 + (0.01 * multiplier));
+                synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                    try {
+                        if (killSwitchService.isActive()) break;
+                        if (!position.isOpen() || position.isExitProcessed() || position.getTotalQuantity() <= 0) {
+                            skippedCount++;
+                            continue;
+                        }
 
-                    // Place new target order
-                    String newOrderId = orderServiceV2.placeOrder(
-                            symbol,
-                            "SELL",
-                            "LIMIT",
-                            qty,
-                            newTarget,
-                            0, // No trigger price for LIMIT orders
-                            "MIS",
-                            position.getStrategy()
-                    );
+                        String symbol = position.getSymbol();
+                        int qty = position.getTotalQuantity();
+                        double newTarget = position.getAveragePrice() * (1.0 + (0.01 * multiplier));
+                        String oldOrderId = position.getTargetOrderId();
 
-                    if (newOrderId != null) {
-                        // Update position
+                        // Each position is updated independently. Never cancel every MIS
+                        // SELL in the account: that can race fills and cancel another
+                        // strategy's legitimate order.
+                        String newOrderId = brokerOrderRouter.placeTargetSell(
+                                position, symbol, newTarget, qty, oldOrderId, false, position.getStrategy());
+
+                        if (newOrderId == null) {
+                            failedCount++;
+                            System.err.println("🛑 [HourlyTargetUpdateScheduler] Target replacement blocked for "
+                                    + symbol + " (old order=" + oldOrderId + "). Reconciliation required.");
+                            continue;
+                        }
+
+                        PendingOrder targetPO = brokerOrderRouter.createSellPending(
+                                position, newOrderId, symbol, position.getStrategy(), qty, newTarget, false);
+                        try {
+                            pendingOrderRepository.save(targetPO);
+                        } catch (Exception persistenceError) {
+                            // The broker has accepted this SELL. Keep the ID on the position
+                            // and stop further replacements so reconciliation can recover it.
+                            position.setTargetOrderId(newOrderId);
+                            position.setTarget(newTarget);
+                            position.setTargetPlaced(true);
+                            positionManager.updatePosition(position);
+                            throw persistenceError;
+                        }
+
                         position.setTargetOrderId(newOrderId);
                         position.setTarget(newTarget);
                         position.setTargetPlaced(true);
                         positionManager.updatePosition(position);
-
-                        // Create PendingOrder
-                        PendingOrder targetPO = pendingOrderRepository.create(
-                                newOrderId,
-                                symbol,
-                                TradeSide.SELL,
-                                position.getStrategy(),
-                                qty,
-                                newTarget,
-                                false // isHolding = false
-                        );
-                        pendingOrderRepository.save(targetPO);
-
                         createdCount++;
-                        System.out.println("✅ " + symbol + ": Created target @ ₹" + String.format("%.2f", newTarget) +
-                                         " (orderId: " + newOrderId + ")");
-                    } else {
+                        Thread.sleep(100L);
+                    } catch (Exception e) {
                         failedCount++;
-                        System.err.println("❌ Failed to create target for " + symbol);
+                        System.err.println("❌ [HourlyTargetUpdateScheduler] Error updating "
+                                + position.getSymbol() + ": " + e.getMessage());
                     }
-
-                    Thread.sleep(100); // Small delay to avoid rate limiting
-
-                } catch (Exception e) {
-                    failedCount++;
-                    System.err.println("❌ Error creating target for " + position.getSymbol() + ": " + e.getMessage());
-                    e.printStackTrace();
                 }
             }
 
-            // ===== SUMMARY =====
             String summary = String.format(
-                "%s - Complete: Cancelled %d old orders, Created %d new targets, %d failed",
-                timeLabel, cancelledCount, createdCount, failedCount
-            );
+                    "%s - Complete: Updated %d targets, %d failed, %d skipped",
+                    timeLabel, createdCount, failedCount, skippedCount);
             System.out.println("📊 " + summary);
             broadcastService.broadcastLog(summary);
-
         } catch (Exception e) {
             System.err.println("❌ Error in updateTargetOrdersWithMultiplier: " + e.getMessage());
             e.printStackTrace();
