@@ -40,6 +40,36 @@ class BrokerOrderEventProcessorTest {
     private BrokerOrderEventProcessor processor;
 
     @Test
+    void completedSellThatWasNotAppliedToPositionKeepsReservation() throws Exception {
+        PendingOrder pending = new PendingOrder();
+        pending.setOrderId("sell-787");
+        pending.setBrokerOrderId("sell-787");
+        pending.setBroker("KITE");
+        pending.setSymbol("INFY");
+        pending.setStrategy("strategy-a");
+        pending.setPositionType(Position.PositionType.INTRADAY);
+        pending.setSide(TradeSide.SELL);
+        pending.setState(PendingOrderState.PENDING);
+        pending.setRequestQty(3);
+        pending.setAvgPrice(1500.0);
+
+        when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "sell-787"))
+                .thenReturn(Optional.of(pending));
+
+        processor.process(BrokerOrderEvent.builder()
+                .broker("KITE")
+                .brokerOrderId("sell-787")
+                .status(BrokerOrderStatus.COMPLETE)
+                .filledQuantity(3)
+                .averagePrice(1501.0)
+                .build());
+
+        assertEquals(PendingOrderState.PENDING, pending.getState(),
+                "A callback that did not update the position must not release the SELL reservation");
+        verify(pendingOrderRepository, org.mockito.Mockito.times(2)).save(pending);
+    }
+
+    @Test
     void cancelledSellWithPartialFillsRemainsReservedUntilReconciliation() throws Exception {
         PendingOrder pending = new PendingOrder();
         pending.setOrderId("sell-789");
