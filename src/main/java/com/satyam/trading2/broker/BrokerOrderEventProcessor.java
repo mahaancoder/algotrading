@@ -155,7 +155,8 @@ public class BrokerOrderEventProcessor {
             // A terminal CANCELLED SELL may still have partial fills. Keep its
             // reservation active unless the broker explicitly reports zero fills;
             // the position may not yet reflect shares sold before cancellation.
-            if (pendingOrder.getSide() == TradeSide.SELL && event.getFilledQuantity() != 0) {
+            if (pendingOrder.getSide() == TradeSide.SELL
+                    && (event.getFilledQuantity() != 0 || pendingOrder.getFilledQty() != 0)) {
                 System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
                         + " cancelled after/with " + event.getFilledQuantity()
                         + " fills; retaining reservation until broker position reconciliation.");
