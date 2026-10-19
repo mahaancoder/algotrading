@@ -11,6 +11,7 @@ import com.satyam.trading2.broker.model.ProductType;
 import com.satyam.trading2.broker.model.TransactionType;
 import com.satyam.trading2.datamodel.Order;
 import com.satyam.trading2.datamodel.PendingOrder;
+import com.satyam.trading2.datamodel.PendingOrderState;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
@@ -263,10 +264,16 @@ public class BrokerOrderRouter {
         try {
             pendingOrderRepository.findByBrokerAndBrokerOrderId(brokerOf(position), orderId)
                     .ifPresent(pending -> {
+                        PendingOrderState previousState = pending.getState();
+                        long previousUpdatedTime = pending.getUpdatedTime();
                         pending.markCancelled();
                         try {
                             pendingOrderRepository.save(pending);
                         } catch (java.io.IOException e) {
+                            // Repository maps hold the same object reference, so roll
+                            // the in-memory state back as well as refusing replacement.
+                            pending.setState(previousState);
+                            pending.setUpdatedTime(previousUpdatedTime);
                             throw new IllegalStateException("Failed to persist cancelled SELL " + orderId, e);
                         }
                     });
