@@ -45,7 +45,17 @@ public class BrokerOrderRouter {
 
     /** The ExecutionRoute that owns this position (defaults to KITE). */
     public ExecutionRoute routeOf(Position position) {
-        return position.getExecutionRoute() != null ? position.getExecutionRoute() : ExecutionRoute.KITE;
+        if (position != null && position.getExecutionRoute() != null) {
+            return position.getExecutionRoute();
+        }
+        if (position != null && position.getBroker() != null) {
+            try {
+                return ExecutionRoute.valueOf(position.getBroker().trim().toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // Legacy/unknown broker labels default only when no known route can be inferred.
+            }
+        }
+        return ExecutionRoute.KITE;
     }
 
     /** Broker name string for this position (defaults to KITE). */
@@ -64,7 +74,13 @@ public class BrokerOrderRouter {
         if (isKite(position)) {
             orderServiceV2.cancelOrder(orderId);
         } else {
-            brokerRouter.getBrokerWithFallback(routeOf(position)).cancelOrder(orderId);
+            Broker broker = brokerRouter.getBroker(routeOf(position));
+            if (broker == null) {
+                System.err.println("🛑 [BrokerOrderRouter] Cannot cancel " + orderId + ": owning broker "
+                        + routeOf(position) + " is unavailable; refusing fallback to another broker.");
+                return;
+            }
+            broker.cancelOrder(orderId);
         }
     }
 
@@ -76,7 +92,13 @@ public class BrokerOrderRouter {
     public BrokerOrderStatus getOrderStatus(Position position, String orderId) {
         if (orderId == null) return null;
         try {
-            return brokerRouter.getBrokerWithFallback(routeOf(position)).getOrderStatus(orderId);
+            Broker broker = brokerRouter.getBroker(routeOf(position));
+            if (broker == null) {
+                System.err.println("🛑 [BrokerOrderRouter] Cannot verify " + orderId + ": owning broker "
+                        + routeOf(position) + " is unavailable.");
+                return null;
+            }
+            return broker.getOrderStatus(orderId);
         } catch (Exception e) {
             System.err.println("⚠️ [BrokerOrderRouter] Failed to fetch status for order "
                     + orderId + ": " + e.getMessage());
@@ -258,7 +280,13 @@ public class BrokerOrderRouter {
 
     private Integer getFilledQuantity(Position position, String orderId) {
         try {
-            return brokerRouter.getBrokerWithFallback(routeOf(position)).getOrderFilledQuantity(orderId);
+            Broker broker = brokerRouter.getBroker(routeOf(position));
+            if (broker == null) {
+                System.err.println("🛑 [BrokerOrderRouter] Cannot verify fills for " + orderId
+                        + ": owning broker " + routeOf(position) + " is unavailable.");
+                return null;
+            }
+            return broker.getOrderFilledQuantity(orderId);
         } catch (Exception e) {
             System.err.println("⚠️ [BrokerOrderRouter] Unable to verify fills for " + orderId
                     + ": " + e.getMessage());
@@ -345,7 +373,12 @@ public class BrokerOrderRouter {
     private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
                                            boolean isHolding, String strategy) {
         ExecutionRoute route = routeOf(position);
-        Broker broker = brokerRouter.getBrokerWithFallback(route);
+        Broker broker = brokerRouter.getBroker(route);
+        if (broker == null) {
+            System.err.println("🛑 [BrokerOrderRouter] Refusing SELL for " + symbol
+                    + ": owning broker " + route + " is unavailable; no fallback order will be placed.");
+            return null;
+        }
         OrderRequest req = OrderRequest.builder()
                 .symbol(symbol)
                 .exchange("NSE")
