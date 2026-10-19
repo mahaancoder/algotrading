@@ -300,6 +300,26 @@ public class BrokerOrderRouter {
                                     String replacedOrderId) {
         if (requestedPosition == null || symbol == null || requestedQty <= 0) return false;
         String broker = brokerOf(requestedPosition);
+
+        // Closed/tombstone positions can still carry an unresolved SELL ID when
+        // cancellation could not be confirmed. If that ID has no live pending
+        // record to reserve its quantity, fail closed rather than forgetting it.
+        boolean orphanedSellReference = positionManager.getPositionsForSymbol(symbol).values().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(p -> broker.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
+                .flatMap(p -> java.util.stream.Stream.of(
+                        p.getTargetOrderId(), p.getSecondaryTargetOrderId()))
+                .filter(id -> id != null && !id.equals(replacedOrderId))
+                .anyMatch(id -> pendingOrderRepository
+                        .findByBrokerAndBrokerOrderId(broker, id)
+                        .map(pending -> !pending.isOpen())
+                        .orElse(true));
+        if (orphanedSellReference) {
+            System.err.println("🛑 [BrokerOrderRouter] Unresolved SELL reference exists for "
+                    + symbol + "; refusing another SELL until reconciliation.");
+            return false;
+        }
+
         long availableLong = positionManager.getAllOpenPositions().stream()
                 .filter(java.util.Objects::nonNull)
                 .filter(p -> p.isOpen() && !p.isExitProcessed())
