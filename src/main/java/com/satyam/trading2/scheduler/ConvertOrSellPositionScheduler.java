@@ -194,24 +194,14 @@ public class ConvertOrSellPositionScheduler {
                 position.setTargetPlaced(false);
                 position.setStopLossOrderId(null);
 
-                // Only re-key after cancellation is confirmed, so a blocked conversion
-                // leaves the original MIS position registered and recoverable.
+                // Only re-key after broker conversion succeeds, so API failures do not
+                // drop the live MIS position from local tracking.
                 if (isForcedMisLeg(position)) {
                     String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
                     String misStrategy = position.getStrategy();
                     positionManager.removePosition(symbol, misStrategy, posBroker);
                     dipAccumulatorService.remove(symbol, misStrategy);
                     position.setStrategy(baseStrategy(misStrategy));
-                }
-
-                // convertToHolding (MIS→CNC) is a Kite-only API. Non-KITE brokers
-                // (Shoonya/INDstocks) have no product-conversion endpoint on the Broker
-                // interface, so for them we only flip the position type internally.
-                if (brokerOrderRouter.isKite(position)) {
-                    orderServiceV2.convertToHolding(symbol, position.getTotalQuantity());
-                } else {
-                    System.out.println("ℹ️ [ConvertOrSellPositionScheduler] " + brokerOrderRouter.brokerOf(position) +
-                            " has no MIS→CNC convert API — marking " + symbol + " as HOLDING internally only.");
                 }
                 position.setPositionType(HOLDING);
 
