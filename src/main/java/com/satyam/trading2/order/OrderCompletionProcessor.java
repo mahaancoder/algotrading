@@ -44,6 +44,7 @@ public class OrderCompletionProcessor {
     private final com.satyam.trading2.service.MarketContextBuilder marketContextBuilder;
     private final com.satyam.trading2.service.TradeMetricsCollector tradeMetricsCollector;
     private final com.satyam.trading2.broker.BrokerRouter brokerRouter;
+    private final BrokerOrderRouter brokerOrderRouter;
 
 
     // Async executor for non-blocking broadcasts
@@ -99,11 +100,8 @@ public class OrderCompletionProcessor {
      */
     private String placeTargetSell(Position position, String symbol, double price, int qty,
                                    String oldTargetOrderId, boolean isHolding, String strategy) {
-        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
-            return orderServiceV2.updateTargetOrder(symbol, price, qty, oldTargetOrderId, isHolding, strategy);
-        }
-        cancelViaBroker(position, oldTargetOrderId);
-        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+        return brokerOrderRouter.placeTargetSell(
+                position, symbol, price, qty, oldTargetOrderId, isHolding, strategy);
     }
 
     /**
