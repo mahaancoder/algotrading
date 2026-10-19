@@ -69,6 +69,12 @@ public class OrderLifecycleManager {
         // section, otherwise a scheduler can submit a replacement in between them.
         synchronized (lifecycleLock(pendingOrder)) {
             if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) return;
+            if (event.getFilledQuantity() == null
+                    || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
+                System.err.println("[OrderLifecycleManager] COMPLETE event for " + pendingOrder.getOrderId()
+                        + " has unknown/mismatched fill quantity; retaining reservation until reconciliation.");
+                return;
+            }
             pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
             pendingOrderRepository.save(pendingOrder);
             TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
