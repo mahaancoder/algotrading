@@ -231,8 +231,9 @@ public class ReconciliationService {
                     Order existingSellOrder = null;
                     String recordedTargetId = position.getTargetOrderId();
                     if (recordedTargetId != null) {
+                        final String targetIdToFind = recordedTargetId;
                         existingSellOrder = candidates.stream()
-                                .filter(o -> recordedTargetId.equals(o.getOrderId()))
+                                .filter(o -> targetIdToFind.equals(o.getOrderId()))
                                 .findFirst()
                                 .orElse(null);
 
