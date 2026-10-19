@@ -491,7 +491,7 @@ public class OrderCompletionProcessor {
             double pnl = (sellPrice - buyPrice) * soldQty;
 
             // ===== FIX: Synchronize on symbol+strategy lock to prevent race with scheduler =====
-            synchronized (getSymbolStrategyLock(symbol, strategy)) {
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
                 // Double-check exit status after acquiring lock
                 if(position.isExitProcessed()){
                     System.out.println("⚠️ Position already exited (after lock acquisition), exiting");
