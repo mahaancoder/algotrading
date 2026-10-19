@@ -154,35 +154,49 @@ public class OrderServiceV2 {
             // Do not replace an order until the broker confirms cancellation and
             // proves that the old order had zero fills. Cancellation requests can
             // race with exchange fills; a terminal CANCELLED status alone is not enough.
-            List<Order> candidates;
-            if (isHolding) {
-                candidates = fetchOrders().stream()
+            List<Order> snapshot = fetchOrders();
+            if (snapshot == null) {
+                System.err.println("🛑 [updateTargetOrder] Kite order book unavailable; refusing SELL replacement for " + symbol);
+                return null;
+            }
+            List<Order> activeSymbolSells = snapshot.stream()
+                    .filter(Objects::nonNull)
+                    .filter(o -> symbol.equalsIgnoreCase(o.getTradingSymbol()))
+                    .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
+                    .filter(o -> product.equalsIgnoreCase(o.getProduct()))
+                    .filter(o -> isActiveOrderStatus(o.getStatus()))
+                    .collect(java.util.stream.Collectors.toList());
+
+            // Do not cancel unrelated SELLs merely because they share a symbol.
+            // Multiple strategy allocations can coexist locally, but the broker
+            // executes against one physical symbol position. Unknown active orders
+            // must be reconciled rather than silently cancelled or overlapped.
+            boolean otherActiveSell = activeSymbolSells.stream()
+                    .anyMatch(o -> oldOrderId == null || !oldOrderId.equals(o.getOrderId()));
+            if (otherActiveSell) {
+                System.err.println("🛑 [updateTargetOrder] Another active " + product + " SELL exists for "
+                        + symbol + " outside the exact order being replaced; refusing to place/cancel orders.");
+                return null;
+            }
+
+            List<Order> candidates = oldOrderId == null
+                    ? Collections.emptyList()
+                    : snapshot.stream()
                         .filter(Objects::nonNull)
-                        .filter(o -> symbol.equals(o.getTradingSymbol()))
-                        .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
-                        .filter(o -> product.equalsIgnoreCase(o.getProduct()))
-                        .filter(o -> isActiveOrderStatus(o.getStatus()))
+                        .filter(o -> oldOrderId.equals(o.getOrderId()))
                         .collect(java.util.stream.Collectors.toList());
-                // If the caller's previous target is no longer OPEN, still prove that
-                // it is terminal with zero fills. A cancelled-but-partially-filled
-                // holding target must never be followed by a full-quantity replacement.
-                if (oldOrderId != null
-                        && candidates.stream().noneMatch(o -> oldOrderId.equals(o.getOrderId()))
-                        && !awaitKiteSellCancellationWithZeroFills(oldOrderId, 0L)) {
-                    System.err.println("🛑 [updateTargetOrder] Previous holding SELL " + oldOrderId
-                            + " is missing or has uncertain fills; refusing replacement for " + symbol);
-                    return null;
-                }
-            } else {
-                candidates = oldOrderId == null
-                        ? Collections.emptyList()
-                        : fetchOrders().stream()
-                            .filter(Objects::nonNull)
-                            .filter(o -> oldOrderId.equals(o.getOrderId()))
-                            .collect(java.util.stream.Collectors.toList());
-                if (oldOrderId != null && candidates.isEmpty()) {
-                    System.err.println("🛑 [updateTargetOrder] Existing SELL " + oldOrderId
-                            + " is missing from Kite order book; refusing replacement for " + symbol);
+
+            if (oldOrderId != null && candidates.isEmpty()) {
+                System.err.println("🛑 [updateTargetOrder] Existing SELL " + oldOrderId
+                        + " is missing from Kite order book; refusing replacement for " + symbol);
+                return null;
+            }
+            for (Order candidate : candidates) {
+                if (!symbol.equalsIgnoreCase(candidate.getTradingSymbol())
+                        || !"SELL".equalsIgnoreCase(candidate.getTransactionType())
+                        || !product.equalsIgnoreCase(candidate.getProduct())) {
+                    System.err.println("🛑 [updateTargetOrder] Order " + oldOrderId
+                            + " does not match expected SELL symbol/product; refusing replacement.");
                     return null;
                 }
             }
