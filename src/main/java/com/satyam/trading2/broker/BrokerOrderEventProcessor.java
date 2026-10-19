@@ -130,6 +130,14 @@ public class BrokerOrderEventProcessor {
                 return;
             }
 
+            if (event.getFilledQuantity() == null
+                    || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
+                System.err.println("[BrokerOrderEventProcessor] COMPLETE event for "
+                        + pendingOrder.getOrderId() + " has unknown/mismatched fill quantity "
+                        + event.getFilledQuantity() + " (requested " + pendingOrder.getRequestQty()
+                        + "); retaining reservation until reconciliation.");
+                return;
+            }
             pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
             pendingOrderRepository.save(pendingOrder);
 
@@ -156,7 +164,7 @@ public class BrokerOrderEventProcessor {
             // reservation active unless the broker explicitly reports zero fills;
             // the position may not yet reflect shares sold before cancellation.
             if (pendingOrder.getSide() == TradeSide.SELL
-                    && (event.getFilledQuantity() != 0 || pendingOrder.getFilledQty() != 0)) {
+                    && (!Integer.valueOf(0).equals(event.getFilledQuantity()) || pendingOrder.getFilledQty() != 0)) {
                 System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
                         + " cancelled after/with " + event.getFilledQuantity()
                         + " fills; retaining reservation until broker position reconciliation.");
@@ -174,7 +182,7 @@ public class BrokerOrderEventProcessor {
             if (pendingOrder.isClosed()) return;
 
             // A rejected SELL is safe to retire only when no fills are reported.
-            if (pendingOrder.getSide() == TradeSide.SELL && event.getFilledQuantity() != 0) {
+            if (pendingOrder.getSide() == TradeSide.SELL && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
                 System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
                         + " rejected with " + event.getFilledQuantity()
                         + " fills; retaining reservation until broker position reconciliation.");
