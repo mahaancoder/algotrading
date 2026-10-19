@@ -52,65 +52,91 @@ public class OrderLifecycleManager {
         }
     }
 
+    private Object lifecycleLock(PendingOrder pendingOrder) {
+        String broker = pendingOrder.getBroker();
+        if (broker == null || broker.trim().isEmpty()) {
+            broker = pendingOrder.getExecutionRoute() != null
+                    ? pendingOrder.getExecutionRoute().name() : "KITE";
+        }
+        return SellLifecycleLockRegistry.lockFor(
+                pendingOrder.getSymbol(), pendingOrder.getStrategy(), broker,
+                pendingOrder.getPositionType());
+    }
+
     private void handleComplete(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
-        if (pendingOrder.getState().equals(PendingOrderState.COMPLETE))  return;
-        pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
-        pendingOrderRepository.save(pendingOrder);
-        if(event.getSide().equals(TradeSide.BUY))
-            orderCompletionProcessor.onBuyCompleted(pendingOrder);
-        else if(event.getSide().equals(TradeSide.SELL))
-            orderCompletionProcessor.onSellCompleted(pendingOrder);
+        // Marking a SELL complete releases its pending-order reservation. Keep that
+        // transition and the position quantity update in one broker-symbol critical
+        // section, otherwise a scheduler can submit a replacement in between them.
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)) return;
+            pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
+            pendingOrderRepository.save(pendingOrder);
+            if (pendingOrder.getSide() == TradeSide.BUY) {
+                orderCompletionProcessor.onBuyCompleted(pendingOrder);
+            } else if (pendingOrder.getSide() == TradeSide.SELL) {
+                orderCompletionProcessor.onSellCompleted(pendingOrder);
+            }
+        }
     }
 
     private void handleCancelled(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.getState().equals(PendingOrderState.CANCELLED)) return;
 
-        // 1. Check if already cancelled to prevent duplicate processing
-        if (pendingOrder.getState().equals(PendingOrderState.CANCELLED)) {
-            return;
-        }
+            String symbol = pendingOrder.getSymbol();
+            String strategy = pendingOrder.getStrategy();
 
-        // 2. Mark the order as cancelled
-        pendingOrder.markCancelled();
-        pendingOrderRepository.save(pendingOrder);
+            // A CANCELLED SELL can have partial fills. Do not release its reservation
+            // unless the event explicitly confirms zero fills; the local position may
+            // not yet reflect any shares sold by the cancelled order.
+            if (pendingOrder.getSide() == TradeSide.SELL
+                    && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
+                System.err.println("🚨 [OrderLifecycleManager] SELL " + pendingOrder.getOrderId()
+                        + " reported CANCELLED with unknown/non-zero filled quantity ("
+                        + event.getFilledQuantity() + "). Keeping reservation and blocking new SELLs until reconciliation.");
+                return;
+            }
 
-        // 3. Release reserved capital (both strategy and symbol level)
-        // Calculate capital that was reserved for this order
-        double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
-        String symbol = pendingOrder.getSymbol();
-        String strategy = pendingOrder.getStrategy();
+            pendingOrder.markCancelled();
+            pendingOrderRepository.save(pendingOrder);
 
-        riskManager.releaseCapital(strategy, reservedCapital);
-        riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
+            double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
+            riskManager.releaseCapital(strategy, reservedCapital);
+            riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
 
-        // 4. Remove DipState if this was a BUY order
-        if (event.getSide().equals(TradeSide.BUY)) {
-            dipAccumulatorService.remove(symbol, strategy);
+            if (pendingOrder.getSide() == TradeSide.BUY) {
+                dipAccumulatorService.remove(symbol, strategy);
+            }
         }
     }
 
     private void handleRejected(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.getState().equals(PendingOrderState.REJECTED)) return;
 
-        // 1. Check if already rejected to prevent duplicate processing
-        if (pendingOrder.getState().equals(PendingOrderState.REJECTED)) {
-            return;
-        }
+            String symbol = pendingOrder.getSymbol();
+            String strategy = pendingOrder.getStrategy();
 
-        // 2. Mark the order as rejected
-        pendingOrder.markRejected();
-        pendingOrderRepository.save(pendingOrder);
+            // Reject is only safe to retire when the broker explicitly reports zero
+            // fills. Unknown fill data fails closed for SELLs just like cancellation.
+            if (pendingOrder.getSide() == TradeSide.SELL
+                    && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
+                System.err.println("🚨 [OrderLifecycleManager] SELL " + pendingOrder.getOrderId()
+                        + " reported REJECTED with unknown/non-zero filled quantity ("
+                        + event.getFilledQuantity() + "). Keeping reservation pending reconciliation.");
+                return;
+            }
 
-        // 3. Release reserved capital (both strategy and symbol level)
-        // Calculate capital that was reserved for this order
-        double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
-        String symbol = pendingOrder.getSymbol();
-        String strategy = pendingOrder.getStrategy();
+            pendingOrder.markRejected();
+            pendingOrderRepository.save(pendingOrder);
 
-        riskManager.releaseCapital(strategy, reservedCapital);
-        riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
+            double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
+            riskManager.releaseCapital(strategy, reservedCapital);
+            riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
 
-        // 4. Remove DipState if this was a BUY order
-        if (event.getSide().equals(TradeSide.BUY)) {
-            dipAccumulatorService.remove(symbol, strategy);
+            if (pendingOrder.getSide() == TradeSide.BUY) {
+                dipAccumulatorService.remove(symbol, strategy);
+            }
         }
     }
 
