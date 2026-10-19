@@ -112,11 +112,9 @@ public class OrderCompletionProcessor {
      */
     private String placeLimitSell(Position position, String symbol, double price, int qty,
                                   boolean isHolding, String strategy) {
-        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
-            return orderServiceV2.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0,
-                    isHolding ? "CNC" : "MIS", strategy);
-        }
-        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+        // All completion-triggered exits use the same broker-symbol lock and
+        // quantity-reservation guard as scheduler/manual SELL paths.
+        return brokerOrderRouter.placeLimitSell(position, symbol, price, qty, isHolding, strategy);
     }
 
     private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
