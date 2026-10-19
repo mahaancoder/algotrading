@@ -310,10 +310,6 @@ public class ExecutionEngine {
                     System.err.println("🛑 [executeSell] Could not persist old SELL cancellation for "
                             + symbol + "; refusing replacement: " + e.getMessage());
                     return;
-                } catch (IOException e) {
-                    System.err.println("🛑 [executeSell] Could not persist old SELL cancellation for "
-                            + symbol + "; refusing replacement: " + e.getMessage());
-                    return;
                 }
                 position.setTargetOrderId(null);
                 position.setTargetPlaced(false);
