@@ -175,20 +175,6 @@ public class ConvertOrSellPositionScheduler {
 
             try {
                 synchronized (SellLifecycleLockRegistry.lockFor(position)) {
-                // ===== MIS-ONLY LEG: re-key to the base strategy before converting =====
-                // A forced-MIS leg is tracked under "<strategy>#MIS" so it coexists
-                // with any existing holding intraday. When it converts to a CNC holding
-                // at EOD, it must live under the BASE strategy (the key holdings are
-                // fetched/restored under) — so drop the old "#MIS"-keyed entry and
-                // rewrite the position's strategy to the base before persisting.
-                if (isForcedMisLeg(position)) {
-                    String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
-                    String misStrategy = position.getStrategy();
-                    positionManager.removePosition(symbol, misStrategy, posBroker);
-                    dipAccumulatorService.remove(symbol, misStrategy);
-                    position.setStrategy(baseStrategy(misStrategy));
-                }
-
                 // Confirm all existing SELL orders are cancelled with zero fills BEFORE
                 // converting/re-keying the position. If fills are unknown, leave the MIS
                 // position intact and let reconciliation establish the real quantity.
@@ -207,6 +193,16 @@ public class ConvertOrSellPositionScheduler {
                 position.setTargetOrderId(null);
                 position.setTargetPlaced(false);
                 position.setStopLossOrderId(null);
+
+                // Only re-key after cancellation is confirmed, so a blocked conversion
+                // leaves the original MIS position registered and recoverable.
+                if (isForcedMisLeg(position)) {
+                    String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
+                    String misStrategy = position.getStrategy();
+                    positionManager.removePosition(symbol, misStrategy, posBroker);
+                    dipAccumulatorService.remove(symbol, misStrategy);
+                    position.setStrategy(baseStrategy(misStrategy));
+                }
 
                 // convertToHolding (MIS→CNC) is a Kite-only API. Non-KITE brokers
                 // (Shoonya/INDstocks) have no product-conversion endpoint on the Broker
