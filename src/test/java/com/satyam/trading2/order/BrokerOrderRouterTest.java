@@ -82,12 +82,12 @@ class BrokerOrderRouterTest {
 
     @Test
     void allowsSellWithinUnreservedLongQuantity() {
-        when(orderServiceV2.placeOrder("RELIANCE", "SELL", "LIMIT", 100, 101.0, 0,
-                "MIS", "strategy-a")).thenReturn("sell-100");
+        when(orderServiceV2.placeRoutedSell(position, "RELIANCE", 100, 101.0, false,
+                "strategy-a")).thenReturn("sell-100");
 
         assertEquals("sell-100",
                 router.placeLimitSell(position, "RELIANCE", 101.0, 100, false, "strategy-a"));
-        verify(orderServiceV2).placeOrder("RELIANCE", "SELL", "LIMIT", 100, 101.0, 0,
-                "MIS", "strategy-a");
+        verify(orderServiceV2).placeRoutedSell(position, "RELIANCE", 100, 101.0, false,
+                "strategy-a");
     }
 }
