@@ -1,16 +1,12 @@
 package com.satyam.trading2.scheduler;
 
-import com.satyam.trading2.broker.model.BrokerOrderStatus;
-import com.satyam.trading2.datamodel.Order;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
-import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.helpers.LatestPriceHelper;
 import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.order.PendingOrderRepository;
-import com.satyam.trading2.service.OrderServiceV2;
 import com.satyam.trading2.service.ReconciliationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -29,7 +25,6 @@ import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 public class TrailingStopScheduler {
 
     private final PositionManager positionManager;
-    private final OrderServiceV2 orderServiceV2;
     private final ReconciliationService reconciliationService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
     private final PendingOrderRepository pendingOrderRepository;
@@ -155,12 +150,6 @@ public class TrailingStopScheduler {
                 return;
             }
 
-            // Let the cancels settle at the broker, then take ONE orders snapshot for
-            // the whole cycle. PHASE 2 reads every order's post-cancel status from this
-            // single snapshot — one GET /orders instead of one per trailed position.
-            Thread.sleep(300);
-            List<Order> ordersSnapshot = orderServiceV2.fetchOrders();
-
             // ===== PHASE 2: atomically cancel-confirm and replace each target SELL.
             for (TrailDecision d : decisions) {
                 try {
@@ -221,76 +210,6 @@ public class TrailingStopScheduler {
         } catch (Exception e) {
             System.err.println("❌ [TrailingStop] Error in updateTrailingStops: " + e.getMessage());
             e.printStackTrace();
-        }
-    }
-
-    /**
-     * SHORT-SELL GUARD: decide whether it is safe to place a replacement SELL,
-     * based on the status of the existing target order (checked AFTER the cancel
-     * attempt). This prevents the 5-second trailing loop from placing a fresh sell
-     * when the old one already filled — which would short the stock.
-     *
-     *  - COMPLETE          → not safe; position already sold. Mark exitProcessed so
-     *                        we stop re-trailing; the fill handler/reconciliation closes it.
-     *  - PARTIALLY_FILLED  → not safe; skip this cycle (part already sold).
-     *  - OPEN              → not safe; cancel didn't take effect — don't stack a 2nd sell.
-     *  - CANCELLED/REJECTED/null (not found / no order) → safe to place.
-     */
-    private boolean isSafeToPlaceReplacementSell(Position position, String oldOrderId, List<Order> ordersSnapshot) {
-        if (oldOrderId == null) {
-            return true; // no existing order → safe to place
-        }
-        BrokerOrderStatus status = brokerOrderRouter.getOrderStatus(position, oldOrderId, ordersSnapshot);
-        if (status == null) {
-            // Fail closed: null can mean an API lookup failure or a stale/incomplete
-            // order snapshot, not proof that the old SELL is gone. Reconciliation
-            // must establish the terminal state before we place another SELL.
-            System.err.println("🛑 [TrailingStop] " + position.getSymbol() +
-                    ": status for existing sell " + oldOrderId +
-                    " is unknown — blocking replacement until reconciled.");
-            return false;
-        }
-        switch (status) {
-            case COMPLETE:
-                System.err.println("🛑 [TrailingStop] " + position.getSymbol() +
-                        ": existing sell " + oldOrderId + " is COMPLETE — skipping replacement to avoid short sell. Marking exitProcessed.");
-                position.setExitProcessed(true);
-                positionManager.updatePosition(position);
-                return false;
-            case PARTIALLY_FILLED:
-                System.err.println("🛑 [TrailingStop] " + position.getSymbol() +
-                        ": existing sell " + oldOrderId + " is PARTIALLY_FILLED — skipping replacement to avoid short sell.");
-                return false;
-            case OPEN:
-                System.err.println("⚠️ [TrailingStop] " + position.getSymbol() +
-                        ": existing sell " + oldOrderId + " still OPEN after cancel — skipping replacement.");
-                return false;
-            case CANCELLED:
-            case REJECTED:
-                // A terminal status does not imply zero fills. For Kite, inspect the
-                // order snapshot and only permit replacement when filledQuantity is
-                // explicitly zero. For other brokers this enum does not expose fills,
-                // so fail closed and let broker reconciliation resolve the position.
-                if (brokerOrderRouter.isKite(position) && ordersSnapshot != null) {
-                    Order oldOrder = ordersSnapshot.stream()
-                            .filter(o -> oldOrderId.equals(o.getOrderId()))
-                            .findFirst()
-                            .orElse(null);
-                    if (oldOrder != null && oldOrder.getFilledQuantity() != null
-                            && oldOrder.getFilledQuantity() == 0) {
-                        return true;
-                    }
-                    System.err.println("🛑 [TrailingStop] " + position.getSymbol()
-                            + ": cancelled/rejected SELL " + oldOrderId
-                            + " has unknown or non-zero filled quantity — blocking replacement.");
-                    return false;
-                }
-                System.err.println("🛑 [TrailingStop] " + position.getSymbol()
-                        + ": cannot verify fills for terminal SELL " + oldOrderId
-                        + " — blocking replacement until reconciled.");
-                return false;
-            default:
-                return false;
         }
     }
 
