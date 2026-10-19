@@ -133,68 +133,141 @@ public class OrderServiceV2 {
         }
     }
 
-    public String updateTargetOrder(String symbol, double target, int qty, String oldOrderId, boolean isHolding, String strategy) {
-        try {
-            String product = isHolding ? "CNC" : "MIS";
-
-            // ✅ FIX: For holdings, fetch ALL open SELL orders for this symbol and cancel them
-            // This ensures we don't have duplicate sell orders when accumulating holdings
-            if (isHolding) {
-                System.out.println("🔍 [updateTargetOrder] Checking for existing SELL orders for holding: " + symbol);
-                List<Order> allOrders = fetchOrders();
-                List<String> existingSellOrders = allOrders.stream()
-                    .filter(o -> symbol.equals(o.getTradingSymbol()))
-                    .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
-                    .filter(o -> "CNC".equals(o.getProduct()))
-                    .filter(o -> "OPEN".equalsIgnoreCase(o.getStatus()) || "TRIGGER PENDING".equalsIgnoreCase(o.getStatus()))
-                    .map(Order::getOrderId)
-                    .collect(java.util.stream.Collectors.toList());
-
-                if (!existingSellOrders.isEmpty()) {
-                    System.out.println("🔄 [updateTargetOrder] Found " + existingSellOrders.size() + " existing SELL orders for " + symbol + " - cancelling all");
-                    for (String existingOrderId : existingSellOrders) {
-                        try {
-                            System.out.println("   Cancelling order: " + existingOrderId);
-                            cancelOrder(existingOrderId);
-                        } catch (Exception e) {
-                            System.err.println("⚠️ Failed to cancel order " + existingOrderId + ": " + e.getMessage());
-                        }
-                    }
-                    // Wait for all cancellations to process
-                    Thread.sleep(800);
-                }
-            } else {
-                // ✅ For intraday: Cancel old target order (if exists)
-                if (oldOrderId != null) {
-                    try {
-                        cancelOrder(oldOrderId);
-                        Thread.sleep(500);
-                    } catch (Exception e) {
-                        System.err.println("⚠️ Failed to cancel old order " + oldOrderId + " for " + symbol + ": " + e.getMessage());
-                        // ✅ Check if order still exists after failed cancellation
-                        if (isOrderStillActive(oldOrderId)) {
-                            System.err.println("❌ Old order " + oldOrderId + " is still ACTIVE - ABORTING to prevent duplicate!");
-                            return null; // Don't place new order if old one couldn't be cancelled
-                        } else {
-                            System.out.println("✅ Old order " + oldOrderId + " is not active anymore - safe to proceed");
-                        }
-                    }
-                }
-            }
-
-            // ✅ FIX: Place new LIMIT SELL
-            String newOrderId = placeOrder(symbol, "SELL", "LIMIT", qty, target, 0, product, strategy);
-            if (newOrderId != null) {
-//                System.out.println("🎯 Target updated for " + symbol + " → ₹" + String.format("%.2f", target) +
-//                                 " (qty=" + qty + ", orderId=" + newOrderId + ", product=" + product + ")");
-            }
-            return newOrderId;
-
-        } catch (Exception e) {
-            System.err.println("❌ Failed to update target order for " + symbol + ": " + e.getMessage());
-            e.printStackTrace();
-            return null; // Return null to indicate failure
+    public String updateTargetOrder(String symbol, double target, int qty, String oldOrderId,
+                                    boolean isHolding, String strategy) {
+        Position.PositionType type = isHolding
+                ? Position.PositionType.HOLDING : Position.PositionType.INTRADAY;
+        synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(
+                symbol, strategy, "KITE", type)) {
+            return updateTargetOrderLocked(symbol, target, qty, oldOrderId, isHolding, strategy);
         }
+    }
+
+    private String updateTargetOrderLocked(String symbol, double target, int qty, String oldOrderId,
+                                           boolean isHolding, String strategy) {
+        if (qty <= 0) {
+            System.err.println("🛑 [updateTargetOrder] Refusing SELL with non-positive quantity for " + symbol);
+            return null;
+        }
+        String product = isHolding ? "CNC" : "MIS";
+        try {
+            // Do not replace an order until the broker confirms cancellation and
+            // proves that the old order had zero fills. Cancellation requests can
+            // race with exchange fills; a terminal CANCELLED status alone is not enough.
+            List<Order> candidates;
+            if (isHolding) {
+                candidates = fetchOrders().stream()
+                        .filter(Objects::nonNull)
+                        .filter(o -> symbol.equals(o.getTradingSymbol()))
+                        .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
+                        .filter(o -> product.equalsIgnoreCase(o.getProduct()))
+                        .filter(o -> isActiveOrderStatus(o.getStatus()))
+                        .collect(java.util.stream.Collectors.toList());
+            } else {
+                candidates = oldOrderId == null
+                        ? Collections.emptyList()
+                        : fetchOrders().stream()
+                            .filter(Objects::nonNull)
+                            .filter(o -> oldOrderId.equals(o.getOrderId()))
+                            .collect(java.util.stream.Collectors.toList());
+                if (oldOrderId != null && candidates.isEmpty()) {
+                    System.err.println("🛑 [updateTargetOrder] Existing SELL " + oldOrderId
+                            + " is missing from Kite order book; refusing replacement for " + symbol);
+                    return null;
+                }
+            }
+
+            Set<String> toCancel = new LinkedHashSet<>();
+            for (Order order : candidates) {
+                if (order == null || order.getOrderId() == null) {
+                    System.err.println("🛑 [updateTargetOrder] Incomplete order snapshot for " + symbol
+                            + "; refusing replacement.");
+                    return null;
+                }
+                String status = order.getStatus();
+                if ("COMPLETE".equalsIgnoreCase(status)) {
+                    System.err.println("🛑 [updateTargetOrder] Existing SELL " + order.getOrderId()
+                            + " already completed; reconcile position before another SELL.");
+                    return null;
+                }
+                if (isActiveOrderStatus(status)) {
+                    toCancel.add(order.getOrderId());
+                } else if (("CANCELLED".equalsIgnoreCase(status) || "REJECTED".equalsIgnoreCase(status))
+                        && (order.getFilledQuantity() == null || order.getFilledQuantity() != 0)) {
+                    System.err.println("🛑 [updateTargetOrder] Terminal SELL " + order.getOrderId()
+                            + " has unknown/non-zero filled quantity; refusing replacement.");
+                    return null;
+                }
+            }
+
+            for (String existingOrderId : toCancel) {
+                cancelOrder(existingOrderId);
+                if (!awaitKiteSellCancellationWithZeroFills(existingOrderId, 2500L)) {
+                    System.err.println("🛑 [updateTargetOrder] Cancellation/fill state for SELL "
+                            + existingOrderId + " is not safely confirmed; refusing replacement for " + symbol);
+                    return null;
+                }
+            }
+
+            // For an explicit intraday target id, also verify terminal zero-fill
+            // state even if it was already terminal in the first snapshot.
+            if (!isHolding && oldOrderId != null && !toCancel.contains(oldOrderId)) {
+                if (!awaitKiteSellCancellationWithZeroFills(oldOrderId, 0L)) {
+                    System.err.println("🛑 [updateTargetOrder] Existing SELL " + oldOrderId
+                            + " is not confirmed zero-fill/terminal; refusing replacement.");
+                    return null;
+                }
+            }
+
+            return placeOrder(symbol, "SELL", "LIMIT", qty, target, 0, product, strategy);
+        } catch (Exception e) {
+            System.err.println("❌ Failed to update target SELL for " + symbol
+                    + "; replacement blocked to avoid overselling: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isActiveOrderStatus(String status) {
+        return "OPEN".equalsIgnoreCase(status)
+                || "TRIGGER PENDING".equalsIgnoreCase(status)
+                || "UPDATE".equalsIgnoreCase(status)
+                || "PARTIALLY FILLED".equalsIgnoreCase(status);
+    }
+
+    /**
+     * Poll Kite until the order is terminal and explicitly has zero fills.
+     * Missing orders, API failures, partial fills and COMPLETE orders all fail closed.
+     */
+    private boolean awaitKiteSellCancellationWithZeroFills(String orderId, long timeoutMillis) {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        do {
+            List<Order> snapshot = fetchOrders();
+            Order order = snapshot == null ? null : snapshot.stream()
+                    .filter(Objects::nonNull)
+                    .filter(o -> orderId.equals(o.getOrderId()))
+                    .findFirst()
+                    .orElse(null);
+            if (order == null || order.getStatus() == null || order.getFilledQuantity() == null) {
+                return false;
+            }
+            String status = order.getStatus();
+            if ("COMPLETE".equalsIgnoreCase(status)) {
+                return false;
+            }
+            if ("CANCELLED".equalsIgnoreCase(status) || "REJECTED".equalsIgnoreCase(status)) {
+                return order.getFilledQuantity() == 0;
+            }
+            if (timeoutMillis == 0L || System.currentTimeMillis() >= deadline) {
+                return false;
+            }
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        } while (System.currentTimeMillis() <= deadline);
+        return false;
     }
 
     /**
