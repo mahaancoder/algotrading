@@ -144,7 +144,18 @@ public class BrokerOrderRouter {
             if (isKite(position)) {
                 // OrderServiceV2 performs the Kite order-book scan, cancellation
                 // confirmation and zero-fill check under the same broker+symbol lock.
-                return orderServiceV2.updateTargetOrder(symbol, price, qty, oldTargetOrderId, isHolding, strategy);
+                String replacementId = orderServiceV2.updateTargetOrder(
+                        symbol, price, qty, oldTargetOrderId, isHolding, strategy);
+                if (replacementId != null && oldTargetOrderId != null
+                        && !retirePendingSell(position, oldTargetOrderId)) {
+                    // Keep the accepted replacement ID flowing back to the caller so
+                    // it can be persisted; reconciliation must repair the old local
+                    // pending record before any further replacement is attempted.
+                    System.err.println("🚨 [BrokerOrderRouter] Replacement SELL " + replacementId
+                            + " accepted but old pending record " + oldTargetOrderId
+                            + " could not be retired; reconcile immediately.");
+                }
+                return replacementId;
             }
             if (oldTargetOrderId != null && !cancelAndConfirmSell(position, oldTargetOrderId, 2500L)) {
                 System.err.println("🛑 [BrokerOrderRouter] Refusing replacement SELL for " + symbol
