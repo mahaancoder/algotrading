@@ -75,8 +75,20 @@ public class OrderLifecycleManager {
                         + " has unknown/mismatched fill quantity; retaining reservation until reconciliation.");
                 return;
             }
+            PendingOrderState previousState = pendingOrder.getState();
+            int previousFilledQty = pendingOrder.getFilledQty();
+            double previousAvgPrice = pendingOrder.getAvgPrice();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
             pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
-            pendingOrderRepository.save(pendingOrder);
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setFilledQty(previousFilledQty);
+                pendingOrder.setAvgPrice(previousAvgPrice);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                throw persistenceError;
+            }
             TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
             if (side == TradeSide.BUY) {
                 orderCompletionProcessor.onBuyCompleted(pendingOrder);
@@ -106,8 +118,16 @@ public class OrderLifecycleManager {
                 return;
             }
 
+            PendingOrderState previousState = pendingOrder.getState();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
             pendingOrder.markCancelled();
-            pendingOrderRepository.save(pendingOrder);
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                throw persistenceError;
+            }
 
             if (side == TradeSide.BUY) {
                 double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
@@ -137,8 +157,18 @@ public class OrderLifecycleManager {
                 return;
             }
 
+            PendingOrderState previousState = pendingOrder.getState();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
+            String previousRejectionReason = pendingOrder.getRejectionReason();
             pendingOrder.markRejected();
-            pendingOrderRepository.save(pendingOrder);
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                pendingOrder.setRejectionReason(previousRejectionReason);
+                throw persistenceError;
+            }
 
             if (side == TradeSide.BUY) {
                 double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
