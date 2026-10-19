@@ -45,9 +45,11 @@ public class OrderServiceV2 {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ================= EXIT =================
+    @Deprecated
     public String exitPosition(String symbol, int qty, boolean isHolding, String strategy) {
-        String product = isHolding ? "CNC" : "MIS";
-        return placeOrder(symbol, "SELL", "LIMIT", qty, 0, 0, product, strategy);
+        System.err.println("🛑 [exitPosition] Refusing unguarded direct SELL for " + symbol
+                + "; use the Position-aware BrokerOrderRouter.");
+        return null;
     }
 
     // ================= CANCEL =================
@@ -87,7 +89,31 @@ public class OrderServiceV2 {
     }
 
     // ================= CORE =================
+    /**
+     * General legacy entry point is BUY-only. SELLs require a Position-aware
+     * reservation in BrokerOrderRouter; callers cannot bypass it with symbol/qty.
+     */
     public String placeOrder(String symbol, String side, String type, int qty, double price, double trigger, String product, String strategy) {
+        if ("SELL".equalsIgnoreCase(side)) {
+            System.err.println("🛑 [placeOrder] Refusing direct SELL for " + symbol
+                    + "; use BrokerOrderRouter so long inventory and pending SELLs are checked.");
+            return null;
+        }
+        return placeOrderInternal(symbol, side, type, qty, price, trigger, product, strategy);
+    }
+
+    public String placeRoutedSell(Position position, String symbol, int qty, double price,
+                                  boolean isHolding, String strategy) {
+        if (position == null || symbol == null || qty <= 0 || strategy == null
+                || !symbol.equalsIgnoreCase(position.getSymbol())) {
+            System.err.println("🛑 [placeRoutedSell] Invalid Position-aware SELL request.");
+            return null;
+        }
+        String product = isHolding ? "CNC" : "MIS";
+        return placeOrderInternal(symbol, "SELL", "LIMIT", qty, price, 0, product, strategy);
+    }
+
+    private String placeOrderInternal(String symbol, String side, String type, int qty, double price, double trigger, String product, String strategy) {
              OrderRequest orderRequest =  orderSanitizer.sanitize(OrderRequest.builder().symbol(symbol).side(TradeSide.valueOf(side)).orderType(type).quantity(qty).price(price).triggerPrice(trigger).product(product).strategy(strategy).build());
              price = orderRequest.getPrice();
         try {
@@ -260,7 +286,7 @@ public class OrderServiceV2 {
                 }
             }
 
-            return placeOrder(symbol, "SELL", "LIMIT", qty, target, 0, product, strategy);
+            return placeOrderInternal(symbol, "SELL", "LIMIT", qty, target, 0, product, strategy);
         } catch (Exception e) {
             System.err.println("❌ Failed to update target SELL for " + symbol
                     + "; replacement blocked to avoid overselling: " + e.getMessage());
