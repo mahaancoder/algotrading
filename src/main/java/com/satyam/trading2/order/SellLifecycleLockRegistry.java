@@ -36,7 +36,11 @@ public final class SellLifecycleLockRegistry {
                                  Position.PositionType positionType) {
         // Position type is intentionally excluded: an intraday position can be
         // converted to a holding while a lifecycle operation is in progress.
-        String key = normalize(broker) + "::" + normalize(symbol) + "::" + normalize(strategy);
+        // The broker owns one physical net position per symbol, even when the
+        // application attributes buys to multiple strategies. Strategy-scoped
+        // locks allowed two strategies to place SELLs concurrently against the
+        // same shares. Serialize at broker + symbol scope.
+        String key = normalize(broker) + "::" + normalize(symbol);
         return LOCKS.computeIfAbsent(key, ignored -> new Object());
     }
 
