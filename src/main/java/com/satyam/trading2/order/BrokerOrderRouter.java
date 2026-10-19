@@ -129,11 +129,73 @@ public class BrokerOrderRouter {
      */
     public String placeTargetSell(Position position, String symbol, double price, int qty,
                                   String oldTargetOrderId, boolean isHolding, String strategy) {
-        if (isKite(position)) {
-            return orderServiceV2.updateTargetOrder(symbol, price, qty, oldTargetOrderId, isHolding, strategy);
+        if (position == null || qty <= 0 || symbol == null || strategy == null) {
+            System.err.println("🛑 [BrokerOrderRouter] Refusing invalid target SELL request.");
+            return null;
         }
-        cancelViaBroker(position, oldTargetOrderId);
-        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (isKite(position)) {
+                // OrderServiceV2 performs the Kite order-book scan, cancellation
+                // confirmation and zero-fill check under the same position lock.
+                return orderServiceV2.updateTargetOrder(symbol, price, qty, oldTargetOrderId, isHolding, strategy);
+            }
+            if (oldTargetOrderId != null && !cancelAndConfirmSell(position, oldTargetOrderId, 2500L)) {
+                System.err.println("🛑 [BrokerOrderRouter] Refusing replacement SELL for " + symbol
+                        + ": previous order " + oldTargetOrderId
+                        + " is not confirmed terminal with zero fills.");
+                return null;
+            }
+            return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+        }
+    }
+
+    /**
+     * Cancel an existing SELL and confirm it is terminal with exactly zero fills.
+     * A CANCELLED status by itself is insufficient because an order may have
+     * partially filled before cancellation. Missing status/fill data fails closed.
+     */
+    public boolean cancelAndConfirmSell(Position position, String orderId, long timeoutMillis) {
+        if (orderId == null) return true;
+        BrokerOrderStatus status = getOrderStatus(position, orderId);
+        Integer filled = getFilledQuantity(position, orderId);
+        if (status == BrokerOrderStatus.COMPLETE || (filled != null && filled > 0)) {
+            return false;
+        }
+        if ((status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED)
+                && Integer.valueOf(0).equals(filled)) {
+            return true;
+        }
+
+        cancelViaBroker(position, orderId);
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
+        do {
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            status = getOrderStatus(position, orderId);
+            filled = getFilledQuantity(position, orderId);
+            if (status == BrokerOrderStatus.COMPLETE || (filled != null && filled > 0)) {
+                return false;
+            }
+            if ((status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED)
+                    && Integer.valueOf(0).equals(filled)) {
+                return true;
+            }
+        } while (System.currentTimeMillis() < deadline);
+        return false;
+    }
+
+    private Integer getFilledQuantity(Position position, String orderId) {
+        try {
+            return brokerRouter.getBrokerWithFallback(routeOf(position)).getOrderFilledQuantity(orderId);
+        } catch (Exception e) {
+            System.err.println("⚠️ [BrokerOrderRouter] Unable to verify fills for " + orderId
+                    + ": " + e.getMessage());
+            return null;
+        }
     }
 
     /**
