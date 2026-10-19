@@ -69,6 +69,34 @@ class BrokerOrderEventProcessorTest {
     }
 
     @Test
+    void cancelledSellWithUnknownFillsRemainsReservedUntilReconciliation() throws Exception {
+        PendingOrder pending = new PendingOrder();
+        pending.setOrderId("sell-788");
+        pending.setBrokerOrderId("sell-788");
+        pending.setBroker("SHOONYA");
+        pending.setSymbol("INFY");
+        pending.setStrategy("strategy-b");
+        pending.setPositionType(Position.PositionType.INTRADAY);
+        pending.setSide(TradeSide.SELL);
+        pending.setState(PendingOrderState.PENDING);
+        pending.setRequestQty(5);
+        pending.setAvgPrice(1500.0);
+
+        when(pendingOrderRepository.findByBrokerAndBrokerOrderId("SHOONYA", "sell-788"))
+                .thenReturn(Optional.of(pending));
+
+        processor.process(BrokerOrderEvent.builder()
+                .broker("SHOONYA")
+                .brokerOrderId("sell-788")
+                .status(BrokerOrderStatus.CANCELLED)
+                .filledQuantity(null)
+                .build());
+
+        assertEquals(PendingOrderState.PENDING, pending.getState());
+        verify(pendingOrderRepository, never()).save(any(PendingOrder.class));
+    }
+
+    @Test
     void cancelledSellWithZeroFillsCanBeRetired() throws Exception {
         PendingOrder pending = new PendingOrder();
         pending.setOrderId("sell-790");
