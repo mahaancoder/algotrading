@@ -30,7 +30,11 @@ public class TrailingStopScheduler {
     private final PendingOrderRepository pendingOrderRepository;
     private final BrokerOrderRouter brokerOrderRouter;
 
-    @Scheduled(cron = "0/5 * * * * MON-FRI")
+    private volatile long lastPositionSyncAtMillis = 0L;
+    private static final long POSITION_SYNC_INTERVAL_MILLIS = 60_000L;
+    private static final double MIN_TARGET_CHANGE_FRACTION = 0.001; // 0.1%
+
+    @Scheduled(cron = "0/10 * * * * MON-FRI")
     public void updateTrailingStops() {
         if (killSwitchService.isActive()) {
             System.out.println("🛑 [TrailingStopScheduler] Skipped - Kill switch is ACTIVE");
@@ -64,7 +68,11 @@ public class TrailingStopScheduler {
 
 //        System.out.println("🔄 [TrailingStop] Running at " + now + " - threshold: " + threshold + "%");
 
-        reconciliationService.syncBrokerPositions(false);
+        long nowMillis = System.currentTimeMillis();
+        if (nowMillis - lastPositionSyncAtMillis >= POSITION_SYNC_INTERVAL_MILLIS) {
+            reconciliationService.syncBrokerPositions(false);
+            lastPositionSyncAtMillis = nowMillis;
+        }
         try {
             // Process BOTH intraday and holding positions
             List<Position> openPositions = positionManager.getAllOpenPositions().stream()
@@ -125,12 +133,22 @@ public class TrailingStopScheduler {
                         continue;
                     }
 
+                    // Do not cancel/replace for tiny price movements. Replacing an
+                    // order has broker rate-limit and race costs, so require at least a
+                    // 0.1% change from the currently recorded target.
+                    String oldOrderId = position.getTargetOrderId();
+                    double currentTarget = position.getTarget();
+                    if (oldOrderId != null && currentTarget > 0
+                            && Math.abs(ltp - currentTarget) / currentTarget < MIN_TARGET_CHANGE_FRACTION) {
+                        skippedCount++;
+                        continue;
+                    }
+
                     // CNC/HOLDING updates ONLY the primary target sell (A); the secondary
                     // quick-exit sell (B) is left at its original 1% price. INTRADAY/MIS
                     // cancels the prior target. Either way we cancel only the primary
                     // targetOrderId here and place the replacement in PHASE 2, after the
                     // short-sell guard has re-checked the cancelled order's status.
-                    String oldOrderId = position.getTargetOrderId();
                     // Do not send cancellation during collection. Cancellation and
                     // replacement must happen atomically under the shared position lock
                     // in phase 2, with broker-confirmed zero fills between the two.
