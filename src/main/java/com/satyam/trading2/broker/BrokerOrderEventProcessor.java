@@ -130,6 +130,16 @@ public class BrokerOrderEventProcessor {
                 return;
             }
 
+            // Never use a requested limit price (or any other fallback) as an
+            // execution price. The broker's completion event must carry a finite,
+            // positive average fill price before position/PnL accounting can run.
+            if (!isValidExecutionPrice(event.getAveragePrice())) {
+                System.err.println("[BrokerOrderEventProcessor] COMPLETE event for "
+                        + pendingOrder.getOrderId() + " has invalid average execution price "
+                        + event.getAveragePrice() + "; retaining reservation until broker reconciliation.");
+                return;
+            }
+
             if (!pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
                 if (event.getFilledQuantity() == null
                         || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
@@ -182,6 +192,10 @@ public class BrokerOrderEventProcessor {
                 throw e;
             }
         }
+    }
+
+    private boolean isValidExecutionPrice(double price) {
+        return Double.isFinite(price) && price > 0.0d;
     }
 
     private void restoreReservationIfUnprocessed(PendingOrder pendingOrder, Throwable originalFailure) {
@@ -325,22 +339,22 @@ public class BrokerOrderEventProcessor {
                     + " requires full order reconciliation; retaining reservation.");
             return;
         }
-        if (recorded > pendingOrder.getFilledQty()) {
+        boolean quantityChanged = recorded > pendingOrder.getFilledQty();
+        boolean priceConfirmed = isValidExecutionPrice(event.getAveragePrice());
+        boolean priceChanged = priceConfirmed
+                && Double.compare(event.getAveragePrice(), pendingOrder.getAvgPrice()) != 0;
+        if (quantityChanged || priceChanged
+                || pendingOrder.getState() != PendingOrderState.PARTIALLY_FILLED) {
             PendingOrderState previousState = pendingOrder.getState();
             int previousFilledQty = pendingOrder.getFilledQty();
             double previousAvgPrice = pendingOrder.getAvgPrice();
             long previousUpdatedTime = pendingOrder.getUpdatedTime();
-            double avgPrice = event.getAveragePrice() > 0
-                    ? event.getAveragePrice() : previousAvgPrice;
-            // markPartiallyFilled intentionally ignores terminal orders. A broker may,
-            // however, deliver a late cumulative-fill update after CANCELLED/REJECTED.
-            // Preserve the terminal status while recording the execution so the
-            // completion processor can apply the sold quantity exactly once.
+            // Preserve only a broker-reported execution price. An invalid/missing
+            // price is not promoted from the requested limit price into accounting.
             pendingOrder.setFilledQty(recorded);
-            pendingOrder.setAvgPrice(avgPrice);
-            // The broker order is terminal, but the local position update may not
-            // have succeeded yet. Keep it in the open/unresolved set until that
-            // update is applied and completionProcessed is durably persisted.
+            if (priceConfirmed) {
+                pendingOrder.setAvgPrice(event.getAveragePrice());
+            }
             pendingOrder.setState(PendingOrderState.PARTIALLY_FILLED);
             pendingOrder.setUpdatedTime(System.currentTimeMillis());
             try {
@@ -353,22 +367,17 @@ public class BrokerOrderEventProcessor {
                 throw persistenceError;
             }
         }
-        // Apply terminal partial executions through the same idempotent position
-        // lifecycle as a complete SELL. The completion processor reduces the long
-        // position by the cumulative fill, cancels/re-arms the remaining target only
-        // when safe, and marks this terminal order processed.
-        try {
-            orderCompletionProcessor.onSellCompleted(pendingOrder);
-        } catch (RuntimeException | IOException failure) {
-            System.err.println("[BrokerOrderEventProcessor] Could not apply terminal partial SELL "
-                    + pendingOrder.getOrderId() + "; retaining reservation: " + failure.getMessage());
-            throw failure;
-        }
-        if (!pendingOrder.isCompletionProcessed()) {
-            System.err.println("[BrokerOrderEventProcessor] Terminal partial SELL "
-                    + pendingOrder.getOrderId() + " fill=" + recorded
-                    + " persisted but not applied; retaining reservation for reconciliation.");
-        }
+
+        // A terminal partial SELL cannot be safely applied using only its order
+        // fill quantity: broker inventory may already have changed, another SELL
+        // may have raced, or a previous callback may have partially persisted.
+        // Keep it unresolved and reserved. Recovery may update the broker-confirmed
+        // cumulative quantity/price, but must not release this reservation until an
+        // authoritative position reconciliation can establish the resulting quantity.
+        System.err.println("[BrokerOrderEventProcessor] Terminal partial SELL "
+                + pendingOrder.getOrderId() + " fill=" + recorded
+                + " is persisted but unapplied; reservation remains active pending "
+                + "broker-position reconciliation.");
     }
 
     /**
