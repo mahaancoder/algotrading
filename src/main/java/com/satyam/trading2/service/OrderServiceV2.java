@@ -7,6 +7,7 @@ import com.satyam.trading2.config.KiteConfig;
 import com.satyam.trading2.datamodel.*;
 import com.satyam.trading2.domain.service.OrderSanitizer;
 import com.satyam.trading2.infrastructure.ratelimit.RateLimiter;
+import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.repository.HoldingMetadataRepository;
 import com.zerodhatech.kiteconnect.KiteConnect;
 import com.zerodhatech.kiteconnect.kitehttp.exceptions.KiteException;
@@ -31,6 +32,7 @@ public class OrderServiceV2 {
     private final OrderSanitizer orderSanitizer;
     private final HoldingMetadataRepository holdingMetadataRepository;
     private final CashFlowModeService cashFlowModeService;
+    private final PendingOrderRepository pendingOrderRepository;
 
     // ===== PERFORMANCE OPTIMIZATION: HTTP Client with connection pooling and timeouts =====
     // Connection pooling dramatically reduces latency for order placement
@@ -43,9 +45,11 @@ public class OrderServiceV2 {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ================= EXIT =================
+    @Deprecated
     public String exitPosition(String symbol, int qty, boolean isHolding, String strategy) {
-        String product = isHolding ? "CNC" : "MIS";
-        return placeOrder(symbol, "SELL", "LIMIT", qty, 0, 0, product, strategy);
+        System.err.println("🛑 [exitPosition] Refusing unguarded direct SELL for " + symbol
+                + "; use the Position-aware BrokerOrderRouter.");
+        return null;
     }
 
     // ================= CANCEL =================
@@ -85,7 +89,35 @@ public class OrderServiceV2 {
     }
 
     // ================= CORE =================
+    /**
+     * General legacy entry point is BUY-only. SELLs require a Position-aware
+     * reservation in BrokerOrderRouter; callers cannot bypass it with symbol/qty.
+     */
     public String placeOrder(String symbol, String side, String type, int qty, double price, double trigger, String product, String strategy) {
+        if ("SELL".equalsIgnoreCase(side)) {
+            System.err.println("🛑 [placeOrder] Refusing direct SELL for " + symbol
+                    + "; use BrokerOrderRouter so long inventory and pending SELLs are checked.");
+            return null;
+        }
+        return placeOrderInternal(symbol, side, type, qty, price, trigger, product, strategy);
+    }
+
+    public String placeRoutedSell(Position position, String symbol, int qty, double price,
+                                  boolean isHolding, String strategy) {
+        if (!com.satyam.trading2.order.SellOrderAuthorizationContext.isAuthorized()) {
+            System.err.println("🛑 [placeRoutedSell] Refusing SELL without BrokerOrderRouter authorization.");
+            return null;
+        }
+        if (position == null || symbol == null || qty <= 0 || strategy == null
+                || !symbol.equalsIgnoreCase(position.getSymbol())) {
+            System.err.println("🛑 [placeRoutedSell] Invalid Position-aware SELL request.");
+            return null;
+        }
+        String product = isHolding ? "CNC" : "MIS";
+        return placeOrderInternal(symbol, "SELL", "LIMIT", qty, price, 0, product, strategy);
+    }
+
+    private String placeOrderInternal(String symbol, String side, String type, int qty, double price, double trigger, String product, String strategy) {
              OrderRequest orderRequest =  orderSanitizer.sanitize(OrderRequest.builder().symbol(symbol).side(TradeSide.valueOf(side)).orderType(type).quantity(qty).price(price).triggerPrice(trigger).product(product).strategy(strategy).build());
              price = orderRequest.getPrice();
         try {
@@ -133,68 +165,193 @@ public class OrderServiceV2 {
         }
     }
 
-    public String updateTargetOrder(String symbol, double target, int qty, String oldOrderId, boolean isHolding, String strategy) {
-        try {
-            String product = isHolding ? "CNC" : "MIS";
+    /**
+     * Legacy API lacks the position inventory required to reserve SELL quantity.
+     * Fail closed; callers must use the Position-aware overload below.
+     */
+    @Deprecated
+    public String updateTargetOrder(String symbol, double target, int qty, String oldOrderId,
+                                    boolean isHolding, String strategy) {
+        System.err.println("🛑 [updateTargetOrder] Refusing unguarded target SELL for " + symbol
+                + "; use the Position-aware BrokerOrderRouter.");
+        return null;
+    }
 
-            // ✅ FIX: For holdings, fetch ALL open SELL orders for this symbol and cancel them
-            // This ensures we don't have duplicate sell orders when accumulating holdings
-            if (isHolding) {
-                System.out.println("🔍 [updateTargetOrder] Checking for existing SELL orders for holding: " + symbol);
-                List<Order> allOrders = fetchOrders();
-                List<String> existingSellOrders = allOrders.stream()
-                    .filter(o -> symbol.equals(o.getTradingSymbol()))
+    public String updateTargetOrder(Position position, String symbol, double target, int qty,
+                                    String oldOrderId, boolean isHolding, String strategy) {
+        if (!com.satyam.trading2.order.SellOrderAuthorizationContext.isAuthorized()) {
+            System.err.println("🛑 [updateTargetOrder] Refusing target SELL without BrokerOrderRouter authorization.");
+            return null;
+        }
+        if (position == null) return null;
+        synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(position)) {
+            return updateTargetOrderLocked(symbol, target, qty, oldOrderId, isHolding, strategy);
+        }
+    }
+
+    private String updateTargetOrderLocked(String symbol, double target, int qty, String oldOrderId,
+                                           boolean isHolding, String strategy) {
+        if (qty <= 0) {
+            System.err.println("🛑 [updateTargetOrder] Refusing SELL with non-positive quantity for " + symbol);
+            return null;
+        }
+        String product = isHolding ? "CNC" : "MIS";
+        try {
+            // Do not replace an order until the broker confirms cancellation and
+            // proves that the old order had zero fills. Cancellation requests can
+            // race with exchange fills; a terminal CANCELLED status alone is not enough.
+            List<Order> snapshot = fetchOrders();
+            if (snapshot == null) {
+                System.err.println("🛑 [updateTargetOrder] Kite order book unavailable; refusing SELL replacement for " + symbol);
+                return null;
+            }
+            List<Order> activeSymbolSells = snapshot.stream()
+                    .filter(Objects::nonNull)
+                    .filter(o -> symbol.equalsIgnoreCase(o.getTradingSymbol()))
                     .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
-                    .filter(o -> "CNC".equals(o.getProduct()))
-                    .filter(o -> "OPEN".equalsIgnoreCase(o.getStatus()) || "TRIGGER PENDING".equalsIgnoreCase(o.getStatus()))
-                    .map(Order::getOrderId)
+                    .filter(o -> product.equalsIgnoreCase(o.getProduct()))
+                    .filter(o -> isActiveOrderStatus(o.getStatus()))
                     .collect(java.util.stream.Collectors.toList());
 
-                if (!existingSellOrders.isEmpty()) {
-                    System.out.println("🔄 [updateTargetOrder] Found " + existingSellOrders.size() + " existing SELL orders for " + symbol + " - cancelling all");
-                    for (String existingOrderId : existingSellOrders) {
-                        try {
-                            System.out.println("   Cancelling order: " + existingOrderId);
-                            cancelOrder(existingOrderId);
-                        } catch (Exception e) {
-                            System.err.println("⚠️ Failed to cancel order " + existingOrderId + ": " + e.getMessage());
-                        }
-                    }
-                    // Wait for all cancellations to process
-                    Thread.sleep(800);
-                }
-            } else {
-                // ✅ For intraday: Cancel old target order (if exists)
-                if (oldOrderId != null) {
-                    try {
-                        cancelOrder(oldOrderId);
-                        Thread.sleep(500);
-                    } catch (Exception e) {
-                        System.err.println("⚠️ Failed to cancel old order " + oldOrderId + " for " + symbol + ": " + e.getMessage());
-                        // ✅ Check if order still exists after failed cancellation
-                        if (isOrderStillActive(oldOrderId)) {
-                            System.err.println("❌ Old order " + oldOrderId + " is still ACTIVE - ABORTING to prevent duplicate!");
-                            return null; // Don't place new order if old one couldn't be cancelled
-                        } else {
-                            System.out.println("✅ Old order " + oldOrderId + " is not active anymore - safe to proceed");
-                        }
-                    }
+            // Do not cancel unrelated SELLs merely because they share a symbol.
+            // Multiple strategy allocations can coexist locally, but the broker
+            // executes against one physical symbol position. Unknown active orders
+            // must be reconciled rather than silently cancelled or overlapped.
+            boolean untrackedActiveSell = activeSymbolSells.stream()
+                    .filter(o -> oldOrderId == null || !oldOrderId.equals(o.getOrderId()))
+                    .anyMatch(o -> pendingOrderRepository
+                            .findByBrokerAndBrokerOrderId("KITE", o.getOrderId())
+                            .map(pending -> !pending.isOpen()
+                                    || pending.getRequestQty() != o.getQuantity())
+                            .orElse(true));
+            if (untrackedActiveSell) {
+                System.err.println("🛑 [updateTargetOrder] An active " + product + " SELL for " + symbol
+                        + " has no matching open KITE pending record; refusing replacement until reconciliation.");
+                return null;
+            }
+
+            List<Order> candidates = oldOrderId == null
+                    ? Collections.emptyList()
+                    : snapshot.stream()
+                        .filter(Objects::nonNull)
+                        .filter(o -> oldOrderId.equals(o.getOrderId()))
+                        .collect(java.util.stream.Collectors.toList());
+
+            if (oldOrderId != null && candidates.isEmpty()) {
+                System.err.println("🛑 [updateTargetOrder] Existing SELL " + oldOrderId
+                        + " is missing from Kite order book; refusing replacement for " + symbol);
+                return null;
+            }
+            for (Order candidate : candidates) {
+                if (!symbol.equalsIgnoreCase(candidate.getTradingSymbol())
+                        || !"SELL".equalsIgnoreCase(candidate.getTransactionType())
+                        || !product.equalsIgnoreCase(candidate.getProduct())) {
+                    System.err.println("🛑 [updateTargetOrder] Order " + oldOrderId
+                            + " does not match expected SELL symbol/product; refusing replacement.");
+                    return null;
                 }
             }
 
-            // ✅ FIX: Place new LIMIT SELL
-            String newOrderId = placeOrder(symbol, "SELL", "LIMIT", qty, target, 0, product, strategy);
-            if (newOrderId != null) {
-//                System.out.println("🎯 Target updated for " + symbol + " → ₹" + String.format("%.2f", target) +
-//                                 " (qty=" + qty + ", orderId=" + newOrderId + ", product=" + product + ")");
+            Set<String> toCancel = new LinkedHashSet<>();
+            for (Order order : candidates) {
+                if (order == null || order.getOrderId() == null) {
+                    System.err.println("🛑 [updateTargetOrder] Incomplete order snapshot for " + symbol
+                            + "; refusing replacement.");
+                    return null;
+                }
+                String status = order.getStatus();
+                if ("COMPLETE".equalsIgnoreCase(status)) {
+                    System.err.println("🛑 [updateTargetOrder] Existing SELL " + order.getOrderId()
+                            + " already completed; reconcile position before another SELL.");
+                    return null;
+                }
+                if (isActiveOrderStatus(status)) {
+                    toCancel.add(order.getOrderId());
+                } else if (("CANCELLED".equalsIgnoreCase(status) || "REJECTED".equalsIgnoreCase(status))
+                        && (order.getFilledQuantity() == null || order.getFilledQuantity() != 0)) {
+                    System.err.println("🛑 [updateTargetOrder] Terminal SELL " + order.getOrderId()
+                            + " has unknown/non-zero filled quantity; refusing replacement.");
+                    return null;
+                }
             }
-            return newOrderId;
 
+            for (String existingOrderId : toCancel) {
+                cancelOrder(existingOrderId);
+                if (!awaitKiteSellCancellationWithZeroFills(existingOrderId, 2500L)) {
+                    System.err.println("🛑 [updateTargetOrder] Cancellation/fill state for SELL "
+                            + existingOrderId + " is not safely confirmed; refusing replacement for " + symbol);
+                    return null;
+                }
+            }
+
+            // For an explicit intraday target id, also verify terminal zero-fill
+            // state even if it was already terminal in the first snapshot.
+            if (!isHolding && oldOrderId != null && !toCancel.contains(oldOrderId)) {
+                if (!awaitKiteSellCancellationWithZeroFills(oldOrderId, 0L)) {
+                    System.err.println("🛑 [updateTargetOrder] Existing SELL " + oldOrderId
+                            + " is not confirmed zero-fill/terminal; refusing replacement.");
+                    return null;
+                }
+            }
+
+            return placeOrderInternal(symbol, "SELL", "LIMIT", qty, target, 0, product, strategy);
         } catch (Exception e) {
-            System.err.println("❌ Failed to update target order for " + symbol + ": " + e.getMessage());
-            e.printStackTrace();
-            return null; // Return null to indicate failure
+            System.err.println("❌ Failed to update target SELL for " + symbol
+                    + "; replacement blocked to avoid overselling: " + e.getMessage());
+            return null;
         }
+    }
+
+    private boolean isActiveOrderStatus(String status) {
+        return "OPEN".equalsIgnoreCase(status)
+                || "TRIGGER PENDING".equalsIgnoreCase(status)
+                || "UPDATE".equalsIgnoreCase(status)
+                || "PARTIALLY FILLED".equalsIgnoreCase(status);
+    }
+
+    /**
+     * Poll Kite until the order is terminal and explicitly has zero fills.
+     * Missing orders, API failures, partial fills and COMPLETE orders all fail closed.
+     */
+    private boolean awaitKiteSellCancellationWithZeroFills(String orderId, long timeoutMillis) {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        long lastCancelAttempt = System.currentTimeMillis();
+        do {
+            List<Order> snapshot = fetchOrders();
+            Order order = snapshot == null ? null : snapshot.stream()
+                    .filter(Objects::nonNull)
+                    .filter(o -> orderId.equals(o.getOrderId()))
+                    .findFirst()
+                    .orElse(null);
+            if (order == null || order.getStatus() == null || order.getFilledQuantity() == null) {
+                return false;
+            }
+            String status = order.getStatus();
+            if ("COMPLETE".equalsIgnoreCase(status)) {
+                return false;
+            }
+            if ("CANCELLED".equalsIgnoreCase(status) || "REJECTED".equalsIgnoreCase(status)) {
+                return order.getFilledQuantity() == 0;
+            }
+            long now = System.currentTimeMillis();
+            if (timeoutMillis == 0L || now >= deadline) {
+                return false;
+            }
+            if (now - lastCancelAttempt >= 1000L) {
+                // The previous cancel request may have been rate-limited or lost.
+                // Retry while the order remains active, but never replace until
+                // the order book confirms terminal status and zero fills.
+                cancelOrder(orderId);
+                lastCancelAttempt = now;
+            }
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        } while (System.currentTimeMillis() <= deadline);
+        return false;
     }
 
     /**
@@ -210,6 +367,52 @@ public class OrderServiceV2 {
         } catch (Exception e) {
             System.err.println("⚠️ Failed to check order status for " + orderId + ": " + e.getMessage());
             return true; // Assume it's active if we can't verify (safer to prevent duplicates)
+        }
+    }
+
+    /**
+     * Fresh Kite-confirmed net inventory. Null means the API response could not
+     * be trusted; zero is returned only for a successful response with no row.
+     * For CNC holdings we deliberately count settled quantity only.
+     */
+    public Integer getNetSellableQuantity(String symbol, boolean holding) {
+        if (symbol == null || symbol.trim().isEmpty()) return null;
+        try {
+            rateLimiter.acquire("fetchSellableInventory");
+            String endpoint = holding ? "/portfolio/holdings" : "/portfolio/positions";
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(kiteConfig.getBaseUrl() + endpoint))
+                    .header("X-Kite-Version", "3")
+                    .header("Authorization", kiteConfig.getAuthHeader())
+                    .GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) return null;
+            JsonNode root = objectMapper.readTree(response.body());
+            if (!"success".equals(root.path("status").asText())) return null;
+            JsonNode rows = holding ? root.path("data") : root.path("data").path("net");
+            if (!rows.isArray()) return null;
+            for (JsonNode row : rows) {
+                if (!symbol.equalsIgnoreCase(row.path("tradingsymbol").asText())) continue;
+                if (holding) {
+                    // Kite quantity is settled demat inventory. used_quantity is
+                    // already committed/sold during the day and must not be made
+                    // available for another SELL. T1 and collateral quantities are
+                    // intentionally excluded from this sell authorization.
+                    JsonNode qty = row.get("quantity");
+                    JsonNode used = row.get("used_quantity");
+                    if (qty == null || !qty.canConvertToInt()
+                            || used == null || !used.canConvertToInt()) return null;
+                    return Math.max(0, qty.asInt() - used.asInt());
+                }
+                if (!"MIS".equalsIgnoreCase(row.path("product").asText())) continue;
+                JsonNode qty = row.get("quantity");
+                if (qty == null || !qty.canConvertToInt()) return null;
+                return Math.max(0, qty.asInt());
+            }
+            return 0;
+        } catch (Exception e) {
+            System.err.println("⚠️ Unable to confirm Kite sellable inventory for " + symbol + ": " + e.getMessage());
+            return null;
         }
     }
 
@@ -432,11 +635,30 @@ public class OrderServiceV2 {
             if (data.isArray()) {
                 for (JsonNode holdingNode : data) {
                     try {
-                        String symbol = holdingNode.get("tradingsymbol").asText();
-                        int quantity = holdingNode.get("t1_quantity").asInt() + holdingNode.get("quantity").asInt() + holdingNode.get("collateral_quantity").asInt();
-                        double avgPrice = holdingNode.get("average_price").asDouble();
+                        String symbol = holdingNode.path("tradingsymbol").asText(null);
+                        JsonNode settledNode = holdingNode.get("quantity");
+                        JsonNode usedNode = holdingNode.get("used_quantity");
+                        JsonNode averageNode = holdingNode.get("average_price");
+                        // PositionManager must track the same sellable quantity that
+                        // getNetSellableQuantity authorizes: settled demat shares less
+                        // broker-used shares. T1 and collateral are deliberately excluded.
+                        if (symbol == null || symbol.trim().isEmpty()
+                                || settledNode == null || !settledNode.canConvertToInt()
+                                || usedNode == null || !usedNode.canConvertToInt()
+                                || averageNode == null || !averageNode.isNumber()) {
+                            System.err.println("⚠️ [getHoldings] Skipping malformed Kite holding row; inventory fields are incomplete.");
+                            continue;
+                        }
+                        int settledQuantity = settledNode.asInt();
+                        int usedQuantity = usedNode.asInt();
+                        if (settledQuantity < 0 || usedQuantity < 0 || usedQuantity > settledQuantity) {
+                            System.err.println("⚠️ [getHoldings] Skipping inconsistent Kite holding row for " + symbol);
+                            continue;
+                        }
+                        int quantity = settledQuantity - usedQuantity;
+                        double avgPrice = averageNode.asDouble();
 
-                        // Skip if quantity is 0
+                        // Skip if no shares are currently sellable.
                         if (quantity <= 0) {
                             continue;
                         }

@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -36,12 +37,19 @@ public class PendingOrderRepository {
 
     @PostConstruct
     public void init() {
-        // Load pending orders from file
+        // A missing file is normal on first boot. An existing but unreadable or
+        // malformed file is not: starting with an empty/partial order ledger could
+        // authorize a SELL against inventory already consumed by an earlier order.
+        Path persistenceFile = Path.of(filePath);
+        if (!Files.exists(persistenceFile)) {
+            return;
+        }
         try {
             loadFromFile();
-        }
-        catch (Exception e){
-            System.out.println("Error loading pending orders: " + e.getMessage());
+        } catch (IOException e) {
+            throw new IllegalStateException(
+                    "Cannot safely start: pending-order ledger could not be loaded from "
+                            + persistenceFile + ". Repair/restore the ledger before restarting.", e);
         }
     }
 
@@ -107,6 +115,21 @@ public class PendingOrderRepository {
                 .filter(po -> !po.getState().equals(PendingOrderState.COMPLETE) &&
                         !po.getState().equals(PendingOrderState.REJECTED) &&
                         !po.getState().equals(PendingOrderState.CANCELLED))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Orders whose broker event or position callback may have been lost during a
+     * restart. A COMPLETE order is included only when its callback was not durably
+     * processed; normal terminal orders are not polled again.
+     */
+    public List<PendingOrder> findOrdersRequiringReconciliation() {
+        return ordersByInternalId.values().stream()
+                .filter(po -> po != null && po.getState() != null)
+                .filter(po -> !po.getState().equals(PendingOrderState.REJECTED)
+                        && !po.getState().equals(PendingOrderState.CANCELLED)
+                        && (!po.getState().equals(PendingOrderState.COMPLETE)
+                            || !po.isCompletionProcessed()))
                 .collect(java.util.stream.Collectors.toList());
     }
 
@@ -183,26 +206,29 @@ public class PendingOrderRepository {
             int lineNumber = 0;
             while ((line = br.readLine()) != null) {
                 lineNumber++;
+                if (line.trim().isEmpty()) {
+                    continue;
+                }
                 try {
                     PendingOrder po = fromCsv(line);
-                    if (po != null && po.getOrderId() != null) {
-                        // Index by internal id (generate if missing — legacy rows have none)
-                        String internalId = po.getInternalOrderId();
-                        if (internalId == null) {
-                            internalId = PendingOrder.generateInternalOrderId();
-                            po.setInternalOrderId(internalId);
-                        }
-                        ordersByInternalId.put(internalId, po);
-
-                        // Secondary index by (broker, brokerOrderId) — dual-index the
-                        // normalized id too (see indexByBrokerOrderId) for INDstocks.
-                        String broker = po.getBroker() != null ? po.getBroker() : "KITE";
-                        indexByBrokerOrderId(broker, po.getOrderId(), po);
+                    if (po == null || po.getOrderId() == null || po.getOrderId().trim().isEmpty()) {
+                        throw new IllegalArgumentException("row has no broker order id");
                     }
+                    // Index by internal id (generate if missing — legacy rows have none)
+                    String internalId = po.getInternalOrderId();
+                    if (internalId == null) {
+                        internalId = PendingOrder.generateInternalOrderId();
+                        po.setInternalOrderId(internalId);
+                    }
+                    ordersByInternalId.put(internalId, po);
+
+                    // Secondary index by (broker, brokerOrderId) — dual-index the
+                    // normalized id too (see indexByBrokerOrderId) for INDstocks.
+                    String broker = po.getBroker() != null ? po.getBroker() : "KITE";
+                    indexByBrokerOrderId(broker, po.getOrderId(), po);
                 } catch (Exception e) {
-                    System.err.println("⚠️ Failed to parse pending order at line " + lineNumber + ": " + line);
-                    System.err.println("   Error: " + e.getMessage());
-                    // Skip corrupted line and continue
+                    throw new IOException("Corrupt pending-order ledger at line " + lineNumber
+                            + "; refusing to skip an order and risk authorizing an unsafe SELL", e);
                 }
             }
             System.out.println("✅ Loaded " + ordersByInternalId.size() + " pending orders from file");
@@ -211,15 +237,27 @@ public class PendingOrderRepository {
 
 
     private void rewriteFile() throws IOException {
-        try (BufferedWriter bw = Files.newBufferedWriter(Path.of(filePath))) {
-            for (PendingOrder po : ordersByInternalId.values()) {
-                bw.write(toCsv(po));
-                bw.newLine();
+        Path target = Path.of(filePath).toAbsolutePath();
+        Path parent = target.getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Path temp = Files.createTempFile(parent, target.getFileName().toString(), ".tmp");
+        boolean moved = false;
+        try {
+            try (BufferedWriter bw = Files.newBufferedWriter(temp)) {
+                for (PendingOrder po : ordersByInternalId.values()) {
+                    bw.write(toCsv(po));
+                    bw.newLine();
+                }
             }
-        }
-        catch (Exception e){
-            System.out.println("❌ Exception while writing pending orders file: " + e.getMessage());
-            e.printStackTrace();
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            moved = true;
+        } finally {
+            if (!moved) Files.deleteIfExists(temp);
         }
     }
 
@@ -237,6 +275,7 @@ public class PendingOrderRepository {
 
         // Schema: internalOrderId, brokerOrderId, symbol, side, state, requestQty,
         //         filledQty, avgPrice, createdTime, updatedTime, strategy, broker, route, signalId
+        String positionType = po.getPositionType() != null ? po.getPositionType().name() : "";
         return String.join(",",
                 internalOrderId,
                 brokerOrderId,
@@ -251,7 +290,9 @@ public class PendingOrderRepository {
                 strategy,
                 broker,
                 route,
-                signalId
+                signalId,
+                positionType,
+                String.valueOf(po.isCompletionProcessed())
         );
     }
 
@@ -262,7 +303,8 @@ public class PendingOrderRepository {
         // parser into the legacy 10-field branch (symbol read as side, etc.).
         String[] p = line.split(",", -1);
 
-        // New schema: 14 fields. Old schema: 10 fields (no broker/route/signalId/internalId).
+        // Current schema: 16 fields. Previous broker-aware schema: 14 fields.
+        // Legacy schema: 10 fields (no broker/route/signalId/internalId).
         // Handle both for backward compat with existing CSV files on disk.
         if (p.length < 10) {
             System.err.println("⚠️ Invalid CSV format (expected 10-14 fields, got " + p.length + "): " + line);
@@ -289,6 +331,29 @@ public class PendingOrderRepository {
             po.setBroker(p[11]);
             po.setExecutionRoute(ExecutionRoute.valueOf(p[12]));
             po.setSignalId(p[13].isEmpty() ? null : p[13]);
+            if (p.length >= 15 && !p[14].isEmpty()) {
+                po.setPositionType(Position.PositionType.valueOf(p[14]));
+            } else {
+                // Old rows did not persist product type. INTRADAY is only a
+                // placeholder for lock metadata; sell authorization still uses
+                // the live Position's product and broker-confirmed inventory.
+                po.setPositionType(Position.PositionType.INTRADAY);
+            }
+            if (p.length >= 16) {
+                po.setCompletionProcessed(Boolean.parseBoolean(p[15]));
+            } else if (po.getSide() == TradeSide.SELL
+                    && po.getState() == PendingOrderState.COMPLETE) {
+                // Previous CSV formats did not persist the idempotency marker.
+                // Never replay a historical completed SELL after restart: a
+                // broker reconciliation must repair any crash-window mismatch.
+                po.setCompletionProcessed(true);
+            } else if (po.getSide() == TradeSide.SELL && po.getFilledQty() > 0
+                    && (po.getState() == PendingOrderState.CANCELLED
+                    || po.getState() == PendingOrderState.REJECTED)) {
+                // A legacy terminal partial SELL may not have been applied to
+                // the position before the process stopped. Keep it reserved.
+                po.setState(PendingOrderState.PARTIALLY_FILLED);
+            }
         } else {
             // Old schema (10 fields): orderId, symbol, side, state, requestQty,
             //                       filledQty, avgPrice, createdTime, updatedTime, strategy
