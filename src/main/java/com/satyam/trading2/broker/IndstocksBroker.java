@@ -740,8 +740,17 @@ public class IndstocksBroker extends AbstractRestBroker {
                 if (data != null && data.isArray()) {
                     log.info("[IndstocksBroker] Reconciliation: {} holdings from INDstocks", data.size());
                     for (JsonNode node : data) {
-                        upsertPosition(textOr(node, "symbol", null),
-                                intOr(node, "total_qty", 0),
+                        String symbol = textOr(node, "symbol", null);
+                        int totalQty = intOr(node, "total_qty", -1);
+                        int usedQty = intOr(node, "used_qty", -1);
+                        if (symbol == null || totalQty < 0 || usedQty < 0 || usedQty > totalQty) {
+                            log.warn("[IndstocksBroker] Skipping malformed holding row for {}; total_qty/used_qty are not trustworthy",
+                                    symbol);
+                            continue;
+                        }
+                        // Keep the tracked position on the same basis as sell
+                        // authorization: total holdings less shares already blocked/used.
+                        upsertPosition(symbol, totalQty - usedQty,
                                 doubleOr(node, "avg_price", 0),
                                 Position.PositionType.HOLDING);
                     }
