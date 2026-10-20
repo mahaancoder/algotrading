@@ -230,14 +230,15 @@ public class ReconciliationService {
                     // same-symbol SELL is untracked and makes automatic replacement unsafe.
                     Order existingSellOrder = null;
                     String recordedTargetId = position.getTargetOrderId();
-                    String recordedSecondaryId = position.getSecondaryTargetOrderId();
+                    final String recordedPrimaryIdForScan = recordedTargetId;
+                    final String recordedSecondaryId = position.getSecondaryTargetOrderId();
 
                     if (recordedTargetId != null || recordedSecondaryId != null) {
                         boolean untrackedActiveSell = candidates.stream()
                                 .filter(java.util.Objects::nonNull)
                                 .map(Order::getOrderId)
                                 .filter(java.util.Objects::nonNull)
-                                .anyMatch(id -> !id.equals(recordedTargetId)
+                                .anyMatch(id -> !id.equals(recordedPrimaryIdForScan)
                                         && !id.equals(recordedSecondaryId));
                         if (untrackedActiveSell) {
                             log.error("🛑 {} has active SELLs beyond its recorded primary/secondary IDs; "
