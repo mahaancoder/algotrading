@@ -5,6 +5,8 @@ import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.PendingOrderState;
 import com.satyam.trading2.datamodel.TradeSide;
+import com.satyam.trading2.datamodel.Position;
+import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.PendingOrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +39,7 @@ public class PendingOrderRecoveryService {
     private final BrokerRouter brokerRouter;
     private final PendingOrderRepository pendingOrderRepository;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
+    private final PositionManager positionManager;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     @EventListener(ApplicationReadyEvent.class)
@@ -150,12 +153,98 @@ public class PendingOrderRecoveryService {
                     .filledQuantity(cumulativeFilled)
                     .averagePrice(averagePrice)
                     .build();
-            brokerOrderEventProcessor.process(recoveredEvent);
+
+            boolean terminalPartialSell = pending.getSide() == TradeSide.SELL
+                    && cumulativeFilled > 0
+                    && cumulativeFilled < pending.getRequestQty()
+                    && (normalizedStatus == BrokerOrderStatus.CANCELLED
+                        || normalizedStatus == BrokerOrderStatus.REJECTED);
+            if (terminalPartialSell) {
+                if (!brokerPositionMatchesExpectedAfterFill(broker, pending, cumulativeFilled)) {
+                    // Do not apply the fill or release its reservation when broker
+                    // inventory is ambiguous, stale, blocked by another SELL, or does
+                    // not exactly match the expected post-fill local inventory.
+                    return;
+                }
+                brokerOrderEventProcessor.processReconciledTerminalPartialSell(recoveredEvent);
+            } else {
+                brokerOrderEventProcessor.process(recoveredEvent);
+            }
         } catch (IOException | RuntimeException e) {
             log.error("[PendingOrderRecovery] Failed to reconcile {} order {}: {}; "
                             + "reservation remains active",
                     broker.getBrokerName(), pending.getBrokerOrderId(), e.getMessage(), e);
         }
+    }
+
+    /**
+     * A terminal partial SELL is applied only when a fresh broker inventory
+     * snapshot proves the resulting quantity. We fail closed if another unresolved
+     * SELL exists for the same broker/symbol/product, because its reservation would
+     * make aggregate inventory ambiguous.
+     */
+    private boolean brokerPositionMatchesExpectedAfterFill(Broker broker,
+                                                            PendingOrder pending,
+                                                            int cumulativeFilled) {
+        if (pending.getPositionType() == null || cumulativeFilled <= 0) {
+            log.warn("[PendingOrderRecovery] Cannot reconcile terminal partial SELL {}: missing product/fill",
+                    pending.getBrokerOrderId());
+            return false;
+        }
+
+        String brokerName = broker.getBrokerName();
+        for (PendingOrder other : pendingOrderRepository.findOrdersRequiringReconciliation()) {
+            if (other == null || other.getSide() != TradeSide.SELL || other.isCompletionProcessed()) {
+                continue;
+            }
+            if (pending.getBrokerOrderId().equals(other.getBrokerOrderId())
+                    && brokerName.equalsIgnoreCase(other.getBroker() != null ? other.getBroker() : "KITE")) {
+                continue;
+            }
+            String otherBroker = other.getBroker() != null ? other.getBroker() : "KITE";
+            if (brokerName.equalsIgnoreCase(otherBroker)
+                    && pending.getSymbol().equalsIgnoreCase(other.getSymbol())
+                    && pending.getPositionType() == other.getPositionType()) {
+                log.warn("[PendingOrderRecovery] Cannot reconcile terminal partial SELL {} while SELL {} "
+                                + "for the same broker/symbol/product is unresolved",
+                        pending.getBrokerOrderId(), other.getBrokerOrderId());
+                return false;
+            }
+        }
+
+        long localQuantity = positionManager.getPositionsForSymbol(pending.getSymbol()).values().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(Position::isOpen)
+                .filter(position -> !position.isExitProcessed())
+                .filter(position -> position.getPositionType() == pending.getPositionType())
+                .filter(position -> brokerName.equalsIgnoreCase(
+                        position.getBroker() != null ? position.getBroker() : "KITE"))
+                .mapToLong(Position::getTotalQuantity)
+                .sum();
+        long expectedAfterFill = localQuantity - cumulativeFilled;
+        if (expectedAfterFill < 0 || expectedAfterFill > Integer.MAX_VALUE) {
+            log.warn("[PendingOrderRecovery] Invalid expected post-fill quantity {} for SELL {}; reservation retained",
+                    expectedAfterFill, pending.getBrokerOrderId());
+            return false;
+        }
+
+        Integer brokerQuantity;
+        try {
+            brokerQuantity = broker.getNetSellableQuantity(
+                    pending.getSymbol(), pending.getPositionType() == Position.PositionType.HOLDING);
+        } catch (RuntimeException e) {
+            log.warn("[PendingOrderRecovery] Broker inventory query failed for terminal partial SELL {}: {}; "
+                            + "reservation retained",
+                    pending.getBrokerOrderId(), e.getMessage());
+            return false;
+        }
+        if (brokerQuantity == null || brokerQuantity != (int) expectedAfterFill) {
+            log.warn("[PendingOrderRecovery] Broker inventory does not confirm terminal partial SELL {}: "
+                            + "expected post-fill sellable quantity={}, broker quantity={}; reservation retained",
+                    pending.getBrokerOrderId(), expectedAfterFill, brokerQuantity);
+            return false;
+        }
+        return true;
     }
 
     private ExecutionRoute routeOf(PendingOrder pending) {
