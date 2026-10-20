@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,7 +39,7 @@ class PendingOrderRecoveryServiceTest {
     private PendingOrderRecoveryService service;
 
     @Test
-    void startupRecoveryReplaysTerminalPartialSellFill() throws Exception {
+    void startupRecoveryKeepsTerminalPartialSellReservedWithoutInventoryConfirmation() throws Exception {
         PendingOrder pending = new PendingOrder();
         pending.setOrderId("sell-123");
         pending.setBrokerOrderId("sell-123");
@@ -62,13 +63,10 @@ class PendingOrderRecoveryServiceTest {
 
         service.recoverAfterStartup();
 
-        ArgumentCaptor<BrokerOrderEvent> event = ArgumentCaptor.forClass(BrokerOrderEvent.class);
-        verify(brokerOrderEventProcessor).process(event.capture());
-        assertEquals("KITE", event.getValue().getBroker());
-        assertEquals("sell-123", event.getValue().getBrokerOrderId());
-        assertEquals(BrokerOrderStatus.CANCELLED, event.getValue().getStatus());
-        assertEquals(4, event.getValue().getFilledQuantity());
-        assertEquals(102.5, event.getValue().getAveragePrice());
+        // Without a matching broker-confirmed post-fill inventory snapshot, the
+        // recovery service must retain the reservation and must not apply the fill.
+        verify(brokerOrderEventProcessor, never()).process(any());
+        verify(brokerOrderEventProcessor, never()).processReconciledTerminalPartialSell(any());
     }
 
     @Test
