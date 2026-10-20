@@ -37,12 +37,19 @@ public class PendingOrderRepository {
 
     @PostConstruct
     public void init() {
-        // Load pending orders from file
+        // A missing file is normal on first boot. An existing but unreadable or
+        // malformed file is not: starting with an empty/partial order ledger could
+        // authorize a SELL against inventory already consumed by an earlier order.
+        Path persistenceFile = Path.of(filePath);
+        if (!Files.exists(persistenceFile)) {
+            return;
+        }
         try {
             loadFromFile();
-        }
-        catch (Exception e){
-            System.out.println("Error loading pending orders: " + e.getMessage());
+        } catch (IOException e) {
+            throw new IllegalStateException(
+                    "Cannot safely start: pending-order ledger could not be loaded from "
+                            + persistenceFile + ". Repair/restore the ledger before restarting.", e);
         }
     }
 
@@ -199,26 +206,29 @@ public class PendingOrderRepository {
             int lineNumber = 0;
             while ((line = br.readLine()) != null) {
                 lineNumber++;
+                if (line.trim().isEmpty()) {
+                    continue;
+                }
                 try {
                     PendingOrder po = fromCsv(line);
-                    if (po != null && po.getOrderId() != null) {
-                        // Index by internal id (generate if missing — legacy rows have none)
-                        String internalId = po.getInternalOrderId();
-                        if (internalId == null) {
-                            internalId = PendingOrder.generateInternalOrderId();
-                            po.setInternalOrderId(internalId);
-                        }
-                        ordersByInternalId.put(internalId, po);
-
-                        // Secondary index by (broker, brokerOrderId) — dual-index the
-                        // normalized id too (see indexByBrokerOrderId) for INDstocks.
-                        String broker = po.getBroker() != null ? po.getBroker() : "KITE";
-                        indexByBrokerOrderId(broker, po.getOrderId(), po);
+                    if (po == null || po.getOrderId() == null || po.getOrderId().trim().isEmpty()) {
+                        throw new IllegalArgumentException("row has no broker order id");
                     }
+                    // Index by internal id (generate if missing — legacy rows have none)
+                    String internalId = po.getInternalOrderId();
+                    if (internalId == null) {
+                        internalId = PendingOrder.generateInternalOrderId();
+                        po.setInternalOrderId(internalId);
+                    }
+                    ordersByInternalId.put(internalId, po);
+
+                    // Secondary index by (broker, brokerOrderId) — dual-index the
+                    // normalized id too (see indexByBrokerOrderId) for INDstocks.
+                    String broker = po.getBroker() != null ? po.getBroker() : "KITE";
+                    indexByBrokerOrderId(broker, po.getOrderId(), po);
                 } catch (Exception e) {
-                    System.err.println("⚠️ Failed to parse pending order at line " + lineNumber + ": " + line);
-                    System.err.println("   Error: " + e.getMessage());
-                    // Skip corrupted line and continue
+                    throw new IOException("Corrupt pending-order ledger at line " + lineNumber
+                            + "; refusing to skip an order and risk authorizing an unsafe SELL", e);
                 }
             }
             System.out.println("✅ Loaded " + ordersByInternalId.size() + " pending orders from file");
