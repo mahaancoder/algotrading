@@ -309,6 +309,28 @@ public class ShoonyaBroker extends AbstractRestBroker {
         }
     }
 
+    @Override
+    public Double getOrderAveragePrice(String brokerOrderId) {
+        if (!shoonyaConfig.isAuthenticated()) return null;
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("uid", shoonyaConfig.getUserId());
+            payload.put("norenordno", brokerOrderId);
+            JsonNode resp = postForm(shoonyaConfig.getBaseUrl() + "SingleOrdStatus",
+                    norenBody(objectMapper.writeValueAsString(payload)));
+            if ("Not_Ok".equals(textOr(resp, "stat", ""))) return null;
+            for (String field : new String[]{"avgprc", "average_price", "avg_price", "averagePrice"}) {
+                double value = doubleOr(resp, field, -1);
+                if (value > 0) return value;
+            }
+            return null;
+        } catch (Exception e) {
+            log.warn("[ShoonyaBroker] Unable to verify average fill price for {}: {}",
+                    brokerOrderId, e.getMessage());
+            return null;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // getFunds — POST /Limits
     // ─────────────────────────────────────────────────────────────────────
