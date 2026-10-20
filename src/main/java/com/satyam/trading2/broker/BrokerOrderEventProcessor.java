@@ -329,9 +329,22 @@ public class BrokerOrderEventProcessor {
                 throw persistenceError;
             }
         }
-        System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
-                + " " + terminalStatus + " after " + recorded
-                + " fills; persisted cumulative quantity and retaining reservation until reconciliation.");
+        // Apply terminal partial executions through the same idempotent position
+        // lifecycle as a complete SELL. The completion processor reduces the long
+        // position by the cumulative fill, cancels/re-arms the remaining target only
+        // when safe, and marks this terminal order processed.
+        try {
+            orderCompletionProcessor.onSellCompleted(pendingOrder);
+        } catch (RuntimeException | IOException failure) {
+            System.err.println("[BrokerOrderEventProcessor] Could not apply terminal partial SELL "
+                    + pendingOrder.getOrderId() + "; retaining reservation: " + failure.getMessage());
+            throw failure;
+        }
+        if (!pendingOrder.isCompletionProcessed()) {
+            System.err.println("[BrokerOrderEventProcessor] Terminal partial SELL "
+                    + pendingOrder.getOrderId() + " fill=" + recorded
+                    + " persisted but not applied; retaining reservation for reconciliation.");
+        }
     }
 
     private void handleRejected(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
