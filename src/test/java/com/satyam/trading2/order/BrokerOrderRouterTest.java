@@ -51,7 +51,7 @@ class BrokerOrderRouterTest {
         position.setBroker("KITE");
         position.setExecutionRoute(ExecutionRoute.KITE);
         lenient().when(positionManager.getAllOpenPositions()).thenReturn(List.of(position));
-        when(positionManager.getPositionsForSymbol("RELIANCE"))
+        lenient().when(positionManager.getPositionsForSymbol("RELIANCE"))
                 .thenReturn(Map.of("KITE::strategy-a", position));
         lenient().when(pendingOrderRepository.findOpenOrders()).thenReturn(Collections.emptyList());
     }
