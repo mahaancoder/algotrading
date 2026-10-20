@@ -98,8 +98,41 @@ class BrokerOrderEventProcessorTest {
                 .averagePrice(101.0)
                 .build());
 
-        assertEquals(PendingOrderState.PENDING, pending.getState());
-        verify(pendingOrderRepository, never()).save(any(PendingOrder.class));
+        assertEquals(PendingOrderState.PARTIALLY_FILLED, pending.getState());
+        assertEquals(4, pending.getFilledQty(),
+                "A terminal event must persist cumulative fills even if no partial event arrived first");
+        verify(pendingOrderRepository).save(pending);
+    }
+
+    @Test
+    void rejectedSellWithCumulativePartialFillPersistsFillAndRetainsReservation() throws Exception {
+        PendingOrder pending = new PendingOrder();
+        pending.setOrderId("sell-791");
+        pending.setBrokerOrderId("sell-791");
+        pending.setBroker("KITE");
+        pending.setSymbol("INFY");
+        pending.setStrategy("strategy-a");
+        pending.setPositionType(Position.PositionType.INTRADAY);
+        pending.setSide(TradeSide.SELL);
+        pending.setState(PendingOrderState.PENDING);
+        pending.setRequestQty(10);
+        pending.setAvgPrice(100.0);
+
+        when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "sell-791"))
+                .thenReturn(Optional.of(pending));
+
+        processor.process(BrokerOrderEvent.builder()
+                .broker("KITE")
+                .brokerOrderId("sell-791")
+                .status(BrokerOrderStatus.REJECTED)
+                .filledQuantity(3)
+                .averagePrice(101.0)
+                .build());
+
+        assertEquals(PendingOrderState.PARTIALLY_FILLED, pending.getState());
+        assertEquals(3, pending.getFilledQty());
+        assertEquals(101.0, pending.getAvgPrice());
+        verify(pendingOrderRepository).save(pending);
     }
 
     @Test
