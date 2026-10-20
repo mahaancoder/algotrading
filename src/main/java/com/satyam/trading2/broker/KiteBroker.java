@@ -122,6 +122,19 @@ public class KiteBroker implements Broker {
     }
 
     @Override
+    public Double getOrderAveragePrice(String brokerOrderId) {
+        List<Order> orders = orderServiceV2.fetchOrders();
+        if (orders == null) return null;
+        Order match = orders.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> brokerOrderId.equals(o.getOrderId()))
+                .findFirst()
+                .orElse(null);
+        return match == null || match.getAveragePrice() == null || match.getAveragePrice() <= 0
+                ? null : match.getAveragePrice();
+    }
+
+    @Override
     public Integer getNetSellableQuantity(String symbol, boolean holding) {
         return orderServiceV2.getNetSellableQuantity(symbol, holding);
     }
