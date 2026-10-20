@@ -804,18 +804,25 @@ public class ShoonyaBroker extends AbstractRestBroker {
                 if (tsym == null) continue;
 
                 String symbol = fromShoonyaSymbol(tsym);
-                int holdQty = parseIntSafe(textOr(node, "holdqty", "0"));
-                int dpQty = parseIntSafe(textOr(node, "dpqty", "0"));
-                int npoadQty = parseIntSafe(textOr(node, "npoadqty", "0"));
-                int benQty = parseIntSafe(textOr(node, "benqty", "0"));
-                int unplgdQty = parseIntSafe(textOr(node, "unplgdqty", "0"));
-                int brkcolQty = parseIntSafe(textOr(node, "brkcolqty", "0"));
-                int btstQty = parseIntSafe(textOr(node, "btstqty", "0"));
-                int usedQty = parseIntSafe(textOr(node, "usedqty", "0"));
-                // Shoonya documented valuation quantity — captures holdings regardless
-                // of which bucket they settle in (holdqty is 0 on POA-free accounts).
-                int sellableQty = holdQty + brkcolQty + unplgdQty + benQty
-                        + Math.max(npoadQty, dpQty) + btstQty - usedQty;
+                int holdQty = strictInt(node, "holdqty");
+                int dpQty = strictInt(node, "dpqty");
+                int npoadQty = strictInt(node, "npoadqty");
+                int benQty = strictInt(node, "benqty");
+                int unplgdQty = strictInt(node, "unplgdqty");
+                int brkcolQty = strictInt(node, "brkcolqty");
+                int btstQty = strictInt(node, "btstqty");
+                int usedQty = strictInt(node, "usedqty");
+                if (holdQty < 0 || dpQty < 0 || npoadQty < 0 || benQty < 0
+                        || unplgdQty < 0 || brkcolQty < 0 || btstQty < 0 || usedQty < 0) {
+                    log.warn("[ShoonyaBroker] Skipping malformed holding row for {}; sellable inventory fields are incomplete",
+                            symbol);
+                    continue;
+                }
+                // Use Shoonya's documented SALABLE formula, not its valuation
+                // formula (which includes broker collateral and max(npoadqty, dpqty)).
+                // This must match getNetSellableQuantity() exactly.
+                int sellableQty = Math.max(0,
+                        holdQty + unplgdQty + benQty + dpQty + btstQty - usedQty);
                 double avg = parseDoubleSafe(textOr(node, "upldprc", "0"));
 
                 Position existing = findShoonyaPosition(symbol, Position.PositionType.HOLDING);
