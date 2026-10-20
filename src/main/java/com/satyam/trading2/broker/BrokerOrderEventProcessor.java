@@ -246,6 +246,14 @@ public class BrokerOrderEventProcessor {
             // event (with no preceding PARTIALLY_FILLED event) leaves filledQty at zero
             // and a later SELL may treat the stale local position as fully sellable.
             if (pendingOrder.getSide() == TradeSide.SELL
+                    && Integer.valueOf(pendingOrder.getRequestQty()).equals(event.getFilledQuantity())) {
+                // Some broker feeds can deliver COMPLETE quantity with a terminal
+                // CANCELLED/REJECTED status due to event ordering. The cumulative
+                // quantity is authoritative: process the full execution exactly once.
+                handleComplete(pendingOrder, completionEvent(event));
+                return;
+            }
+            if (pendingOrder.getSide() == TradeSide.SELL
                     && (!Integer.valueOf(0).equals(event.getFilledQuantity()) || pendingOrder.getFilledQty() != 0)) {
                 persistUnresolvedTerminalSellFill(pendingOrder, event, "cancelled");
                 return;
@@ -263,6 +271,17 @@ public class BrokerOrderEventProcessor {
             }
             releaseCapitalAndCleanup(pendingOrder, event);
         }
+    }
+
+    private BrokerOrderEvent completionEvent(BrokerOrderEvent event) {
+        return BrokerOrderEvent.builder()
+                .broker(event.getBroker())
+                .brokerOrderId(event.getBrokerOrderId())
+                .status(BrokerOrderStatus.COMPLETE)
+                .filledQuantity(event.getFilledQuantity())
+                .averagePrice(event.getAveragePrice())
+                .rejectionReason(event.getRejectionReason())
+                .build();
     }
 
     /**
@@ -322,6 +341,11 @@ public class BrokerOrderEventProcessor {
             // Treat a rejected SELL with non-zero/unknown fills as unresolved too.
             // Some broker feeds report terminal status and cumulative quantity in
             // the same event without ever delivering a partial-fill event.
+            if (pendingOrder.getSide() == TradeSide.SELL
+                    && Integer.valueOf(pendingOrder.getRequestQty()).equals(event.getFilledQuantity())) {
+                handleComplete(pendingOrder, completionEvent(event));
+                return;
+            }
             if (pendingOrder.getSide() == TradeSide.SELL && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
                 persistUnresolvedTerminalSellFill(pendingOrder, event, "rejected");
                 return;
