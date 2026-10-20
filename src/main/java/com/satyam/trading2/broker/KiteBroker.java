@@ -111,6 +111,11 @@ public class KiteBroker implements Broker {
     }
 
     @Override
+    public Integer getNetSellableQuantity(String symbol, boolean holding) {
+        return orderServiceV2.getNetSellableQuantity(symbol, holding);
+    }
+
+    @Override
     public BrokerFunds getFunds() {
         Double margin = orderServiceV2.getMargin();
         if (margin == null) {
