@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -211,15 +212,27 @@ public class PendingOrderRepository {
 
 
     private void rewriteFile() throws IOException {
-        try (BufferedWriter bw = Files.newBufferedWriter(Path.of(filePath))) {
-            for (PendingOrder po : ordersByInternalId.values()) {
-                bw.write(toCsv(po));
-                bw.newLine();
+        Path target = Path.of(filePath).toAbsolutePath();
+        Path parent = target.getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Path temp = Files.createTempFile(parent, target.getFileName().toString(), ".tmp");
+        boolean moved = false;
+        try {
+            try (BufferedWriter bw = Files.newBufferedWriter(temp)) {
+                for (PendingOrder po : ordersByInternalId.values()) {
+                    bw.write(toCsv(po));
+                    bw.newLine();
+                }
             }
-        }
-        catch (Exception e){
-            System.out.println("❌ Exception while writing pending orders file: " + e.getMessage());
-            e.printStackTrace();
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            moved = true;
+        } finally {
+            if (!moved) Files.deleteIfExists(temp);
         }
     }
 
@@ -237,6 +250,7 @@ public class PendingOrderRepository {
 
         // Schema: internalOrderId, brokerOrderId, symbol, side, state, requestQty,
         //         filledQty, avgPrice, createdTime, updatedTime, strategy, broker, route, signalId
+        String positionType = po.getPositionType() != null ? po.getPositionType().name() : "";
         return String.join(",",
                 internalOrderId,
                 brokerOrderId,
@@ -251,7 +265,9 @@ public class PendingOrderRepository {
                 strategy,
                 broker,
                 route,
-                signalId
+                signalId,
+                positionType,
+                String.valueOf(po.isCompletionProcessed())
         );
     }
 
@@ -262,7 +278,8 @@ public class PendingOrderRepository {
         // parser into the legacy 10-field branch (symbol read as side, etc.).
         String[] p = line.split(",", -1);
 
-        // New schema: 14 fields. Old schema: 10 fields (no broker/route/signalId/internalId).
+        // Current schema: 16 fields. Previous broker-aware schema: 14 fields.
+        // Legacy schema: 10 fields (no broker/route/signalId/internalId).
         // Handle both for backward compat with existing CSV files on disk.
         if (p.length < 10) {
             System.err.println("⚠️ Invalid CSV format (expected 10-14 fields, got " + p.length + "): " + line);
@@ -289,6 +306,29 @@ public class PendingOrderRepository {
             po.setBroker(p[11]);
             po.setExecutionRoute(ExecutionRoute.valueOf(p[12]));
             po.setSignalId(p[13].isEmpty() ? null : p[13]);
+            if (p.length >= 15 && !p[14].isEmpty()) {
+                po.setPositionType(Position.PositionType.valueOf(p[14]));
+            } else {
+                // Old rows did not persist product type. INTRADAY is only a
+                // placeholder for lock metadata; sell authorization still uses
+                // the live Position's product and broker-confirmed inventory.
+                po.setPositionType(Position.PositionType.INTRADAY);
+            }
+            if (p.length >= 16) {
+                po.setCompletionProcessed(Boolean.parseBoolean(p[15]));
+            } else if (po.getSide() == TradeSide.SELL
+                    && po.getState() == PendingOrderState.COMPLETE) {
+                // Previous CSV formats did not persist the idempotency marker.
+                // Never replay a historical completed SELL after restart: a
+                // broker reconciliation must repair any crash-window mismatch.
+                po.setCompletionProcessed(true);
+            } else if (po.getSide() == TradeSide.SELL && po.getFilledQty() > 0
+                    && (po.getState() == PendingOrderState.CANCELLED
+                    || po.getState() == PendingOrderState.REJECTED)) {
+                // A legacy terminal partial SELL may not have been applied to
+                // the position before the process stopped. Keep it reserved.
+                po.setState(PendingOrderState.PARTIALLY_FILLED);
+            }
         } else {
             // Old schema (10 fields): orderId, symbol, side, state, requestQty,
             //                       filledQty, avgPrice, createdTime, updatedTime, strategy

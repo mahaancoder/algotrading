@@ -338,6 +338,10 @@ public class BrokerOrderEventProcessor {
             // completion processor can apply the sold quantity exactly once.
             pendingOrder.setFilledQty(recorded);
             pendingOrder.setAvgPrice(avgPrice);
+            // The broker order is terminal, but the local position update may not
+            // have succeeded yet. Keep it in the open/unresolved set until that
+            // update is applied and completionProcessed is durably persisted.
+            pendingOrder.setState(PendingOrderState.PARTIALLY_FILLED);
             pendingOrder.setUpdatedTime(System.currentTimeMillis());
             try {
                 pendingOrderRepository.save(pendingOrder);

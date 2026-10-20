@@ -438,6 +438,15 @@ public class BrokerOrderRouter {
             // reserve an order's unfilled remainder while the broker still reports
             // it as live; terminal partially-filled orders must not reserve shares
             // that can no longer be sold by that order.
+            boolean terminal = orderStatus == BrokerOrderStatus.CANCELLED
+                    || orderStatus == BrokerOrderStatus.REJECTED
+                    || orderStatus == BrokerOrderStatus.COMPLETE;
+            if (terminal && confirmedFilled > 0 && !pending.isCompletionProcessed()) {
+                System.err.println("🛑 [BrokerOrderRouter] Terminal SELL " + orderId
+                        + " has confirmed fills not durably applied to the position; "
+                        + "refusing another SELL until reconciliation.");
+                return false;
+            }
             long remaining = (orderStatus == BrokerOrderStatus.OPEN
                     || orderStatus == BrokerOrderStatus.PARTIALLY_FILLED)
                     ? Math.max(0L, (long) requested - confirmedFilled) : 0L;
