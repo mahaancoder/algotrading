@@ -89,6 +89,8 @@ class BrokerOrderEventProcessorTest {
 
         when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "sell-789"))
                 .thenReturn(Optional.of(pending));
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                processor, "orderCompletionProcessor", orderCompletionProcessor);
 
         processor.process(BrokerOrderEvent.builder()
                 .broker("KITE")
@@ -121,6 +123,8 @@ class BrokerOrderEventProcessorTest {
 
         when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "sell-791"))
                 .thenReturn(Optional.of(pending));
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                processor, "orderCompletionProcessor", orderCompletionProcessor);
 
         processor.process(BrokerOrderEvent.builder()
                 .broker("KITE")
