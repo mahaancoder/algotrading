@@ -58,12 +58,10 @@ public class OrderCompletionProcessor {
             }
     );
 
-    // ===== FIX: Helper method to get symbol+strategy lock from ExecutionEngine =====
+    // Use the same symbol lock as BUY execution, SELL lifecycle, and schedulers.
     private Object getSymbolStrategyLock(String symbol, String strategy) {
-        return executionEngine.getSymbolStrategyLocks().computeIfAbsent(
-            symbol + "_" + strategy,
-            k -> new Object()
-        );
+        return SellLifecycleLockRegistry.lockFor(
+                symbol, strategy, "KITE", Position.PositionType.INTRADAY);
     }
 
     // ─────────────────────────────────────────────────────────────────────
