@@ -25,6 +25,11 @@ public interface Broker {
         return null;
     }
 
+    /** Broker-confirmed average execution price, or null when unavailable. */
+    default Double getOrderAveragePrice(String brokerOrderId) {
+        return null;
+    }
+
     /**
      * Fresh broker-confirmed sellable quantity for the given symbol and product.
      * Return 0 only when a successful broker response confirms no sellable
