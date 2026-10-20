@@ -1,5 +1,6 @@
 package com.satyam.trading2.order;
 
+import com.satyam.trading2.broker.Broker;
 import com.satyam.trading2.broker.BrokerRouter;
 import com.satyam.trading2.broker.ExecutionRoute;
 import com.satyam.trading2.datamodel.PendingOrder;
@@ -35,6 +36,8 @@ class BrokerOrderRouterTest {
     @Mock
     private BrokerRouter brokerRouter;
     @Mock
+    private Broker kiteBroker;
+    @Mock
     private PendingOrderRepository pendingOrderRepository;
     @Mock
     private PositionManager positionManager;
@@ -54,6 +57,9 @@ class BrokerOrderRouterTest {
         lenient().when(positionManager.getPositionsForSymbol("RELIANCE"))
                 .thenReturn(Map.of("KITE::strategy-a", position));
         lenient().when(pendingOrderRepository.findOpenOrders()).thenReturn(Collections.emptyList());
+        lenient().when(brokerRouter.getBroker(ExecutionRoute.KITE)).thenReturn(kiteBroker);
+        lenient().when(kiteBroker.getNetSellableQuantity("RELIANCE", false)).thenReturn(100);
+        lenient().when(kiteBroker.getOrderFilledQuantity("sell-60")).thenReturn(0);
     }
 
     @Test
