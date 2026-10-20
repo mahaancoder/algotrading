@@ -182,8 +182,21 @@ public class ExecutionEngine {
             return;
         }
 
+        boolean pendingBuyExists = pendingOrderRepository.findOpenOrders().stream()
+                .filter(java.util.Objects::nonNull)
+                .anyMatch(order -> order.getSide() == TradeSide.BUY
+                        && symbol.equalsIgnoreCase(order.getSymbol())
+                        && "KITE".equalsIgnoreCase(order.getBroker() != null ? order.getBroker() : "KITE"));
+        if (pendingBuyExists) {
+            riskManager.releaseCapital(strategy, actualCapital);
+            riskManager.releaseCapitalForSymbol(symbol, actualCapital);
+            signalAnalyticsService.recordSignal(signal, false,
+                    "Pending BUY already exists for this symbol", actualCapital);
+            return;
+        }
+
         try {
-            // ===== STEP 3: PLACE ENTRY ORDER (This is the critical path - minimize time here) =====
+            // ===== STEP 3: PLACE ENTRY ORDER (This is the critical path - minimize time here)
             OrderResponse res = orderExecutor.placeBuyOrder(symbol, qty, entry, isHolding, strategy);
 
             // ===== STEP 4: CREATE PENDING ORDER =====
