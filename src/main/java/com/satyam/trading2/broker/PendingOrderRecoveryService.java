@@ -41,15 +41,20 @@ public class PendingOrderRecoveryService {
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverAfterStartup() {
-        reconcilePendingOrders();
+        reconcilePendingOrders(true);
     }
 
     @Scheduled(fixedDelayString = "${trading.pending-order-recovery-delay-ms:60000}")
     public void reconcilePendingOrders() {
+        reconcilePendingOrders(false);
+    }
+
+    private void reconcilePendingOrders(boolean startupRecovery) {
         // Avoid needless polling outside the regular session. Startup recovery
         // still runs once regardless of time, so overnight terminal events recover.
         LocalTime now = LocalTime.now();
-        if (now.isBefore(LocalTime.of(9, 15)) || now.isAfter(LocalTime.of(15, 30))) {
+        if (!startupRecovery
+                && (now.isBefore(LocalTime.of(9, 15)) || now.isAfter(LocalTime.of(15, 30)))) {
             return;
         }
         if (!running.compareAndSet(false, true)) {
@@ -79,6 +84,11 @@ public class PendingOrderRecoveryService {
 
     private void reconcileOne(PendingOrder pending) {
         ExecutionRoute route = routeOf(pending);
+        if (route == null) {
+            log.warn("[PendingOrderRecovery] Unknown broker for order {}; reservation retained",
+                    pending.getBrokerOrderId());
+            return;
+        }
         Broker broker = brokerRouter.getBroker(route);
         if (broker == null) {
             log.warn("[PendingOrderRecovery] No broker registered for {} order {}; reservation retained",
