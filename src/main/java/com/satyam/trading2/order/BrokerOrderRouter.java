@@ -386,6 +386,27 @@ public class BrokerOrderRouter {
             return false;
         }
 
+        // Inventory must be compared on the same basis, broker + symbol + product.
+        // If local tracked sellable inventory and the broker's fresh snapshot differ,
+        // do not allow even a smaller SELL: a mismatch may indicate an external trade,
+        // a missed fill, stale sync, or blocked/pledged shares in local state.
+        long locallyTrackedSellable = positionManager.getPositionsForSymbol(symbol).values().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(Position::isOpen)
+                .filter(position -> !position.isExitProcessed())
+                .filter(position -> brokerName.equalsIgnoreCase(
+                        position.getBroker() != null ? position.getBroker() : "KITE"))
+                .filter(position -> position.getPositionType() == requestedPosition.getPositionType())
+                .mapToLong(position -> Math.max(0, position.getTotalQuantity()))
+                .sum();
+        if (locallyTrackedSellable != brokerInventory) {
+            System.err.println("🛑 [BrokerOrderRouter] Refusing SELL for " + symbol
+                    + " via " + brokerName + ": local sellable inventory=" + locallyTrackedSellable
+                    + ", broker-confirmed sellable inventory=" + brokerInventory
+                    + "; reconcile the position before trading.");
+            return false;
+        }
+
         // A target ID without a local record is an orphaned broker order. Never
         // assume it has zero remaining quantity just because local state is absent.
         boolean orphanedSellReference = positionManager.getPositionsForSymbol(symbol).values().stream()
