@@ -6,11 +6,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Process-wide locks for SELL lifecycle operations.
+ * Process-wide symbol locks for BUY and SELL lifecycle operations.
  *
  * Every target replacement, forced exit and completion handler must use the same
  * key so that independent schedulers/webhooks cannot cancel/replace the same
- * position concurrently. This is intentionally JVM-local; it is not a distributed
+ * position concurrently. The conservative symbol-only key coordinates broker-routing
+ * decisions made before the owning broker is known. This is JVM-local, not a distributed
  * lock and must not be treated as one when running multiple application instances.
  */
 public final class SellLifecycleLockRegistry {
