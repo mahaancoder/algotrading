@@ -93,4 +93,37 @@ class PendingOrderRecoveryServiceTest {
 
         verify(brokerOrderEventProcessor, never()).process(org.mockito.ArgumentMatchers.any());
     }
+    @Test
+    void startupRecoveryRetriesCompleteOrderWhoseCallbackWasNotProcessed() throws Exception {
+        PendingOrder pending = new PendingOrder();
+        pending.setOrderId("sell-789");
+        pending.setBrokerOrderId("sell-789");
+        pending.setBroker("KITE");
+        pending.setExecutionRoute(ExecutionRoute.KITE);
+        pending.setSymbol("INFY");
+        pending.setSide(TradeSide.SELL);
+        pending.setPositionType(Position.PositionType.HOLDING);
+        pending.setState(PendingOrderState.COMPLETE);
+        pending.setRequestQty(5);
+        pending.setFilledQty(5);
+        pending.setAvgPrice(101.0);
+        pending.setCompletionProcessed(false);
+        pending.setCreatedTime(System.currentTimeMillis() - 60_000L);
+
+        when(pendingOrderRepository.findOrdersRequiringReconciliation()).thenReturn(List.of(pending));
+        when(brokerRouter.getBroker(ExecutionRoute.KITE)).thenReturn(broker);
+        when(broker.getBrokerName()).thenReturn("KITE");
+        when(broker.getOrderStatus("sell-789")).thenReturn(BrokerOrderStatus.COMPLETE);
+        when(broker.getOrderFilledQuantity("sell-789")).thenReturn(5);
+        when(broker.getOrderAveragePrice("sell-789")).thenReturn(102.0);
+
+        service.recoverAfterStartup();
+
+        ArgumentCaptor<BrokerOrderEvent> event = ArgumentCaptor.forClass(BrokerOrderEvent.class);
+        verify(brokerOrderEventProcessor).process(event.capture());
+        assertEquals(BrokerOrderStatus.COMPLETE, event.getValue().getStatus());
+        assertEquals(5, event.getValue().getFilledQuantity());
+        assertEquals(102.0, event.getValue().getAveragePrice());
+    }
+
 }
