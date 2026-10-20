@@ -417,19 +417,28 @@ public class BrokerOrderRouter {
                         + orderId + "; refusing new SELL.");
                 return false;
             }
+            BrokerOrderStatus orderStatus;
             Integer confirmedFilled;
             try {
+                orderStatus = broker.getOrderStatus(orderId);
                 confirmedFilled = broker.getOrderFilledQuantity(orderId);
             } catch (Exception e) {
+                orderStatus = null;
                 confirmedFilled = null;
             }
-            if (confirmedFilled == null || confirmedFilled < 0 || confirmedFilled > requested) {
-                System.err.println("🛑 [BrokerOrderRouter] Cannot confirm cumulative fills for SELL "
+            if (orderStatus == null || confirmedFilled == null
+                    || confirmedFilled < 0 || confirmedFilled > requested) {
+                System.err.println("🛑 [BrokerOrderRouter] Cannot confirm status/cumulative fills for SELL "
                         + orderId + "; refusing new SELL.");
                 return false;
             }
-            // Prefer broker cumulative fills, which may be newer than local events.
-            long remaining = Math.max(0L, (long) requested - confirmedFilled);
+            // The broker's current inventory already reflects executed fills. Only
+            // reserve an order's unfilled remainder while the broker still reports
+            // it as live; terminal partially-filled orders must not reserve shares
+            // that can no longer be sold by that order.
+            long remaining = (orderStatus == BrokerOrderStatus.OPEN
+                    || orderStatus == BrokerOrderStatus.PARTIALLY_FILLED)
+                    ? Math.max(0L, (long) requested - confirmedFilled) : 0L;
             reservedByOtherSells += remaining;
         }
 
