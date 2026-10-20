@@ -635,11 +635,30 @@ public class OrderServiceV2 {
             if (data.isArray()) {
                 for (JsonNode holdingNode : data) {
                     try {
-                        String symbol = holdingNode.get("tradingsymbol").asText();
-                        int quantity = holdingNode.get("t1_quantity").asInt() + holdingNode.get("quantity").asInt() + holdingNode.get("collateral_quantity").asInt();
-                        double avgPrice = holdingNode.get("average_price").asDouble();
+                        String symbol = holdingNode.path("tradingsymbol").asText(null);
+                        JsonNode settledNode = holdingNode.get("quantity");
+                        JsonNode usedNode = holdingNode.get("used_quantity");
+                        JsonNode averageNode = holdingNode.get("average_price");
+                        // PositionManager must track the same sellable quantity that
+                        // getNetSellableQuantity authorizes: settled demat shares less
+                        // broker-used shares. T1 and collateral are deliberately excluded.
+                        if (symbol == null || symbol.trim().isEmpty()
+                                || settledNode == null || !settledNode.canConvertToInt()
+                                || usedNode == null || !usedNode.canConvertToInt()
+                                || averageNode == null || !averageNode.isNumber()) {
+                            System.err.println("⚠️ [getHoldings] Skipping malformed Kite holding row; inventory fields are incomplete.");
+                            continue;
+                        }
+                        int settledQuantity = settledNode.asInt();
+                        int usedQuantity = usedNode.asInt();
+                        if (settledQuantity < 0 || usedQuantity < 0 || usedQuantity > settledQuantity) {
+                            System.err.println("⚠️ [getHoldings] Skipping inconsistent Kite holding row for " + symbol);
+                            continue;
+                        }
+                        int quantity = settledQuantity - usedQuantity;
+                        double avgPrice = averageNode.asDouble();
 
-                        // Skip if quantity is 0
+                        // Skip if no shares are currently sellable.
                         if (quantity <= 0) {
                             continue;
                         }
