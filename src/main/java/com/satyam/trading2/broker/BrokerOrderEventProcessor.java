@@ -383,10 +383,13 @@ public class BrokerOrderEventProcessor {
             return;
         }
         Integer cumulative = event.getFilledQuantity();
-        if (cumulative == null || cumulative <= pendingOrder.getFilledQty()
+        if (cumulative == null || cumulative < pendingOrder.getFilledQty()
                 || cumulative <= 0 || cumulative > pendingOrder.getRequestQty()) {
             return;
         }
+        // Retry applying an already-persisted cumulative fill if the previous
+        // callback failed (e.g. position restoration lagged the broker event).
+        // The completion processor is idempotent once completionProcessed is saved.
         if (cumulative == pendingOrder.getRequestQty()) {
             // Re-open only the local lifecycle state so the existing idempotent
             // COMPLETE handler can apply the full execution. The broker status stays
