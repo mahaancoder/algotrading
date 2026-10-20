@@ -294,9 +294,20 @@ public class BrokerOrderEventProcessor {
                                                     BrokerOrderEvent event,
                                                     String terminalStatus) throws IOException {
         Integer cumulative = event.getFilledQuantity();
-        if (cumulative == null || cumulative < 0 || cumulative > pendingOrder.getRequestQty()) {
+        if (cumulative == null) {
+            // A prior PARTIALLY_FILLED event may already have persisted the cumulative
+            // quantity. Use that known quantity if the terminal event omits it.
+            if (pendingOrder.getFilledQty() <= 0) {
+                System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
+                        + " " + terminalStatus + " with unknown fills and no previously recorded executions"
+                        + "; retaining reservation.");
+                return;
+            }
+            cumulative = pendingOrder.getFilledQty();
+        }
+        if (cumulative < 0 || cumulative > pendingOrder.getRequestQty()) {
             System.err.println("[BrokerOrderEventProcessor] SELL " + pendingOrder.getOrderId()
-                    + " " + terminalStatus + " with unknown/invalid cumulative fills " + cumulative
+                    + " " + terminalStatus + " with invalid cumulative fills " + cumulative
                     + "; retaining reservation.");
             return;
         }
