@@ -72,7 +72,7 @@ class PendingOrderRecoveryServiceTest {
     }
 
     @Test
-    void missingBrokerFillQuantityNeverDispatchesSyntheticZeroFill() {
+    void missingBrokerFillQuantityNeverDispatchesSyntheticZeroFill() throws Exception {
         PendingOrder pending = new PendingOrder();
         pending.setOrderId("sell-456");
         pending.setBrokerOrderId("sell-456");
