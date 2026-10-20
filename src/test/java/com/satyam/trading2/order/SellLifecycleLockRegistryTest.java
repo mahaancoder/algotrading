@@ -20,14 +20,14 @@ class SellLifecycleLockRegistryTest {
     }
 
     @Test
-    void keepsDifferentBrokersIndependent() {
+    void serializesSameSymbolAcrossBrokerRoutesBeforeRouteResolution() {
         Object kite = SellLifecycleLockRegistry.lockFor(
                 "RELIANCE", "strategy-a", "KITE", Position.PositionType.INTRADAY);
         Object shoonya = SellLifecycleLockRegistry.lockFor(
                 "RELIANCE", "strategy-a", "SHOONYA", Position.PositionType.INTRADAY);
 
-        assertNotSame(kite, shoonya,
-                "The same symbol at different broker accounts is independent inventory");
+        assertSame(kite, shoonya,
+                "BUY signals can reach the lock before route resolution, so serialize by symbol");
     }
 
     @Test
