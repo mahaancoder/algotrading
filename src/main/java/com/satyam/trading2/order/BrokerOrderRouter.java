@@ -392,7 +392,9 @@ public class BrokerOrderRouter {
                 .flatMap(p -> java.util.stream.Stream.of(p.getTargetOrderId(), p.getSecondaryTargetOrderId()))
                 .filter(id -> id != null && !id.equals(replacedOrderId))
                 .anyMatch(id -> pendingOrderRepository.findByBrokerAndBrokerOrderId(brokerName, id)
-                        .map(pending -> pending.isClosed() && pending.getFilledQty() > 0)
+                        .map(pending -> pending.getFilledQty() > 0
+                                && (pending.isClosed()
+                                || pending.getState() == PendingOrderState.PARTIALLY_FILLED))
                         .orElse(true));
         if (orphanedSellReference) {
             System.err.println("🛑 [BrokerOrderRouter] Unresolved SELL reference exists for "
