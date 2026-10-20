@@ -223,7 +223,7 @@ public class BrokerOrderEventProcessor {
             double previousAvgPrice = pendingOrder.getAvgPrice();
             long previousUpdatedTime = pendingOrder.getUpdatedTime();
             pendingOrder.markPartiallyFilled(cumulative,
-                    event.getAveragePrice() != null ? event.getAveragePrice() : pendingOrder.getAvgPrice());
+                    event.getAveragePrice() > 0 ? event.getAveragePrice() : pendingOrder.getAvgPrice());
             if (pendingOrder.getFilledQty() != cumulative) return;
             try {
                 pendingOrderRepository.save(pendingOrder);
