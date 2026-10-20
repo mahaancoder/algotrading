@@ -302,6 +302,73 @@ public class ShoonyaBroker extends AbstractRestBroker {
     // getFunds — POST /Limits
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Fresh sellable inventory from Shoonya. Null indicates an unauthoritative
+     * response; a valid response with no matching row is a confirmed zero.
+     * Holdings use the same sellable-quantity calculation as the portfolio sync.
+     */
+    @Override
+    public Integer getNetSellableQuantity(String symbol, boolean holding) {
+        if (symbol == null || symbol.trim().isEmpty() || !shoonyaConfig.isAuthenticated()) return null;
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("uid", shoonyaConfig.getUserId());
+            payload.put("actid", shoonyaConfig.getActid());
+            if (holding) {
+                payload.put("prd", "C");
+                JsonNode rows = postForm(shoonyaConfig.getBaseUrl() + "Holdings",
+                        norenBody(objectMapper.writeValueAsString(payload)), SLOW_REQUEST_TIMEOUT_MS);
+                if (!rows.isArray()) return null;
+                for (JsonNode row : rows) {
+                    if ("Not_Ok".equalsIgnoreCase(textOr(row, "stat", "Ok"))) return null;
+                    String tsym = nseTradingSymbol(row.get("exch_tsym"));
+                    if (tsym == null || !symbol.equalsIgnoreCase(fromShoonyaSymbol(tsym))) continue;
+                    int holdQty = strictInt(row, "holdqty");
+                    int dpQty = strictInt(row, "dpqty");
+                    int npoadQty = strictInt(row, "npoadqty");
+                    int benQty = strictInt(row, "benqty");
+                    int unplgdQty = strictInt(row, "unplgdqty");
+                    int brkcolQty = strictInt(row, "brkcolqty");
+                    int btstQty = strictInt(row, "btstqty");
+                    int usedQty = strictInt(row, "usedqty");
+                    if (holdQty < 0 || dpQty < 0 || npoadQty < 0 || benQty < 0
+                            || unplgdQty < 0 || brkcolQty < 0 || btstQty < 0 || usedQty < 0) return null;
+                    return Math.max(0, holdQty + brkcolQty + unplgdQty + benQty
+                            + Math.max(npoadQty, dpQty) + btstQty - usedQty);
+                }
+                return 0;
+            }
+
+            JsonNode rows = postForm(shoonyaConfig.getBaseUrl() + "PositionBook",
+                    norenBody(objectMapper.writeValueAsString(payload)));
+            if (!rows.isArray()) return null;
+            for (JsonNode row : rows) {
+                String tsym = textOr(row, "tsym", null);
+                if (tsym == null || !symbol.equalsIgnoreCase(fromShoonyaSymbol(tsym))) continue;
+                if (!"I".equalsIgnoreCase(textOr(row, "prd", ""))) continue;
+                int qty = strictInt(row, "netqty");
+                if (qty == Integer.MIN_VALUE) return null;
+                return Math.max(0, qty);
+            }
+            return 0;
+        } catch (Exception e) {
+            log.warn("[ShoonyaBroker] Unable to confirm sellable inventory for {}: {}",
+                    symbol, e.getMessage());
+            return null;
+        }
+    }
+
+    /** Strict integer parser: malformed/missing values must not become zero. */
+    private int strictInt(JsonNode node, String field) {
+        JsonNode value = node == null ? null : node.get(field);
+        if (value == null || value.isNull()) return Integer.MIN_VALUE;
+        try {
+            return (int) Math.round(Double.parseDouble(value.asText().trim()));
+        } catch (Exception e) {
+            return Integer.MIN_VALUE;
+        }
+    }
+
     @Override
     public BrokerFunds getFunds() {
         if (!shoonyaConfig.isAuthenticated()) {
