@@ -362,6 +362,46 @@ public class OrderServiceV2 {
         }
     }
 
+    /**
+     * Fresh Kite-confirmed net inventory. Null means the API response could not
+     * be trusted; zero is returned only for a successful response with no row.
+     * For CNC holdings we deliberately count settled quantity only.
+     */
+    public Integer getNetSellableQuantity(String symbol, boolean holding) {
+        if (symbol == null || symbol.trim().isEmpty()) return null;
+        try {
+            rateLimiter.acquire("fetchSellableInventory");
+            String endpoint = holding ? "/portfolio/holdings" : "/portfolio/positions";
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(kiteConfig.getBaseUrl() + endpoint))
+                    .header("X-Kite-Version", "3")
+                    .header("Authorization", kiteConfig.getAuthHeader())
+                    .GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) return null;
+            JsonNode root = objectMapper.readTree(response.body());
+            if (!"success".equals(root.path("status").asText())) return null;
+            JsonNode rows = holding ? root.path("data") : root.path("data").path("net");
+            if (!rows.isArray()) return null;
+            for (JsonNode row : rows) {
+                if (!symbol.equalsIgnoreCase(row.path("tradingsymbol").asText())) continue;
+                if (holding) {
+                    JsonNode qty = row.get("quantity");
+                    if (qty == null || !qty.canConvertToInt()) return null;
+                    return Math.max(0, qty.asInt());
+                }
+                if (!"MIS".equalsIgnoreCase(row.path("product").asText())) continue;
+                JsonNode qty = row.get("quantity");
+                if (qty == null || !qty.canConvertToInt()) return null;
+                return Math.max(0, qty.asInt());
+            }
+            return 0;
+        } catch (Exception e) {
+            System.err.println("⚠️ Unable to confirm Kite sellable inventory for " + symbol + ": " + e.getMessage());
+            return null;
+        }
+    }
+
     public Map<String, Double> getPreviousClosePrices(List<String> symbols) {
         Map<String, Double> result = new HashMap<>();
         try {
