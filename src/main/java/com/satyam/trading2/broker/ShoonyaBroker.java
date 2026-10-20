@@ -333,8 +333,11 @@ public class ShoonyaBroker extends AbstractRestBroker {
                     int usedQty = strictInt(row, "usedqty");
                     if (holdQty < 0 || dpQty < 0 || npoadQty < 0 || benQty < 0
                             || unplgdQty < 0 || brkcolQty < 0 || btstQty < 0 || usedQty < 0) return null;
-                    return Math.max(0, holdQty + brkcolQty + unplgdQty + benQty
-                            + Math.max(npoadQty, dpQty) + btstQty - usedQty);
+                    // Shoonya's documented salable quantity is:
+                    // btstqty + holdqty + unplgdqty + benqty + dpqty - usedqty.
+                    // Do not include brkcolqty (collateral is not directly sellable)
+                    // or substitute max(npoadqty, dpqty), which is for valuation.
+                    return Math.max(0, holdQty + unplgdQty + benQty + dpQty + btstQty - usedQty);
                 }
                 return 0;
             }
