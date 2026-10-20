@@ -394,9 +394,15 @@ public class OrderServiceV2 {
             for (JsonNode row : rows) {
                 if (!symbol.equalsIgnoreCase(row.path("tradingsymbol").asText())) continue;
                 if (holding) {
+                    // Kite quantity is settled demat inventory. used_quantity is
+                    // already committed/sold during the day and must not be made
+                    // available for another SELL. T1 and collateral quantities are
+                    // intentionally excluded from this sell authorization.
                     JsonNode qty = row.get("quantity");
-                    if (qty == null || !qty.canConvertToInt()) return null;
-                    return Math.max(0, qty.asInt());
+                    JsonNode used = row.get("used_quantity");
+                    if (qty == null || !qty.canConvertToInt()
+                            || used == null || !used.canConvertToInt()) return null;
+                    return Math.max(0, qty.asInt() - used.asInt());
                 }
                 if (!"MIS".equalsIgnoreCase(row.path("product").asText())) continue;
                 JsonNode qty = row.get("quantity");

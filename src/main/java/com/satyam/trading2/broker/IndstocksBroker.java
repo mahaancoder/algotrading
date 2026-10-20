@@ -416,6 +416,14 @@ public class IndstocksBroker extends AbstractRestBroker {
                 String field = holding ? "total_qty" : "net_qty";
                 int qty = intOr(row, field, -1);
                 if (qty < 0) return null;
+                if (holding) {
+                    // INDstocks documents total_qty as T1 + DP inventory and
+                    // used_qty as quantity already pledged/sold/otherwise blocked.
+                    // Subtract used_qty so committed shares are not sold twice.
+                    int used = intOr(row, "used_qty", -1);
+                    if (used < 0 || used > qty) return null;
+                    qty -= used;
+                }
                 return Math.max(0, qty);
             }
             return 0;
