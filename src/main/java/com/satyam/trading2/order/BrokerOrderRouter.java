@@ -347,10 +347,10 @@ public class BrokerOrderRouter {
     }
 
     /**
-     * Reserve quantity across all strategy allocations at the same broker/symbol.
-     * The local long quantity may lag partial-fill webhooks, so another live SELL
-     * reserves its full requested quantity until the position is reconciled. Only
-     * the exact order being replaced may be excluded from the reservation total.
+     * Authorize a SELL against a fresh broker inventory snapshot and reserve only
+     * each other live SELL's remaining unfilled quantity. Missing inventory/fill
+     * data fails closed. Filled shares are already reflected in broker inventory,
+     * so only the unfilled order remainder is reserved.
      */
     private boolean hasSellCapacity(Position requestedPosition, String symbol, int requestedQty,
                                     String replacedOrderId) {
@@ -361,22 +361,37 @@ public class BrokerOrderRouter {
                     + ": requested quantity exceeds this position's remaining allocation.");
             return false;
         }
-        String broker = brokerOf(requestedPosition);
+        String brokerName = brokerOf(requestedPosition);
+        Broker broker = brokerRouter.getBroker(routeOf(requestedPosition));
+        if (broker == null) {
+            System.err.println("🛑 [BrokerOrderRouter] Refusing SELL for " + symbol
+                    + ": owning broker is unavailable.");
+            return false;
+        }
 
-        // Closed/tombstone positions can still carry an unresolved SELL ID when
-        // cancellation could not be confirmed. If that ID has no live pending
-        // record to reserve its quantity, fail closed rather than forgetting it.
+        boolean holding = requestedPosition.getPositionType() == Position.PositionType.HOLDING;
+        Integer brokerInventory;
+        try {
+            brokerInventory = broker.getNetSellableQuantity(symbol, holding);
+        } catch (Exception e) {
+            System.err.println("⚠️ [BrokerOrderRouter] Inventory verification failed for " + symbol
+                    + ": " + e.getMessage());
+            return false;
+        }
+        if (brokerInventory == null || brokerInventory < 0) {
+            System.err.println("🛑 [BrokerOrderRouter] Refusing SELL for " + symbol
+                    + ": fresh broker-confirmed sellable inventory is unavailable.");
+            return false;
+        }
+
+        // A target ID without a local record is an orphaned broker order. Never
+        // assume it has zero remaining quantity just because local state is absent.
         boolean orphanedSellReference = positionManager.getPositionsForSymbol(symbol).values().stream()
                 .filter(java.util.Objects::nonNull)
-                .filter(p -> broker.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
-                .flatMap(p -> java.util.stream.Stream.of(
-                        p.getTargetOrderId(), p.getSecondaryTargetOrderId()))
+                .filter(p -> brokerName.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
+                .flatMap(p -> java.util.stream.Stream.of(p.getTargetOrderId(), p.getSecondaryTargetOrderId()))
                 .filter(id -> id != null && !id.equals(replacedOrderId))
-                .anyMatch(id -> pendingOrderRepository
-                        .findByBrokerAndBrokerOrderId(broker, id)
-                        // An active order is reserved below, not orphaned. A terminal
-                        // zero-fill order is safe to ignore; a terminal order with fills
-                        // may have changed net inventory and needs reconciliation.
+                .anyMatch(id -> pendingOrderRepository.findByBrokerAndBrokerOrderId(brokerName, id)
                         .map(pending -> pending.isClosed() && pending.getFilledQty() > 0)
                         .orElse(true));
         if (orphanedSellReference) {
@@ -385,25 +400,40 @@ public class BrokerOrderRouter {
             return false;
         }
 
-        long availableLong = positionManager.getAllOpenPositions().stream()
-                .filter(java.util.Objects::nonNull)
-                .filter(p -> p.isOpen() && !p.isExitProcessed())
-                .filter(p -> symbol.equalsIgnoreCase(p.getSymbol()))
-                .filter(p -> broker.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
-                .mapToLong(p -> Math.max(0, p.getTotalQuantity()))
-                .sum();
-        if (availableLong <= 0) return false;
+        long reservedByOtherSells = 0L;
+        for (PendingOrder pending : pendingOrderRepository.findOpenOrders()) {
+            if (pending == null || pending.getSide() != TradeSide.SELL
+                    || !symbol.equalsIgnoreCase(pending.getSymbol())
+                    || !brokerName.equalsIgnoreCase(pending.getBroker() != null ? pending.getBroker() : "KITE")) {
+                continue;
+            }
+            String orderId = pending.getBrokerOrderId() != null
+                    ? pending.getBrokerOrderId() : pending.getOrderId();
+            if (replacedOrderId != null && replacedOrderId.equals(orderId)) continue;
 
-        long reservedByOtherSells = pendingOrderRepository.findOpenOrders().stream()
-                .filter(java.util.Objects::nonNull)
-                .filter(p -> p.getSide() == TradeSide.SELL)
-                .filter(p -> symbol.equalsIgnoreCase(p.getSymbol()))
-                .filter(p -> broker.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
-                .filter(p -> replacedOrderId == null || !replacedOrderId.equals(
-                        p.getBrokerOrderId() != null ? p.getBrokerOrderId() : p.getOrderId()))
-                .mapToLong(p -> Math.max(0, p.getRequestQty()))
-                .sum();
-        return availableLong - reservedByOtherSells >= requestedQty;
+            int requested = pending.getRequestQty();
+            if (requested <= 0 || pending.getFilledQty() < 0 || pending.getFilledQty() > requested) {
+                System.err.println("🛑 [BrokerOrderRouter] Invalid local quantity accounting for SELL "
+                        + orderId + "; refusing new SELL.");
+                return false;
+            }
+            Integer confirmedFilled;
+            try {
+                confirmedFilled = broker.getOrderFilledQuantity(orderId);
+            } catch (Exception e) {
+                confirmedFilled = null;
+            }
+            if (confirmedFilled == null || confirmedFilled < 0 || confirmedFilled > requested) {
+                System.err.println("🛑 [BrokerOrderRouter] Cannot confirm cumulative fills for SELL "
+                        + orderId + "; refusing new SELL.");
+                return false;
+            }
+            // Prefer broker cumulative fills, which may be newer than local events.
+            long remaining = Math.max(0L, (long) requested - confirmedFilled);
+            reservedByOtherSells += remaining;
+        }
+
+        return (long) brokerInventory - reservedByOtherSells >= requestedQty;
     }
 
     private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
