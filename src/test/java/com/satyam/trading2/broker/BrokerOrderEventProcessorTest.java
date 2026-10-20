@@ -102,6 +102,7 @@ class BrokerOrderEventProcessorTest {
         assertEquals(4, pending.getFilledQty(),
                 "A terminal event must persist cumulative fills even if no partial event arrived first");
         verify(pendingOrderRepository).save(pending);
+        verify(orderCompletionProcessor).onSellCompleted(pending);
     }
 
     @Test
@@ -133,6 +134,7 @@ class BrokerOrderEventProcessorTest {
         assertEquals(3, pending.getFilledQty());
         assertEquals(101.0, pending.getAvgPrice());
         verify(pendingOrderRepository).save(pending);
+        verify(orderCompletionProcessor).onSellCompleted(pending);
     }
 
     @Test
