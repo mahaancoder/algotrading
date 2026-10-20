@@ -62,7 +62,7 @@ public class PendingOrderRecoveryService {
         }
 
         try {
-            List<PendingOrder> openOrders = pendingOrderRepository.findOpenOrders();
+            List<PendingOrder> openOrders = pendingOrderRepository.findOrdersRequiringReconciliation();
             long nowMillis = System.currentTimeMillis();
             for (PendingOrder pending : openOrders) {
                 if (pending == null || pending.getBrokerOrderId() == null
