@@ -225,11 +225,37 @@ public class ReconciliationService {
                             .filter(o -> expectedProduct.equalsIgnoreCase(o.getProduct()))
                             .collect(Collectors.toList());
 
-                    // Prefer the exact order already recorded on this position. Never
-                    // select a random same-symbol SELL: multiple strategies can have
-                    // separate legitimate orders against an aggregate long quantity.
+                    // Prefer the exact order IDs already recorded on this position.
+                    // A primary + secondary target can both be legitimate; any other
+                    // same-symbol SELL is untracked and makes automatic replacement unsafe.
                     Order existingSellOrder = null;
                     String recordedTargetId = position.getTargetOrderId();
+                    String recordedSecondaryId = position.getSecondaryTargetOrderId();
+
+                    if (recordedTargetId != null || recordedSecondaryId != null) {
+                        boolean untrackedActiveSell = candidates.stream()
+                                .filter(java.util.Objects::nonNull)
+                                .map(Order::getOrderId)
+                                .filter(java.util.Objects::nonNull)
+                                .anyMatch(id -> !id.equals(recordedTargetId)
+                                        && !id.equals(recordedSecondaryId));
+                        if (untrackedActiveSell) {
+                            log.error("🛑 {} has active SELLs beyond its recorded primary/secondary IDs; "
+                                            + "not adopting, cancelling, or replacing any order automatically.",
+                                    symbol);
+                            continue;
+                        }
+                    }
+
+                    // A recorded secondary order is not a substitute for a missing
+                    // primary target. Keep the secondary untouched and require explicit
+                    // reconciliation rather than accidentally reclassifying its role.
+                    if (recordedTargetId == null && recordedSecondaryId != null
+                            && candidates.stream().anyMatch(o -> recordedSecondaryId.equals(o.getOrderId()))) {
+                        log.warn("🛑 {} has only its recorded secondary SELL active; leaving it intact "
+                                + "and skipping automatic primary-target adoption.", symbol);
+                        continue;
+                    }
                     if (recordedTargetId != null) {
                         final String targetIdToFind = recordedTargetId;
                         existingSellOrder = candidates.stream()
