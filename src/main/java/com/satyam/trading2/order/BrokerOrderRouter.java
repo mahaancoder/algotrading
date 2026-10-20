@@ -141,8 +141,11 @@ public class BrokerOrderRouter {
                     return BrokerOrderStatus.PARTIALLY_FILLED;
                 }
                 return BrokerOrderStatus.OPEN;
+            // Unknown broker statuses must fail closed. Treating an unfamiliar
+            // terminal/working state as OPEN could make cancellation logic act on
+            // stale assumptions about remaining inventory.
             default:
-                return BrokerOrderStatus.OPEN;
+                return null;
         }
     }
 
