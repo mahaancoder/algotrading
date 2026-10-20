@@ -54,6 +54,18 @@ public class BrokerOrderEventProcessor {
     private final DipAccumulatorService dipAccumulatorService;
 
     public void process(BrokerOrderEvent event) throws IOException {
+        process(event, false);
+    }
+
+    /**
+     * Recovery-only entry point. The caller must first confirm that the broker's
+     * current sellable inventory equals the expected post-fill local inventory.
+     */
+    public void processReconciledTerminalPartialSell(BrokerOrderEvent event) throws IOException {
+        process(event, true);
+    }
+
+    private void process(BrokerOrderEvent event, boolean brokerPositionReconciled) throws IOException {
         if (event == null || event.getBrokerOrderId() == null) {
             System.out.println("[BrokerOrderEventProcessor] Null event or brokerOrderId — ignoring");
             return;
@@ -84,11 +96,11 @@ public class BrokerOrderEventProcessor {
                 break;
 
             case REJECTED:
-                handleRejected(pendingOrder, event);
+                handleRejected(pendingOrder, event, brokerPositionReconciled);
                 break;
 
             case CANCELLED:
-                handleCancelled(pendingOrder, event);
+                handleCancelled(pendingOrder, event, brokerPositionReconciled);
                 break;
 
             case PARTIALLY_FILLED:
@@ -251,10 +263,11 @@ public class BrokerOrderEventProcessor {
         }
     }
 
-    private void handleCancelled(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
+    private void handleCancelled(PendingOrder pendingOrder, BrokerOrderEvent event,
+                                 boolean brokerPositionReconciled) throws IOException {
         synchronized (lifecycleLock(pendingOrder)) {
             if (pendingOrder.isClosed()) {
-                handleLateTerminalSellFill(pendingOrder, event, "cancelled");
+                handleLateTerminalSellFill(pendingOrder, event, "cancelled", brokerPositionReconciled);
                 return;
             }
 
@@ -272,7 +285,7 @@ public class BrokerOrderEventProcessor {
             }
             if (pendingOrder.getSide() == TradeSide.SELL
                     && (!Integer.valueOf(0).equals(event.getFilledQuantity()) || pendingOrder.getFilledQty() != 0)) {
-                persistUnresolvedTerminalSellFill(pendingOrder, event, "cancelled");
+                persistUnresolvedTerminalSellFill(pendingOrder, event, "cancelled", brokerPositionReconciled);
                 return;
             }
 
@@ -309,7 +322,8 @@ public class BrokerOrderEventProcessor {
      */
     private void persistUnresolvedTerminalSellFill(PendingOrder pendingOrder,
                                                     BrokerOrderEvent event,
-                                                    String terminalStatus) throws IOException {
+                                                    String terminalStatus,
+                                                    boolean brokerPositionReconciled) throws IOException {
         Integer cumulative = event.getFilledQuantity();
         if (cumulative == null) {
             // A prior PARTIALLY_FILLED event may already have persisted the cumulative
@@ -368,12 +382,27 @@ public class BrokerOrderEventProcessor {
             }
         }
 
-        // A terminal partial SELL cannot be safely applied using only its order
-        // fill quantity: broker inventory may already have changed, another SELL
-        // may have raced, or a previous callback may have partially persisted.
-        // Keep it unresolved and reserved. Recovery may update the broker-confirmed
-        // cumulative quantity/price, but must not release this reservation until an
-        // authoritative position reconciliation can establish the resulting quantity.
+        if (brokerPositionReconciled) {
+            // Recovery only reaches this branch after a fresh broker inventory
+            // snapshot exactly matches local open quantity minus this cumulative fill.
+            // If accounting fails, the pending SELL remains unresolved/reserved.
+            try {
+                orderCompletionProcessor.onSellCompleted(pendingOrder);
+            } catch (RuntimeException | IOException failure) {
+                System.err.println("[BrokerOrderEventProcessor] Could not apply reconciled terminal partial SELL "
+                        + pendingOrder.getOrderId() + "; retaining reservation: " + failure.getMessage());
+                throw failure;
+            }
+            if (!pendingOrder.isCompletionProcessed()) {
+                System.err.println("[BrokerOrderEventProcessor] Reconciled terminal partial SELL "
+                        + pendingOrder.getOrderId() + " was not applied; reservation remains active.");
+            }
+            return;
+        }
+
+        // Live terminal events alone are not enough to prove resulting inventory.
+        // Recovery must verify broker sellable quantity against the expected local
+        // post-fill quantity before this order can release its reservation.
         System.err.println("[BrokerOrderEventProcessor] Terminal partial SELL "
                 + pendingOrder.getOrderId() + " fill=" + recorded
                 + " is persisted but unapplied; reservation remains active pending "
@@ -407,13 +436,14 @@ public class BrokerOrderEventProcessor {
             handleComplete(pendingOrder, completionEvent(event));
             return;
         }
-        persistUnresolvedTerminalSellFill(pendingOrder, event, terminalStatus);
+        persistUnresolvedTerminalSellFill(pendingOrder, event, terminalStatus, brokerPositionReconciled);
     }
 
-    private void handleRejected(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
+    private void handleRejected(PendingOrder pendingOrder, BrokerOrderEvent event,
+                                boolean brokerPositionReconciled) throws IOException {
         synchronized (lifecycleLock(pendingOrder)) {
             if (pendingOrder.isClosed()) {
-                handleLateTerminalSellFill(pendingOrder, event, "rejected");
+                handleLateTerminalSellFill(pendingOrder, event, "rejected", brokerPositionReconciled);
                 return;
             }
 
@@ -426,7 +456,7 @@ public class BrokerOrderEventProcessor {
                 return;
             }
             if (pendingOrder.getSide() == TradeSide.SELL && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
-                persistUnresolvedTerminalSellFill(pendingOrder, event, "rejected");
+                persistUnresolvedTerminalSellFill(pendingOrder, event, "rejected", brokerPositionReconciled);
                 return;
             }
 
