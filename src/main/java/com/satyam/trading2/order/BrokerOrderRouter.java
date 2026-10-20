@@ -170,8 +170,9 @@ public class BrokerOrderRouter {
             if (isKite(position)) {
                 // OrderServiceV2 performs the Kite order-book scan, cancellation
                 // confirmation and zero-fill check under the same broker+symbol lock.
-                String replacementId = orderServiceV2.updateTargetOrder(
-                        position, symbol, price, qty, oldTargetOrderId, isHolding, strategy);
+                String replacementId = SellOrderAuthorizationContext.withAuthorization(
+                        () -> orderServiceV2.updateTargetOrder(
+                                position, symbol, price, qty, oldTargetOrderId, isHolding, strategy));
                 if (replacementId != null && oldTargetOrderId != null
                         && !retirePendingSell(position, oldTargetOrderId)) {
                     // Keep the accepted replacement ID flowing back to the caller so
@@ -340,7 +341,8 @@ public class BrokerOrderRouter {
                 return null;
             }
             if (isKite(position)) {
-                return orderServiceV2.placeRoutedSell(position, symbol, qty, price, isHolding, strategy);
+                return SellOrderAuthorizationContext.withAuthorization(
+                        () -> orderServiceV2.placeRoutedSell(position, symbol, qty, price, isHolding, strategy));
             }
             return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
         }

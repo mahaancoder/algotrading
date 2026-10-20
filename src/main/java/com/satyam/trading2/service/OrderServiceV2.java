@@ -104,6 +104,10 @@ public class OrderServiceV2 {
 
     public String placeRoutedSell(Position position, String symbol, int qty, double price,
                                   boolean isHolding, String strategy) {
+        if (!com.satyam.trading2.order.SellOrderAuthorizationContext.isAuthorized()) {
+            System.err.println("🛑 [placeRoutedSell] Refusing SELL without BrokerOrderRouter authorization.");
+            return null;
+        }
         if (position == null || symbol == null || qty <= 0 || strategy == null
                 || !symbol.equalsIgnoreCase(position.getSymbol())) {
             System.err.println("🛑 [placeRoutedSell] Invalid Position-aware SELL request.");
@@ -175,6 +179,10 @@ public class OrderServiceV2 {
 
     public String updateTargetOrder(Position position, String symbol, double target, int qty,
                                     String oldOrderId, boolean isHolding, String strategy) {
+        if (!com.satyam.trading2.order.SellOrderAuthorizationContext.isAuthorized()) {
+            System.err.println("🛑 [updateTargetOrder] Refusing target SELL without BrokerOrderRouter authorization.");
+            return null;
+        }
         if (position == null) return null;
         synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(position)) {
             return updateTargetOrderLocked(symbol, target, qty, oldOrderId, isHolding, strategy);
