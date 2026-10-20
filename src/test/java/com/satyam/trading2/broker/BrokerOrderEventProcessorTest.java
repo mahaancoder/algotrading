@@ -142,6 +142,73 @@ class BrokerOrderEventProcessorTest {
     }
 
     @Test
+    void cancelledSellReportingFullCumulativeFillUsesCompletionLifecycle() throws Exception {
+        PendingOrder pending = new PendingOrder();
+        pending.setOrderId("sell-792");
+        pending.setBrokerOrderId("sell-792");
+        pending.setBroker("KITE");
+        pending.setSymbol("INFY");
+        pending.setStrategy("strategy-a");
+        pending.setPositionType(Position.PositionType.INTRADAY);
+        pending.setSide(TradeSide.SELL);
+        pending.setState(PendingOrderState.PENDING);
+        pending.setRequestQty(5);
+        pending.setAvgPrice(100.0);
+
+        when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "sell-792"))
+                .thenReturn(Optional.of(pending));
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                processor, "orderCompletionProcessor", orderCompletionProcessor);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            pending.markCompletionProcessed();
+            return null;
+        }).when(orderCompletionProcessor).onSellCompleted(pending);
+
+        processor.process(BrokerOrderEvent.builder()
+                .broker("KITE")
+                .brokerOrderId("sell-792")
+                .status(BrokerOrderStatus.CANCELLED)
+                .filledQuantity(5)
+                .averagePrice(101.0)
+                .build());
+
+        assertEquals(PendingOrderState.COMPLETE, pending.getState());
+        assertEquals(5, pending.getFilledQty());
+        verify(orderCompletionProcessor).onSellCompleted(pending);
+    }
+
+    @Test
+    void duplicatePartialFillEventDoesNotPersistSameCumulativeQuantityTwice() throws Exception {
+        PendingOrder pending = new PendingOrder();
+        pending.setOrderId("sell-793");
+        pending.setBrokerOrderId("sell-793");
+        pending.setBroker("KITE");
+        pending.setSymbol("INFY");
+        pending.setStrategy("strategy-a");
+        pending.setPositionType(Position.PositionType.INTRADAY);
+        pending.setSide(TradeSide.SELL);
+        pending.setState(PendingOrderState.PENDING);
+        pending.setRequestQty(10);
+        pending.setAvgPrice(100.0);
+        pending.markPartiallyFilled(3, 101.0);
+
+        when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "sell-793"))
+                .thenReturn(Optional.of(pending));
+
+        processor.process(BrokerOrderEvent.builder()
+                .broker("KITE")
+                .brokerOrderId("sell-793")
+                .status(BrokerOrderStatus.PARTIALLY_FILLED)
+                .filledQuantity(3)
+                .averagePrice(101.0)
+                .build());
+
+        assertEquals(3, pending.getFilledQty());
+        verify(pendingOrderRepository, never()).save(any(PendingOrder.class));
+        verify(orderCompletionProcessor, never()).onSellCompleted(any(PendingOrder.class));
+    }
+
+    @Test
     void cancelledSellWithUnknownFillsRemainsReservedUntilReconciliation() throws Exception {
         PendingOrder pending = new PendingOrder();
         pending.setOrderId("sell-788");
