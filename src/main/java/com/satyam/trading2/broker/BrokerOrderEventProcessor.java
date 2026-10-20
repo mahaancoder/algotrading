@@ -239,7 +239,10 @@ public class BrokerOrderEventProcessor {
 
     private void handleCancelled(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
         synchronized (lifecycleLock(pendingOrder)) {
-            if (pendingOrder.isClosed()) return;
+            if (pendingOrder.isClosed()) {
+                handleLateTerminalSellFill(pendingOrder, event, "cancelled");
+                return;
+            }
 
             // A terminal CANCELLED SELL can still have executed shares. Persist the
             // broker's cumulative fill before returning, otherwise a cancellation-only
@@ -329,7 +332,13 @@ public class BrokerOrderEventProcessor {
             long previousUpdatedTime = pendingOrder.getUpdatedTime();
             double avgPrice = event.getAveragePrice() > 0
                     ? event.getAveragePrice() : previousAvgPrice;
-            pendingOrder.markPartiallyFilled(recorded, avgPrice);
+            // markPartiallyFilled intentionally ignores terminal orders. A broker may,
+            // however, deliver a late cumulative-fill update after CANCELLED/REJECTED.
+            // Preserve the terminal status while recording the execution so the
+            // completion processor can apply the sold quantity exactly once.
+            pendingOrder.setFilledQty(recorded);
+            pendingOrder.setAvgPrice(avgPrice);
+            pendingOrder.setUpdatedTime(System.currentTimeMillis());
             try {
                 pendingOrderRepository.save(pendingOrder);
             } catch (IOException persistenceError) {
@@ -358,9 +367,39 @@ public class BrokerOrderEventProcessor {
         }
     }
 
+    /**
+     * Broker event streams can reorder terminal status and cumulative-fill updates.
+     * A late CANCELLED/REJECTED event must not hide newly confirmed executions just
+     * because an earlier zero-fill terminal event already closed the local order.
+     */
+    private void handleLateTerminalSellFill(PendingOrder pendingOrder,
+                                            BrokerOrderEvent event,
+                                            String terminalStatus) throws IOException {
+        if (pendingOrder.getSide() != TradeSide.SELL || pendingOrder.isCompletionProcessed()) {
+            return;
+        }
+        Integer cumulative = event.getFilledQuantity();
+        if (cumulative == null || cumulative <= pendingOrder.getFilledQty()
+                || cumulative <= 0 || cumulative > pendingOrder.getRequestQty()) {
+            return;
+        }
+        if (cumulative == pendingOrder.getRequestQty()) {
+            // Re-open only the local lifecycle state so the existing idempotent
+            // COMPLETE handler can apply the full execution. The broker status stays
+            // terminal; this is not a retry of the broker order itself.
+            pendingOrder.setState(PendingOrderState.PENDING);
+            handleComplete(pendingOrder, completionEvent(event));
+            return;
+        }
+        persistUnresolvedTerminalSellFill(pendingOrder, event, terminalStatus);
+    }
+
     private void handleRejected(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
         synchronized (lifecycleLock(pendingOrder)) {
-            if (pendingOrder.isClosed()) return;
+            if (pendingOrder.isClosed()) {
+                handleLateTerminalSellFill(pendingOrder, event, "rejected");
+                return;
+            }
 
             // Treat a rejected SELL with non-zero/unknown fills as unresolved too.
             // Some broker feeds report terminal status and cumulative quantity in
