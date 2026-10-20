@@ -58,6 +58,7 @@ class PendingOrderRecoveryServiceTest {
         when(broker.getBrokerName()).thenReturn("KITE");
         when(broker.getOrderStatus("sell-123")).thenReturn(BrokerOrderStatus.CANCELLED);
         when(broker.getOrderFilledQuantity("sell-123")).thenReturn(4);
+        when(broker.getOrderAveragePrice("sell-123")).thenReturn(102.5);
 
         service.recoverAfterStartup();
 
@@ -67,6 +68,7 @@ class PendingOrderRecoveryServiceTest {
         assertEquals("sell-123", event.getValue().getBrokerOrderId());
         assertEquals(BrokerOrderStatus.CANCELLED, event.getValue().getStatus());
         assertEquals(4, event.getValue().getFilledQuantity());
+        assertEquals(102.5, event.getValue().getAveragePrice());
     }
 
     @Test
