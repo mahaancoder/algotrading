@@ -432,6 +432,13 @@ public class OrderCompletionProcessor {
 
             // Serialize the entire fill/cancel/position-update lifecycle against all schedulers.
             synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            int confirmedSoldQty = pendingOrder.getFilledQty();
+            if (confirmedSoldQty <= 0 || confirmedSoldQty > position.getTotalQuantity()) {
+                System.err.println("🚨 [OrderCompletionProcessor] Refusing to apply SELL " + sellOrderId
+                        + " with filledQty=" + confirmedSoldQty + " to local position quantity="
+                        + position.getTotalQuantity() + "; retaining order reservation for reconciliation.");
+                return;
+            }
             // ===== LEGACY DUAL SELL: confirm the other order is cancelled with zero fills =====
             boolean otherSellCancelled = true;
             String unresolvedOtherSellId = null;
