@@ -44,13 +44,13 @@ public class ExecutionEngine {
     private final KillSwitchService killSwitchService;
     private final ProductToggleService productToggleService;
 
-    // ===== GETTER: Allow other components to use the same locks for synchronization =====
-    private final Map<String, Object> symbolStrategyLocks = new ConcurrentHashMap<>();
+    // Legacy execution is Kite-only. Reuse the shared broker-symbol lock so
+    // strategy and MIS/CNC allocations cannot race SELL lifecycle operations.
     public final Map<String, MarketContext> symbolMarketContext = new ConcurrentHashMap<>();
 
     private Object getSymbolStrategyLock(String symbol, String strategy) {
-        String lockKey = symbol + "_" + strategy;
-        return symbolStrategyLocks.computeIfAbsent(lockKey, k -> new Object());
+        return SellLifecycleLockRegistry.lockFor(
+                symbol, strategy, "KITE", Position.PositionType.INTRADAY);
     }
 
     private boolean isOutsideTradingHours() {
