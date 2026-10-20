@@ -53,7 +53,7 @@ class PendingOrderRecoveryServiceTest {
         pending.setAvgPrice(101.0);
         pending.setCreatedTime(System.currentTimeMillis() - 60_000L);
 
-        when(pendingOrderRepository.findOpenOrders()).thenReturn(List.of(pending));
+        when(pendingOrderRepository.findOrdersRequiringReconciliation()).thenReturn(List.of(pending));
         when(brokerRouter.getBroker(ExecutionRoute.KITE)).thenReturn(broker);
         when(broker.getBrokerName()).thenReturn("KITE");
         when(broker.getOrderStatus("sell-123")).thenReturn(BrokerOrderStatus.CANCELLED);
@@ -83,7 +83,7 @@ class PendingOrderRecoveryServiceTest {
         pending.setRequestQty(5);
         pending.setCreatedTime(System.currentTimeMillis() - 60_000L);
 
-        when(pendingOrderRepository.findOpenOrders()).thenReturn(Collections.singletonList(pending));
+        when(pendingOrderRepository.findOrdersRequiringReconciliation()).thenReturn(Collections.singletonList(pending));
         when(brokerRouter.getBroker(ExecutionRoute.KITE)).thenReturn(broker);
         when(broker.getBrokerName()).thenReturn("KITE");
         when(broker.getOrderStatus("sell-456")).thenReturn(BrokerOrderStatus.CANCELLED);
