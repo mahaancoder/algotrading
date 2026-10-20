@@ -352,6 +352,12 @@ public class BrokerOrderRouter {
     private boolean hasSellCapacity(Position requestedPosition, String symbol, int requestedQty,
                                     String replacedOrderId) {
         if (requestedPosition == null || symbol == null || requestedQty <= 0) return false;
+        if (!requestedPosition.isOpen() || requestedPosition.isExitProcessed()
+                || requestedQty > Math.max(0, requestedPosition.getTotalQuantity())) {
+            System.err.println("🛑 [BrokerOrderRouter] Refusing SELL for " + symbol
+                    + ": requested quantity exceeds this position's remaining allocation.");
+            return false;
+        }
         String broker = brokerOf(requestedPosition);
 
         // Closed/tombstone positions can still carry an unresolved SELL ID when
