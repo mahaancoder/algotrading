@@ -3,6 +3,7 @@ package com.satyam.trading2.order;
 import com.satyam.trading2.broker.Broker;
 import com.satyam.trading2.broker.BrokerRouter;
 import com.satyam.trading2.broker.ExecutionRoute;
+import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.PendingOrderState;
 import com.satyam.trading2.datamodel.Position;
@@ -60,6 +61,7 @@ class BrokerOrderRouterTest {
         lenient().when(brokerRouter.getBroker(ExecutionRoute.KITE)).thenReturn(kiteBroker);
         lenient().when(kiteBroker.getNetSellableQuantity("RELIANCE", false)).thenReturn(100);
         lenient().when(kiteBroker.getOrderFilledQuantity("sell-60")).thenReturn(0);
+        lenient().when(kiteBroker.getOrderStatus("sell-60")).thenReturn(BrokerOrderStatus.OPEN);
     }
 
     @Test
