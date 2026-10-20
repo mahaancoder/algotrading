@@ -98,6 +98,36 @@ class BrokerOrderRouterTest {
                 "strategy-a");
     }
     @Test
+    void reservesOnlyRemainingQuantityAfterBrokerConfirmedPartialFill() {
+        PendingOrder existingSell = new PendingOrder();
+        existingSell.setOrderId("sell-60");
+        existingSell.setBrokerOrderId("sell-60");
+        existingSell.setBroker("KITE");
+        existingSell.setSymbol("RELIANCE");
+        existingSell.setSide(TradeSide.SELL);
+        existingSell.setState(PendingOrderState.PARTIALLY_FILLED);
+        existingSell.setRequestQty(60);
+        existingSell.setFilledQty(20);
+        when(pendingOrderRepository.findOpenOrders()).thenReturn(List.of(existingSell));
+        when(kiteBroker.getOrderFilledQuantity("sell-60")).thenReturn(30);
+        when(orderServiceV2.placeRoutedSell(position, "RELIANCE", 70, 101.0, false,
+                "strategy-a")).thenReturn("sell-70");
+
+        assertEquals("sell-70",
+                router.placeLimitSell(position, "RELIANCE", 101.0, 70, false, "strategy-a"));
+    }
+
+    @Test
+    void failsClosedWhenBrokerInventoryCannotBeConfirmed() {
+        when(kiteBroker.getNetSellableQuantity("RELIANCE", false)).thenReturn(null);
+
+        assertNull(router.placeLimitSell(position, "RELIANCE", 101.0, 1, false, "strategy-a"));
+        verify(orderServiceV2, never()).placeRoutedSell(any(), any(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyDouble(),
+                org.mockito.ArgumentMatchers.anyBoolean(), any());
+    }
+
+    @Test
     void refusesAnotherSellWhenPositionReferencesUnresolvedTargetOrder() {
         position.setTargetOrderId("unknown-target");
         when(pendingOrderRepository.findByBrokerAndBrokerOrderId("KITE", "unknown-target"))
