@@ -92,8 +92,7 @@ public class BrokerOrderEventProcessor {
                 break;
 
             case PARTIALLY_FILLED:
-                System.out.println("[BrokerOrderEventProcessor] Partially filled — ignoring for now: "
-                        + pendingOrder.getSymbol() + " " + event.getBrokerOrderId());
+                handlePartiallyFilled(pendingOrder, event);
                 break;
 
             case OPEN:
@@ -196,6 +195,45 @@ public class BrokerOrderEventProcessor {
             }
             System.err.println("[BrokerOrderEventProcessor] CRITICAL: unable to persist retained SELL reservation "
                     + pendingOrder.getOrderId() + ": " + persistError.getMessage());
+        }
+    }
+
+    /**
+     * Persist broker cumulative partial fills without applying them to Position
+     * yet. Position mutation is intentionally deferred until COMPLETE because the
+     * current completion callbacks are order-level/idempotent; applying deltas here
+     * and then again on COMPLETE would double-count. SELL capacity uses the fresh
+     * broker inventory and this cumulative filled quantity to reserve only the
+     * unfilled remainder. A cancelled partial SELL remains unresolved until the
+     * position reconciliation path confirms its resulting inventory.
+     */
+    private void handlePartiallyFilled(PendingOrder pendingOrder, BrokerOrderEvent event) throws IOException {
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.isClosed()) return;
+            Integer cumulative = event.getFilledQuantity();
+            if (cumulative == null || cumulative <= 0 || cumulative >= pendingOrder.getRequestQty()) {
+                System.err.println("[BrokerOrderEventProcessor] Invalid partial fill quantity for "
+                        + pendingOrder.getOrderId() + ": " + cumulative + "; retaining current state.");
+                return;
+            }
+            if (cumulative <= pendingOrder.getFilledQty()) return;
+
+            PendingOrderState previousState = pendingOrder.getState();
+            int previousFilledQty = pendingOrder.getFilledQty();
+            double previousAvgPrice = pendingOrder.getAvgPrice();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
+            pendingOrder.markPartiallyFilled(cumulative,
+                    event.getAveragePrice() != null ? event.getAveragePrice() : pendingOrder.getAvgPrice());
+            if (pendingOrder.getFilledQty() != cumulative) return;
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setFilledQty(previousFilledQty);
+                pendingOrder.setAvgPrice(previousAvgPrice);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                throw persistenceError;
+            }
         }
     }
 
