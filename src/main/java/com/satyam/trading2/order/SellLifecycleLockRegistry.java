@@ -39,13 +39,11 @@ public final class SellLifecycleLockRegistry {
 
     public static Object lockFor(String symbol, String strategy, String broker,
                                  Position.PositionType positionType) {
-        // Position type is intentionally excluded: an intraday position can be
-        // converted to a holding while a lifecycle operation is in progress.
-        // The broker owns one physical net position per symbol, even when the
-        // application attributes buys to multiple strategies. Strategy-scoped
-        // locks allowed two strategies to place SELLs concurrently against the
-        // same shares. Serialize at broker + symbol scope.
-        String key = normalize(broker) + "::" + normalize(symbol);
+        // A BUY can be routed before the broker/position is resolved, while a
+        // SELL is keyed by its owning broker. Use a conservative symbol-wide lock
+        // so BUY, SELL, webhooks, schedulers, and MIS→CNC conversion serialize
+        // even when strategy, broker, or product metadata differs.
+        String key = normalize(symbol);
         return LOCKS.computeIfAbsent(key, ignored -> new Object());
     }
 
