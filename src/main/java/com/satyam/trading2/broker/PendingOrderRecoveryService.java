@@ -109,6 +109,22 @@ public class PendingOrderRecoveryService {
                 return;
             }
 
+            double averagePrice = pending.getAvgPrice();
+            if (cumulativeFilled > 0) {
+                Double brokerAveragePrice = broker.getOrderAveragePrice(pending.getBrokerOrderId());
+                if (brokerAveragePrice != null && brokerAveragePrice > 0) {
+                    averagePrice = brokerAveragePrice;
+                } else if (cumulativeFilled > pending.getFilledQty() || pending.getFilledQty() <= 0) {
+                    // Do not mutate position/PnL using the requested limit price as
+                    // if it were an execution price. Keep the reservation until the
+                    // broker can confirm the average fill price.
+                    log.warn("[PendingOrderRecovery] Missing authoritative average fill price for {} order {}; "
+                                    + "reservation retained",
+                            broker.getBrokerName(), pending.getBrokerOrderId());
+                    return;
+                }
+            }
+
             BrokerOrderStatus normalizedStatus = status;
             if ((status == BrokerOrderStatus.OPEN || status == BrokerOrderStatus.PARTIALLY_FILLED)
                     && cumulativeFilled > 0 && cumulativeFilled < pending.getRequestQty()) {
@@ -132,10 +148,7 @@ public class PendingOrderRecoveryService {
                     .brokerOrderId(pending.getBrokerOrderId())
                     .status(normalizedStatus)
                     .filledQuantity(cumulativeFilled)
-                    // The broker-neutral contract currently exposes cumulative fill
-                    // quantity but not average fill price. Retain the last persisted
-                    // price rather than inventing a price from an untrusted response.
-                    .averagePrice(pending.getAvgPrice())
+                    .averagePrice(averagePrice)
                     .build();
             brokerOrderEventProcessor.process(recoveredEvent);
         } catch (IOException | RuntimeException e) {
