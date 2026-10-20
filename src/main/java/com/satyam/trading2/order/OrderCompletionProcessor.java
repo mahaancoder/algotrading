@@ -500,6 +500,12 @@ public class OrderCompletionProcessor {
 
                 dipAccumulatorService.remove(symbol, strategy);
                 pendingOrder.markCompletionProcessed();
+                // A terminal order can have a partial cumulative fill. Its executed
+                // shares have now been applied to Position, but the broker order itself
+                // remains CANCELLED/REJECTED rather than COMPLETE.
+                if (pendingOrder.getFilledQty() < pendingOrder.getRequestQty()) {
+                    pendingOrder.markCancelled();
+                }
                 pendingOrderRepository.save(pendingOrder);
                 String tradeBroker = position.getBroker() != null ? position.getBroker() : "KITE";
                 pnlCalculator.recordTrade(pnl, strategy, tradeBroker);
