@@ -382,6 +382,39 @@ public class IndstocksBroker extends AbstractRestBroker {
     // getFunds — GET /funds
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Query the owning broker's portfolio endpoint directly for sell authorization.
+     * Null means no trustworthy snapshot; only a successful array with no matching
+     * symbol is interpreted as zero inventory. CNC uses settled holding quantity
+     * reported by total_qty; intraday uses net_qty.
+     */
+    @Override
+    public Integer getNetSellableQuantity(String symbol, boolean holding) {
+        if (symbol == null || symbol.trim().isEmpty() || !indstocksConfig.isAuthenticated()) return null;
+        try {
+            String endpoint = holding
+                    ? "/portfolio/holdings"
+                    : "/portfolio/positions?segment=equity&product=intraday";
+            JsonNode resp = getJson(indstocksConfig.getBaseUrl() + endpoint,
+                    indstocksConfig.getAuthHeader(), SLOW_REQUEST_TIMEOUT_MS);
+            if (!"success".equals(textOr(resp, "status", ""))) return null;
+            JsonNode rows = resp.get("data");
+            if (rows == null || !rows.isArray()) return null;
+            for (JsonNode row : rows) {
+                if (!symbol.equalsIgnoreCase(textOr(row, "symbol", ""))) continue;
+                String field = holding ? "total_qty" : "net_qty";
+                int qty = intOr(row, field, -1);
+                if (qty < 0) return null;
+                return Math.max(0, qty);
+            }
+            return 0;
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] Unable to confirm sellable inventory for {}: {}",
+                    symbol, e.getMessage());
+            return null;
+        }
+    }
+
     @Override
     public BrokerFunds getFunds() {
         if (!indstocksConfig.isAuthenticated()) {
