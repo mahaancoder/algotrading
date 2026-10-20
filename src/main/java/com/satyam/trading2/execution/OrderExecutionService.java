@@ -76,17 +76,17 @@ public class OrderExecutionService {
     private final DefaultBrokerService defaultBrokerService;
     private final com.satyam.trading2.order.BrokerOrderRouter brokerOrderRouter;
 
-    // Shared lock map — same pattern as ExecutionEngine, used to serialize
-    // signal processing, order completion, and reconciliation per symbol+strategy.
-    private final Map<String, Object> symbolStrategyLocks = new ConcurrentHashMap<>();
+    // Keep this map only for compatibility with callers; actual execution locks
+    // come from the shared lifecycle registry so strategies cannot race the same symbol.
     public final Map<String, MarketContext> symbolMarketContext = new ConcurrentHashMap<>();
 
     public Map<String, Object> getSymbolStrategyLocks() {
-        return symbolStrategyLocks;
+        return java.util.Collections.emptyMap();
     }
 
     private Object getSymbolStrategyLock(String symbol, String strategy) {
-        return symbolStrategyLocks.computeIfAbsent(symbol + "_" + strategy, k -> new Object());
+        return SellLifecycleLockRegistry.lockFor(symbol, strategy, "KITE",
+                Position.PositionType.INTRADAY);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -200,6 +200,19 @@ public class OrderExecutionService {
         }
         Broker broker = brokerRouter.getBrokerWithFallback(route);
         String brokerName = broker.getBrokerName();
+
+        // A previous BUY may still fill after this signal is evaluated. Block a
+        // second BUY for the same broker/symbol until the first order is terminal.
+        boolean pendingBuyExists = pendingOrderRepository.findOpenOrders().stream()
+                .filter(java.util.Objects::nonNull)
+                .anyMatch(order -> order.getSide() == com.satyam.trading2.datamodel.TradeSide.BUY
+                        && symbol.equalsIgnoreCase(order.getSymbol())
+                        && brokerName.equalsIgnoreCase(order.getBroker() != null ? order.getBroker() : "KITE"));
+        if (pendingBuyExists) {
+            signalAnalyticsService.recordSignal(signal, false,
+                    "Pending BUY already exists for this broker and symbol", actualCapital);
+            return;
+        }
 
         // Visibility into every routing decision: which broker a BUY was sent to
         // and why (entryType drives the Group1/Group2 filter). Helps diagnose
