@@ -416,7 +416,8 @@ public class BrokerOrderEventProcessor {
      */
     private void handleLateTerminalSellFill(PendingOrder pendingOrder,
                                             BrokerOrderEvent event,
-                                            String terminalStatus) throws IOException {
+                                            String terminalStatus,
+                                            boolean brokerPositionReconciled) throws IOException {
         if (pendingOrder.getSide() != TradeSide.SELL || pendingOrder.isCompletionProcessed()) {
             return;
         }
@@ -425,9 +426,8 @@ public class BrokerOrderEventProcessor {
                 || cumulative <= 0 || cumulative > pendingOrder.getRequestQty()) {
             return;
         }
-        // Retry applying an already-persisted cumulative fill if the previous
-        // callback failed (e.g. position restoration lagged the broker event).
-        // The completion processor is idempotent once completionProcessed is saved.
+        // Full fills use the validated COMPLETE path. Partial fills can only be
+        // applied through the recovery-only path after broker inventory is confirmed.
         if (cumulative == pendingOrder.getRequestQty()) {
             // Re-open only the local lifecycle state so the existing idempotent
             // COMPLETE handler can apply the full execution. The broker status stays
