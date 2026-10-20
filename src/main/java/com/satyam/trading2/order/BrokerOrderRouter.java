@@ -477,7 +477,8 @@ public class BrokerOrderRouter {
                 .build();
         System.out.println("🎯 [BrokerOrderRouter] Placing " + (isHolding ? "DELIVERY" : "INTRADAY")
                 + " SELL via " + route + " for " + symbol + " qty=" + qty + " @ ₹" + String.format("%.2f", price));
-        BrokerOrderResponse resp = broker.placeOrder(req);
+        BrokerOrderResponse resp = SellOrderAuthorizationContext.withAuthorization(
+                () -> broker.placeOrder(req));
         if (resp != null && resp.isAccepted() && resp.getBrokerOrderId() != null) {
             System.out.println("🎯 [BrokerOrderRouter] " + route + " sell placed for " + symbol
                     + " @ ₹" + String.format("%.2f", price) + " (qty=" + qty + ", id=" + resp.getBrokerOrderId() + ")");

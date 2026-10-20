@@ -5,6 +5,7 @@ import com.satyam.trading2.broker.model.BrokerFunds;
 import com.satyam.trading2.broker.model.BrokerOrderResponse;
 import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.broker.model.OrderRequest;
+import com.satyam.trading2.order.SellOrderAuthorizationContext;
 import com.satyam.trading2.broker.model.OrderType;
 import com.satyam.trading2.broker.model.ProductType;
 import com.satyam.trading2.broker.model.TransactionType;
@@ -156,6 +157,16 @@ public class IndstocksBroker extends AbstractRestBroker {
 
     @Override
     public BrokerOrderResponse placeOrder(OrderRequest request) {
+        if (request != null && request.getTransactionType() == TransactionType.SELL
+                && !SellOrderAuthorizationContext.isAuthorized()) {
+            log.error("[INDstocksBroker] Refusing direct SELL submission outside BrokerOrderRouter; "
+                    + "all SELLs must pass broker inventory and reservation checks.");
+            return BrokerOrderResponse.builder()
+                    .brokerName(getBrokerName())
+                    .accepted(false)
+                    .rejectionReason("SELL requires BrokerOrderRouter inventory/reservation authorization")
+                    .build();
+        }
         if (!indstocksConfig.isAuthenticated()) {
             return BrokerOrderResponse.builder()
                     .brokerName(getBrokerName())
