@@ -111,6 +111,21 @@ public class PendingOrderRepository {
                 .collect(java.util.stream.Collectors.toList());
     }
 
+    /**
+     * Orders whose broker event or position callback may have been lost during a
+     * restart. A COMPLETE order is included only when its callback was not durably
+     * processed; normal terminal orders are not polled again.
+     */
+    public List<PendingOrder> findOrdersRequiringReconciliation() {
+        return ordersByInternalId.values().stream()
+                .filter(po -> po != null && po.getState() != null)
+                .filter(po -> !po.getState().equals(PendingOrderState.REJECTED)
+                        && !po.getState().equals(PendingOrderState.CANCELLED)
+                        && (!po.getState().equals(PendingOrderState.COMPLETE)
+                            || !po.isCompletionProcessed()))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Lookup: canonical (broker + brokerOrderId) — the form event handlers
     // (BrokerOrderEventProcessor) should use. No cross-broker collision.
