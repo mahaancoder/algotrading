@@ -9,6 +9,7 @@ import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.OrderExecutor;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.BrokerOrderRouter;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.service.DipAccumulatorService;
 import com.satyam.trading2.service.ExecutionEngine;
@@ -160,27 +161,31 @@ public class HoldingsTargetSetScheduler {
      */
     private void placeTargetForHolding(Position holding, double targetMultiplier) {
         try {
+            synchronized (SellLifecycleLockRegistry.lockFor(holding)) {
             // If primary target already exists, cancel it first to place new one
             if (holding.getTargetOrderId() != null) {
                 System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing target for " + holding.getSymbol() +
                                  " to update with new target (multiplier: " + targetMultiplier + ")");
-                try {
-                    brokerOrderRouter.cancelViaBroker(holding, holding.getTargetOrderId());
+                if (brokerOrderRouter.cancelAndConfirmSell(holding, holding.getTargetOrderId(), 2500L)) {
                     holding.setTargetOrderId(null);
                     holding.setTargetPlaced(false);
-                } catch (Exception e) {
-                    System.out.println("⚠️ [HoldingsTargetSetScheduler] Failed to cancel existing target: " + e.getMessage());
+                } else {
+                    System.err.println("🛑 [HoldingsTargetSetScheduler] Existing target for "
+                            + holding.getSymbol() + " is not confirmed cancelled with zero fills; refusing replacement.");
+                    return;
                 }
             }
             // Also cancel any existing secondary (quick-exit) sell order
             if (holding.getSecondaryTargetOrderId() != null) {
                 System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing quick-exit sell for " + holding.getSymbol());
-                try {
-                    brokerOrderRouter.cancelViaBroker(holding, holding.getSecondaryTargetOrderId());
+                if (brokerOrderRouter.cancelAndConfirmSell(holding, holding.getSecondaryTargetOrderId(), 2500L)) {
                     holding.setSecondaryTargetOrderId(null);
+                    holding.setSecondaryTargetQty(0);
                     holding.setSecondaryTargetPlaced(false);
-                } catch (Exception e) {
-                    System.out.println("⚠️ [HoldingsTargetSetScheduler] Failed to cancel quick-exit sell: " + e.getMessage());
+                } else {
+                    System.err.println("🛑 [HoldingsTargetSetScheduler] Legacy secondary SELL for "
+                            + holding.getSymbol() + " is not confirmed cancelled with zero fills; refusing replacement.");
+                    return;
                 }
             }
 
@@ -237,6 +242,7 @@ public class HoldingsTargetSetScheduler {
 
                 System.out.println("✅ [HoldingsTargetSetScheduler] Target placed successfully for " + holding.getSymbol() +
                                  " with orderId: " + orderId);
+            }
             }
         } catch (Exception e) {
             System.out.println("❌ [HoldingsTargetSetScheduler] Exception placing target for " + holding.getSymbol() +

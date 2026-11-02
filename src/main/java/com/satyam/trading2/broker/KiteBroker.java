@@ -4,6 +4,7 @@ import com.satyam.trading2.broker.model.BrokerFunds;
 import com.satyam.trading2.broker.model.BrokerOrderResponse;
 import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.broker.model.OrderRequest;
+import com.satyam.trading2.order.SellOrderAuthorizationContext;
 import com.satyam.trading2.broker.model.OrderType;
 import com.satyam.trading2.broker.model.ProductType;
 import com.satyam.trading2.broker.model.TransactionType;
@@ -48,6 +49,16 @@ public class KiteBroker implements Broker {
 
     @Override
     public BrokerOrderResponse placeOrder(OrderRequest request) {
+        if (request != null && request.getTransactionType() == TransactionType.SELL
+                && !SellOrderAuthorizationContext.isAuthorized()) {
+            log.error("[KiteBroker] Refusing direct SELL submission outside BrokerOrderRouter; "
+                    + "all SELLs must pass broker inventory and reservation checks.");
+            return BrokerOrderResponse.builder()
+                    .brokerName(getBrokerName())
+                    .accepted(false)
+                    .rejectionReason("SELL requires BrokerOrderRouter inventory/reservation authorization")
+                    .build();
+        }
         // Translate broker-neutral enums to the Kite String format
         String side = request.getTransactionType() == TransactionType.BUY ? "BUY" : "SELL";
         String type = mapOrderType(request.getOrderType());
@@ -96,6 +107,36 @@ public class KiteBroker implements Broker {
             return null;
         }
         return mapKiteStatus(match.getStatus(), match.getFilledQuantity(), match.getQuantity());
+    }
+
+    @Override
+    public Integer getOrderFilledQuantity(String brokerOrderId) {
+        List<Order> orders = orderServiceV2.fetchOrders();
+        if (orders == null) return null;
+        Order match = orders.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> brokerOrderId.equals(o.getOrderId()))
+                .findFirst()
+                .orElse(null);
+        return match == null ? null : match.getFilledQuantity();
+    }
+
+    @Override
+    public Double getOrderAveragePrice(String brokerOrderId) {
+        List<Order> orders = orderServiceV2.fetchOrders();
+        if (orders == null) return null;
+        Order match = orders.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> brokerOrderId.equals(o.getOrderId()))
+                .findFirst()
+                .orElse(null);
+        return match == null || match.getAveragePrice() == null || match.getAveragePrice() <= 0
+                ? null : match.getAveragePrice();
+    }
+
+    @Override
+    public Integer getNetSellableQuantity(String symbol, boolean holding) {
+        return orderServiceV2.getNetSellableQuantity(symbol, holding);
     }
 
     @Override

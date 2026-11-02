@@ -16,6 +16,7 @@ import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.datamodel.TradeSignal;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.PendingOrderRepository;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.risk.Exits;
 import com.satyam.trading2.risk.RejectedSymbols;
 import com.satyam.trading2.risk.RiskManager;
@@ -73,18 +74,19 @@ public class OrderExecutionService {
     private final ProductToggleService productToggleService;
     private final BrokerToggleService brokerToggleService;
     private final DefaultBrokerService defaultBrokerService;
+    private final com.satyam.trading2.order.BrokerOrderRouter brokerOrderRouter;
 
-    // Shared lock map — same pattern as ExecutionEngine, used to serialize
-    // signal processing, order completion, and reconciliation per symbol+strategy.
-    private final Map<String, Object> symbolStrategyLocks = new ConcurrentHashMap<>();
+    // Keep this map only for compatibility with callers; actual execution locks
+    // come from the shared lifecycle registry so strategies cannot race the same symbol.
     public final Map<String, MarketContext> symbolMarketContext = new ConcurrentHashMap<>();
 
     public Map<String, Object> getSymbolStrategyLocks() {
-        return symbolStrategyLocks;
+        return java.util.Collections.emptyMap();
     }
 
     private Object getSymbolStrategyLock(String symbol, String strategy) {
-        return symbolStrategyLocks.computeIfAbsent(symbol + "_" + strategy, k -> new Object());
+        return SellLifecycleLockRegistry.lockFor(symbol, strategy, "KITE",
+                Position.PositionType.INTRADAY);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -198,6 +200,19 @@ public class OrderExecutionService {
         }
         Broker broker = brokerRouter.getBrokerWithFallback(route);
         String brokerName = broker.getBrokerName();
+
+        // A previous BUY may still fill after this signal is evaluated. Block a
+        // second BUY for the same broker/symbol until the first order is terminal.
+        boolean pendingBuyExists = pendingOrderRepository.findOpenOrders().stream()
+                .filter(java.util.Objects::nonNull)
+                .anyMatch(order -> order.getSide() == com.satyam.trading2.datamodel.TradeSide.BUY
+                        && symbol.equalsIgnoreCase(order.getSymbol())
+                        && brokerName.equalsIgnoreCase(order.getBroker() != null ? order.getBroker() : "KITE"));
+        if (pendingBuyExists) {
+            signalAnalyticsService.recordSignal(signal, false,
+                    "Pending BUY already exists for this broker and symbol", actualCapital);
+            return;
+        }
 
         // Visibility into every routing decision: which broker a BUY was sent to
         // and why (entryType drives the Group1/Group2 filter). Helps diagnose
@@ -349,27 +364,45 @@ public class OrderExecutionService {
 
         // Stickiness: check if a position already exists at any broker
         Position existing = findExistingPositionAcrossBrokers(symbol, strategy);
-        if (existing != null && existing.getBroker() != null && existing.getExecutionRoute() != null) {
+        if (existing != null) {
             ExecutionRoute existingRoute = existing.getExecutionRoute();
+            if (existingRoute == null && existing.getBroker() != null) {
+                try {
+                    existingRoute = ExecutionRoute.valueOf(
+                            existing.getBroker().trim().toUpperCase(java.util.Locale.ROOT));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown legacy broker identity cannot be safely inferred.
+                }
+            }
+            if (existingRoute == null || !brokerRouter.isAvailable(existingRoute)) {
+                log.error("🛑 [BrokerToggle] Cannot safely route accumulation for {}: owning broker is unknown/unavailable",
+                        symbol);
+                return null;
+            }
             if (existingRoute != preferredRoute) {
                 log.debug("[OrderExecutionService] Stickiness override: {} existing at {} → routing to {} instead of {}",
                         symbol, existing.getBroker(), existingRoute, preferredRoute);
             }
-            // If the existing broker is disabled, we can't average there.
-            // The caller will reject the buy — the position can still be exited via SELL.
+            // Never move an existing position to KITE just because its owning broker
+            // is disabled. That can create a separate position and split the inventory.
             if (!brokerToggleService.isEnabled(existingRoute)) {
-                log.info("🛑 [BrokerToggle] {} disabled — cannot average existing position at {} for {}",
+                log.info("🛑 [BrokerToggle] {} disabled — refusing to average existing position at {} for {}",
                         existingRoute, symbol, strategy);
-                return ExecutionRoute.KITE; // signals rejection to caller
+                return null;
             }
             return existingRoute;
         }
 
-        // New position: if preferred broker is disabled, fall back to KITE
-        if (!brokerToggleService.isEnabled(preferredRoute)) {
-            log.info("🔄 [BrokerToggle] {} disabled — falling back to KITE for new position in {}",
-                    preferredRoute, symbol);
-            return ExecutionRoute.KITE;
+        // New position: fall back only if KITE is both registered and enabled.
+        if (!brokerToggleService.isEnabled(preferredRoute) || !brokerRouter.isAvailable(preferredRoute)) {
+            ExecutionRoute fallback = ExecutionRoute.KITE;
+            if (brokerRouter.isAvailable(fallback) && brokerToggleService.isEnabled(fallback)) {
+                log.info("🔄 [BrokerToggle] {} unavailable/disabled — falling back to KITE for new position in {}",
+                        preferredRoute, symbol);
+                return fallback;
+            }
+            log.info("🛑 [BrokerToggle] No enabled/available broker for new position in {}", symbol);
+            return null;
         }
 
         return preferredRoute;
@@ -394,64 +427,76 @@ public class OrderExecutionService {
     // ─────────────────────────────────────────────────────────────────────
 
     public void executeSell(TradeSignal signal, Position position) throws IOException {
-        String symbol = signal.getSymbol();
-        String strategy = signal.getStrategyName();
-        int qty = position.getTotalQuantity();
-
-        if (killSwitchService.isActive()) {
-            log.info("🛑 [KILL SWITCH] Sell rejected for {}", symbol);
+        if (signal == null || position == null) {
+            log.warn("🛑 [executeSell] Refusing SELL with null signal/position");
             return;
         }
 
-        if (isOutsideTradingHours()) return;
+        String symbol = position.getSymbol();
+        String strategy = position.getStrategy() != null
+                ? position.getStrategy() : signal.getStrategyName();
 
-        if (position == null || !position.isOpen() || qty <= 0 || position.isExitProcessed()) {
-            log.info("Position not valid for sell: {}", symbol);
-            return;
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (killSwitchService.isActive()) {
+                log.info("🛑 [KILL SWITCH] Sell rejected for {}", symbol);
+                return;
+            }
+            if (isOutsideTradingHours()) return;
+
+            int qty = position.getTotalQuantity();
+            if (!position.isOpen() || qty <= 0 || position.isExitProcessed()) {
+                log.info("Position not valid for sell: {}", symbol);
+                return;
+            }
+            if (position.getPositionType() == HOLDING && position.getSecondaryTargetOrderId() != null) {
+                log.error("🛑 [executeSell] Blocking exit for {} while legacy secondary SELL {} is unresolved",
+                        symbol, position.getSecondaryTargetOrderId());
+                return;
+            }
+
+            String oldTargetId = position.getTargetOrderId();
+            if (oldTargetId != null
+                    && !brokerOrderRouter.cancelAndConfirmSell(position, oldTargetId, 2500L)) {
+                log.error("🛑 [executeSell] Existing SELL {} for {} is not confirmed terminal with zero fills",
+                        oldTargetId, symbol);
+                return;
+            }
+
+            if (oldTargetId != null) {
+                position.setTargetOrderId(null);
+                position.setTargetPlaced(false);
+            }
+
+            String brokerOrderId = brokerOrderRouter.placeLimitSell(
+                    position, symbol, signal.getEntryPrice(), qty,
+                    position.getPositionType() == HOLDING, strategy);
+            if (brokerOrderId == null) {
+                log.error("❌ [executeSell] Order placement FAILED for {}", symbol);
+                return;
+            }
+
+            PendingOrder po = brokerOrderRouter.createSellPending(
+                    position, brokerOrderId, symbol, strategy, qty,
+                    signal.getEntryPrice(), position.getPositionType() == HOLDING);
+            try {
+                pendingOrderRepository.save(po);
+            } catch (IOException e) {
+                position.setTargetOrderId(brokerOrderId);
+                position.setTargetPlaced(true);
+                positionManager.updatePosition(position);
+                log.error("🚨 SELL {} was accepted but its pending record could not be saved; reconcile immediately",
+                        brokerOrderId, e);
+                throw e;
+            }
+
+            position.setTargetOrderId(brokerOrderId);
+            position.setTargetPlaced(true);
+            positionManager.updatePosition(position);
+
+            // Do not set exitProcessed until the broker fill has been accounted for.
+            Exits.markAsExitedToday(symbol, strategy, position.getAveragePrice());
+            dipAccumulatorService.remove(symbol, strategy);
         }
-
-        boolean isHolding = position.getPositionType() == HOLDING;
-
-        // Route to the broker that owns this position
-        ExecutionRoute route = position.getExecutionRoute() != null
-                ? position.getExecutionRoute() : ExecutionRoute.KITE;
-        Broker broker = brokerRouter.getBrokerWithFallback(route);
-
-        // Cancel existing target order at that broker
-        if (position.getTargetOrderId() != null) {
-            broker.cancelOrder(position.getTargetOrderId());
-        }
-
-        // Place sell order
-        OrderRequest sellRequest = OrderRequest.builder()
-                .symbol(symbol)
-                .exchange("NSE")
-                .transactionType(TransactionType.SELL)
-                .orderType(OrderType.LIMIT)
-                .quantity(qty)
-                .price(signal.getEntryPrice())
-                .productType(isHolding ? ProductType.DELIVERY : ProductType.INTRADAY)
-                .strategyId(strategy)
-                .build();
-
-        BrokerOrderResponse response = broker.placeOrder(sellRequest);
-        if (response == null || !response.isAccepted() || response.getBrokerOrderId() == null) {
-            log.error("❌ [executeSell] Order placement FAILED for {}", symbol);
-            return;
-        }
-
-        String brokerOrderId = response.getBrokerOrderId();
-        String brokerName = broker.getBrokerName();
-
-        PendingOrder po = pendingOrderRepository.create(
-                brokerOrderId, symbol, com.satyam.trading2.datamodel.TradeSide.SELL, strategy,
-                qty, signal.getEntryPrice(), isHolding, brokerName, route, null);
-        pendingOrderRepository.save(po);
-
-        // Safety: mark exit state (also done in onSellCompleted)
-        position.setExitProcessed(true);
-        Exits.markAsExitedToday(symbol, strategy, position.getAveragePrice());
-        dipAccumulatorService.remove(symbol, strategy);
     }
 
     // ─────────────────────────────────────────────────────────────────────

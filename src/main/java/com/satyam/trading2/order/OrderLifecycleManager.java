@@ -52,65 +52,166 @@ public class OrderLifecycleManager {
         }
     }
 
+    private Object lifecycleLock(PendingOrder pendingOrder) {
+        String broker = pendingOrder.getBroker();
+        if (broker == null || broker.trim().isEmpty()) {
+            broker = pendingOrder.getExecutionRoute() != null
+                    ? pendingOrder.getExecutionRoute().name() : "KITE";
+        }
+        return SellLifecycleLockRegistry.lockFor(
+                pendingOrder.getSymbol(), pendingOrder.getStrategy(), broker,
+                pendingOrder.getPositionType());
+    }
+
     private void handleComplete(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
-        if (pendingOrder.getState().equals(PendingOrderState.COMPLETE))  return;
-        pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
-        pendingOrderRepository.save(pendingOrder);
-        if(event.getSide().equals(TradeSide.BUY))
-            orderCompletionProcessor.onBuyCompleted(pendingOrder);
-        else if(event.getSide().equals(TradeSide.SELL))
-            orderCompletionProcessor.onSellCompleted(pendingOrder);
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.getState().equals(PendingOrderState.COMPLETE)
+                    && pendingOrder.isCompletionProcessed()) return;
+
+            if (!pendingOrder.getState().equals(PendingOrderState.COMPLETE)) {
+                if (event.getFilledQuantity() == null
+                        || event.getFilledQuantity() != pendingOrder.getRequestQty()) {
+                    System.err.println("[OrderLifecycleManager] COMPLETE event for " + pendingOrder.getOrderId()
+                            + " has unknown/mismatched fill quantity; retaining reservation until reconciliation.");
+                    return;
+                }
+                PendingOrderState previousState = pendingOrder.getState();
+                int previousFilledQty = pendingOrder.getFilledQty();
+                double previousAvgPrice = pendingOrder.getAvgPrice();
+                long previousUpdatedTime = pendingOrder.getUpdatedTime();
+                pendingOrder.markCompleted(event.getAveragePrice(), event.getFilledQuantity());
+                try {
+                    pendingOrderRepository.save(pendingOrder);
+                } catch (IOException persistenceError) {
+                    pendingOrder.setState(previousState);
+                    pendingOrder.setFilledQty(previousFilledQty);
+                    pendingOrder.setAvgPrice(previousAvgPrice);
+                    pendingOrder.setUpdatedTime(previousUpdatedTime);
+                    throw persistenceError;
+                }
+            } else if (pendingOrder.getFilledQty() != pendingOrder.getRequestQty()) {
+                System.err.println("[OrderLifecycleManager] COMPLETE-but-unprocessed order has inconsistent fills: "
+                        + pendingOrder.getOrderId() + "; retaining reservation.");
+                restoreReservationIfUnprocessed(pendingOrder, null);
+                return;
+            }
+
+            TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
+            if (side == null) {
+                System.err.println("[OrderLifecycleManager] PendingOrder has null side; retaining reservation: "
+                        + pendingOrder.getOrderId());
+                restoreReservationIfUnprocessed(pendingOrder, null);
+                return;
+            }
+
+            try {
+                if (side == TradeSide.BUY) {
+                    orderCompletionProcessor.onBuyCompleted(pendingOrder);
+                } else if (side == TradeSide.SELL) {
+                    orderCompletionProcessor.onSellCompleted(pendingOrder);
+                }
+                if (!pendingOrder.isCompletionProcessed()) {
+                    System.err.println("[OrderLifecycleManager] Completion callback did not process "
+                            + pendingOrder.getOrderId() + "; retaining reservation until reconciliation.");
+                    restoreReservationIfUnprocessed(pendingOrder, null);
+                }
+            } catch (IOException | RuntimeException e) {
+                restoreReservationIfUnprocessed(pendingOrder, e);
+                throw e;
+            }
+        }
+    }
+
+    private void restoreReservationIfUnprocessed(PendingOrder pendingOrder, Throwable originalFailure) {
+        if (pendingOrder.isCompletionProcessed()) return;
+        pendingOrder.setState(PendingOrderState.PENDING);
+        try {
+            pendingOrderRepository.save(pendingOrder);
+        } catch (IOException persistenceError) {
+            if (originalFailure != null) originalFailure.addSuppressed(persistenceError);
+            System.err.println("[OrderLifecycleManager] CRITICAL: unable to persist retained reservation for "
+                    + pendingOrder.getOrderId() + ": " + persistenceError.getMessage());
+        }
     }
 
     private void handleCancelled(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.isClosed()) return;
 
-        // 1. Check if already cancelled to prevent duplicate processing
-        if (pendingOrder.getState().equals(PendingOrderState.CANCELLED)) {
-            return;
-        }
+            String symbol = pendingOrder.getSymbol();
+            String strategy = pendingOrder.getStrategy();
 
-        // 2. Mark the order as cancelled
-        pendingOrder.markCancelled();
-        pendingOrderRepository.save(pendingOrder);
+            TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
 
-        // 3. Release reserved capital (both strategy and symbol level)
-        // Calculate capital that was reserved for this order
-        double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
-        String symbol = pendingOrder.getSymbol();
-        String strategy = pendingOrder.getStrategy();
+            // A CANCELLED SELL can have partial fills. Do not release its reservation
+            // unless the event explicitly confirms zero fills; the local position may
+            // not yet reflect any shares sold by the cancelled order.
+            if (side == TradeSide.SELL
+                    && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
+                System.err.println("🚨 [OrderLifecycleManager] SELL " + pendingOrder.getOrderId()
+                        + " reported CANCELLED with unknown/non-zero filled quantity ("
+                        + event.getFilledQuantity() + "). Keeping reservation and blocking new SELLs until reconciliation.");
+                return;
+            }
 
-        riskManager.releaseCapital(strategy, reservedCapital);
-        riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
+            PendingOrderState previousState = pendingOrder.getState();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
+            pendingOrder.markCancelled();
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                throw persistenceError;
+            }
 
-        // 4. Remove DipState if this was a BUY order
-        if (event.getSide().equals(TradeSide.BUY)) {
-            dipAccumulatorService.remove(symbol, strategy);
+            if (side == TradeSide.BUY) {
+                double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
+                riskManager.releaseCapital(strategy, reservedCapital);
+                riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
+                dipAccumulatorService.remove(symbol, strategy);
+            }
         }
     }
 
     private void handleRejected(PendingOrder pendingOrder, BrokerWebhookEvent event) throws IOException {
+        synchronized (lifecycleLock(pendingOrder)) {
+            if (pendingOrder.isClosed()) return;
 
-        // 1. Check if already rejected to prevent duplicate processing
-        if (pendingOrder.getState().equals(PendingOrderState.REJECTED)) {
-            return;
-        }
+            String symbol = pendingOrder.getSymbol();
+            String strategy = pendingOrder.getStrategy();
 
-        // 2. Mark the order as rejected
-        pendingOrder.markRejected();
-        pendingOrderRepository.save(pendingOrder);
+            TradeSide side = pendingOrder.getSide() != null ? pendingOrder.getSide() : event.getSide();
 
-        // 3. Release reserved capital (both strategy and symbol level)
-        // Calculate capital that was reserved for this order
-        double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
-        String symbol = pendingOrder.getSymbol();
-        String strategy = pendingOrder.getStrategy();
+            // Reject is only safe to retire when the broker explicitly reports zero
+            // fills. Unknown fill data fails closed for SELLs just like cancellation.
+            if (side == TradeSide.SELL
+                    && !Integer.valueOf(0).equals(event.getFilledQuantity())) {
+                System.err.println("🚨 [OrderLifecycleManager] SELL " + pendingOrder.getOrderId()
+                        + " reported REJECTED with unknown/non-zero filled quantity ("
+                        + event.getFilledQuantity() + "). Keeping reservation pending reconciliation.");
+                return;
+            }
 
-        riskManager.releaseCapital(strategy, reservedCapital);
-        riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
+            PendingOrderState previousState = pendingOrder.getState();
+            long previousUpdatedTime = pendingOrder.getUpdatedTime();
+            String previousRejectionReason = pendingOrder.getRejectionReason();
+            pendingOrder.markRejected();
+            try {
+                pendingOrderRepository.save(pendingOrder);
+            } catch (IOException persistenceError) {
+                pendingOrder.setState(previousState);
+                pendingOrder.setUpdatedTime(previousUpdatedTime);
+                pendingOrder.setRejectionReason(previousRejectionReason);
+                throw persistenceError;
+            }
 
-        // 4. Remove DipState if this was a BUY order
-        if (event.getSide().equals(TradeSide.BUY)) {
-            dipAccumulatorService.remove(symbol, strategy);
+            if (side == TradeSide.BUY) {
+                double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
+                riskManager.releaseCapital(strategy, reservedCapital);
+                riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
+                dipAccumulatorService.remove(symbol, strategy);
+            }
         }
     }
 

@@ -5,6 +5,7 @@ import com.satyam.trading2.broker.model.BrokerFunds;
 import com.satyam.trading2.broker.model.BrokerOrderResponse;
 import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.broker.model.OrderRequest;
+import com.satyam.trading2.order.SellOrderAuthorizationContext;
 import com.satyam.trading2.broker.model.OrderType;
 import com.satyam.trading2.broker.model.ProductType;
 import com.satyam.trading2.broker.model.TransactionType;
@@ -156,6 +157,16 @@ public class IndstocksBroker extends AbstractRestBroker {
 
     @Override
     public BrokerOrderResponse placeOrder(OrderRequest request) {
+        if (request != null && request.getTransactionType() == TransactionType.SELL
+                && !SellOrderAuthorizationContext.isAuthorized()) {
+            log.error("[INDstocksBroker] Refusing direct SELL submission outside BrokerOrderRouter; "
+                    + "all SELLs must pass broker inventory and reservation checks.");
+            return BrokerOrderResponse.builder()
+                    .brokerName(getBrokerName())
+                    .accepted(false)
+                    .rejectionReason("SELL requires BrokerOrderRouter inventory/reservation authorization")
+                    .build();
+        }
         if (!indstocksConfig.isAuthenticated()) {
             return BrokerOrderResponse.builder()
                     .brokerName(getBrokerName())
@@ -354,9 +365,98 @@ public class IndstocksBroker extends AbstractRestBroker {
         }
     }
 
+    @Override
+    public Integer getOrderFilledQuantity(String brokerOrderId) {
+        if (!indstocksConfig.isAuthenticated()) return null;
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("order_id", brokerOrderId);
+            payload.put("segment", "EQUITY");
+            JsonNode resp = getWithBody(indstocksConfig.getBaseUrl() + "/order",
+                    objectMapper.writeValueAsString(payload), indstocksConfig.getAuthHeader());
+            if (!"success".equals(textOr(resp, "status", ""))) return null;
+            JsonNode data = resp.get("data");
+            if (data == null || data.isNull()) return null;
+            for (String field : new String[]{"filled_quantity", "filled_qty", "fillshares", "filledQuantity"}) {
+                int value = intOr(data, field, -1);
+                if (value >= 0) return value;
+            }
+            return null;
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] Unable to verify filled quantity for {}: {}",
+                    brokerOrderId, e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public Double getOrderAveragePrice(String brokerOrderId) {
+        if (!indstocksConfig.isAuthenticated()) return null;
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("order_id", brokerOrderId);
+            payload.put("segment", "EQUITY");
+            JsonNode resp = getWithBody(indstocksConfig.getBaseUrl() + "/order",
+                    objectMapper.writeValueAsString(payload), indstocksConfig.getAuthHeader());
+            if (!"success".equals(textOr(resp, "status", ""))) return null;
+            JsonNode data = resp.get("data");
+            if (data == null || data.isNull()) return null;
+            for (String field : new String[]{"average_price", "avg_price", "averagePrice", "avgprc"}) {
+                double value = doubleOr(data, field, -1);
+                if (value > 0) return value;
+            }
+            return null;
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] Unable to verify average fill price for {}: {}",
+                    brokerOrderId, e.getMessage());
+            return null;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // getFunds — GET /funds
     // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Query the owning broker's portfolio endpoint directly for sell authorization.
+     * Null means no trustworthy snapshot; only a successful array with no matching
+     * symbol is interpreted as zero inventory. CNC uses settled holding quantity
+     * reported by total_qty; intraday uses net_qty.
+     */
+    @Override
+    public Integer getNetSellableQuantity(String symbol, boolean holding) {
+        if (symbol == null || symbol.trim().isEmpty() || !indstocksConfig.isAuthenticated()) return null;
+        try {
+            String endpoint = holding
+                    ? "/portfolio/holdings"
+                    : "/portfolio/positions?segment=equity&product=intraday";
+            JsonNode resp = getJson(indstocksConfig.getBaseUrl() + endpoint,
+                    indstocksConfig.getAuthHeader(), SLOW_REQUEST_TIMEOUT_MS);
+            if (!"success".equals(textOr(resp, "status", ""))) return null;
+            JsonNode rows = resp.get("data");
+            if (rows == null || !rows.isArray()) return null;
+            for (JsonNode row : rows) {
+                if (!symbol.equalsIgnoreCase(textOr(row, "symbol", ""))) continue;
+                String field = holding ? "total_qty" : "net_qty";
+                int qty = intOr(row, field, -1);
+                if (qty < 0) return null;
+                if (holding) {
+                    // INDstocks documents total_qty as T1 + DP inventory and
+                    // used_qty as quantity already pledged/sold/otherwise blocked.
+                    // Subtract used_qty so committed shares are not sold twice.
+                    int used = intOr(row, "used_qty", -1);
+                    if (used < 0 || used > qty) return null;
+                    qty -= used;
+                }
+                return Math.max(0, qty);
+            }
+            return 0;
+        } catch (Exception e) {
+            log.warn("[IndstocksBroker] Unable to confirm sellable inventory for {}: {}",
+                    symbol, e.getMessage());
+            return null;
+        }
+    }
 
     @Override
     public BrokerFunds getFunds() {
@@ -640,8 +740,17 @@ public class IndstocksBroker extends AbstractRestBroker {
                 if (data != null && data.isArray()) {
                     log.info("[IndstocksBroker] Reconciliation: {} holdings from INDstocks", data.size());
                     for (JsonNode node : data) {
-                        upsertPosition(textOr(node, "symbol", null),
-                                intOr(node, "total_qty", 0),
+                        String symbol = textOr(node, "symbol", null);
+                        int totalQty = intOr(node, "total_qty", -1);
+                        int usedQty = intOr(node, "used_qty", -1);
+                        if (symbol == null || totalQty < 0 || usedQty < 0 || usedQty > totalQty) {
+                            log.warn("[IndstocksBroker] Skipping malformed holding row for {}; total_qty/used_qty are not trustworthy",
+                                    symbol);
+                            continue;
+                        }
+                        // Keep the tracked position on the same basis as sell
+                        // authorization: total holdings less shares already blocked/used.
+                        upsertPosition(symbol, totalQty - usedQty,
                                 doubleOr(node, "avg_price", 0),
                                 Position.PositionType.HOLDING);
                     }

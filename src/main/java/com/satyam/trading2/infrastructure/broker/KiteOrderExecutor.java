@@ -35,22 +35,29 @@ public class KiteOrderExecutor implements OrderExecutor {
         return response;
     }
     
+    /**
+     * Legacy interface entry point lacks a Position/broker inventory snapshot, so it
+     * cannot safely reserve available long quantity. All live SELLs must go through
+     * BrokerOrderRouter, which serializes the lifecycle and checks broker/account
+     * inventory plus outstanding SELL reservations.
+     */
     @Override
+    @Deprecated
     public String placeSellOrder(String symbol, int qty, double price, boolean isHolding, String strategy) {
-        String product = isHolding ? "CNC" : "MIS";
-        
-        log.info("🔴 LIVE SELL: {} @ {} Qty={} Product={}", symbol, price, qty, product);
-        
-        return orderService.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0, product, strategy);
+        log.error("🛑 Refusing legacy direct SELL for {}: Position-aware BrokerOrderRouter is required.", symbol);
+        return null;
     }
-    
+
+    /**
+     * Target replacement must also pass through BrokerOrderRouter so the old order's
+     * fill/cancel status and available long quantity are checked atomically.
+     */
     @Override
-    public String placeTargetOrder(String symbol, double targetPrice, int qty, 
+    @Deprecated
+    public String placeTargetOrder(String symbol, double targetPrice, int qty,
                                   String oldOrderId, boolean isHolding, String strategy) {
-        log.info("🎯 LIVE TARGET: {} @ {} Qty={} (updating from {})", 
-                symbol, targetPrice, qty, oldOrderId);
-        
-        return orderService.updateTargetOrder(symbol, targetPrice, qty, oldOrderId, isHolding, strategy);
+        log.error("🛑 Refusing legacy direct target SELL for {}: BrokerOrderRouter is required.", symbol);
+        return null;
     }
     
     @Override
@@ -59,9 +66,10 @@ public class KiteOrderExecutor implements OrderExecutor {
     }
     
     @Override
+    @Deprecated
     public String exitPosition(String symbol, int qty, boolean isHolding) {
-        log.info("🚪 LIVE EXIT: {} Qty={}", symbol, qty);
-       return orderService.exitPosition(symbol, qty, isHolding, "Dip-Accumulator-Momentum");
+        log.error("🛑 Refusing legacy direct exit for {}: a Position-aware BrokerOrderRouter is required.", symbol);
+        return null;
     }
 }
 

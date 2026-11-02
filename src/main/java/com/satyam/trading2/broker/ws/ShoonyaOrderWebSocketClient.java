@@ -182,7 +182,7 @@ public class ShoonyaOrderWebSocketClient extends BrokerWebSocketClient {
             return null;
         }
 
-        int fillShares = intOr(msg, "fillshares", 0);
+        Integer fillShares = nullableIntOr(msg, "fillshares");
         double avgPrc = doubleOr(msg, "avgprc", 0);
         String remarks = textOr(msg, "remarks", null);
 
@@ -237,6 +237,12 @@ public class ShoonyaOrderWebSocketClient extends BrokerWebSocketClient {
     private String textOr(JsonNode node, String field, String def) {
         JsonNode f = node.get(field);
         return (f != null && !f.isNull()) ? f.asText() : def;
+    }
+
+    private Integer nullableIntOr(JsonNode node, String field) {
+        JsonNode f = node.get(field);
+        if (f == null || f.isNull()) return null;
+        try { return Integer.parseInt(f.asText()); } catch (NumberFormatException e) { return null; }
     }
 
     private int intOr(JsonNode node, String field, int def) {

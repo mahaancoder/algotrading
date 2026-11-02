@@ -9,6 +9,7 @@ import com.satyam.trading2.datamodel.TradeSignal;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.infrastructure.messaging.BroadcastService;
 import com.satyam.trading2.order.BrokerOrderRouter;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.repository.HoldingMetadataRepository;
 import com.satyam.trading2.service.DipAccumulatorService;
@@ -42,13 +43,6 @@ public class ConvertOrSellPositionScheduler {
     private final BrokerOrderRouter brokerOrderRouter;
 
     // ===== FIX: Use ExecutionEngine's locks to prevent race conditions =====
-    private Object getSymbolStrategyLock(String symbol, String strategy) {
-        return executionEngine.getSymbolStrategyLocks().computeIfAbsent(
-            symbol + "_" + strategy,
-            k -> new Object()
-        );
-    }
-
     // Suffix on a forced-MIS leg (MIS-only mode). The leg is tracked under
     // "<strategy>#MIS" intraday; when it converts to a CNC holding at EOD it is
     // re-keyed back to the base strategy so it merges with the normal holding book.
@@ -110,7 +104,7 @@ public class ConvertOrSellPositionScheduler {
 
             if (pnl >= 0) {
                 // ===== FIX: Synchronize on symbol+strategy lock to prevent race with webhook handler =====
-                synchronized (getSymbolStrategyLock(symbol, strategy)) {
+                synchronized (SellLifecycleLockRegistry.lockFor(position)) {
                     try {
                         // ===== FIX: Double-check exit status before placing order (prevent race condition) =====
                         if (position.isExitProcessed()) {
@@ -173,12 +167,28 @@ public class ConvertOrSellPositionScheduler {
             double pnl = (ltp - position.getAveragePrice()) * position.getTotalQuantity();
 
             try {
-                // ===== MIS-ONLY LEG: re-key to the base strategy before converting =====
-                // A forced-MIS leg is tracked under "<strategy>#MIS" so it coexists
-                // with any existing holding intraday. When it converts to a CNC holding
-                // at EOD, it must live under the BASE strategy (the key holdings are
-                // fetched/restored under) — so drop the old "#MIS"-keyed entry and
-                // rewrite the position's strategy to the base before persisting.
+                synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                // Confirm all existing SELL orders are cancelled with zero fills BEFORE
+                // converting/re-keying the position. If fills are unknown, leave the MIS
+                // position intact and let reconciliation establish the real quantity.
+                if (position.getTargetOrderId() != null
+                        && !brokerOrderRouter.cancelAndConfirmSell(position, position.getTargetOrderId(), 2500L)) {
+                    System.err.println("🛑 [ConvertOrSellPositionScheduler] Cannot convert " + symbol
+                            + ": target SELL is not confirmed cancelled with zero fills.");
+                    continue;
+                }
+                if (position.getStopLossOrderId() != null
+                        && !brokerOrderRouter.cancelAndConfirmSell(position, position.getStopLossOrderId(), 2500L)) {
+                    System.err.println("🛑 [ConvertOrSellPositionScheduler] Cannot convert " + symbol
+                            + ": secondary SELL/stop order is not confirmed cancelled with zero fills.");
+                    continue;
+                }
+                position.setTargetOrderId(null);
+                position.setTargetPlaced(false);
+                position.setStopLossOrderId(null);
+
+                // Only re-key after broker conversion succeeds, so API failures do not
+                // drop the live MIS position from local tracking.
                 if (isForcedMisLeg(position)) {
                     String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
                     String misStrategy = position.getStrategy();
@@ -186,23 +196,7 @@ public class ConvertOrSellPositionScheduler {
                     dipAccumulatorService.remove(symbol, misStrategy);
                     position.setStrategy(baseStrategy(misStrategy));
                 }
-
                 position.setPositionType(HOLDING);
-                // convertToHolding (MIS→CNC) is a Kite-only API. Non-KITE brokers
-                // (Shoonya/INDstocks) have no product-conversion endpoint on the Broker
-                // interface, so for them we only flip the position type internally.
-                if (brokerOrderRouter.isKite(position)) {
-                    orderServiceV2.convertToHolding(symbol, position.getTotalQuantity());
-                } else {
-                    System.out.println("ℹ️ [ConvertOrSellPositionScheduler] " + brokerOrderRouter.brokerOf(position) +
-                            " has no MIS→CNC convert API — marking " + symbol + " as HOLDING internally only.");
-                }
-
-                // Cancel target and SL orders at the broker that owns this position
-                brokerOrderRouter.cancelViaBroker(position, position.getTargetOrderId());
-                brokerOrderRouter.cancelViaBroker(position, position.getStopLossOrderId());
-                position.setTargetOrderId(null);
-                position.setStopLossOrderId(null);
 
                 // Re-insert under the (possibly re-keyed) strategy so a converted
                 // forced-MIS leg is now tracked as a HOLDING under the base strategy.
@@ -227,6 +221,7 @@ public class ConvertOrSellPositionScheduler {
                 }
                 broadcastService.broadcastLog("Converted to HOLDING: " + symbol + " PnL=" + String.format("%.2f", pnl) +
                                              " | EntryType=" + (position.getEntryType() != null ? position.getEntryType() : "UNKNOWN"));
+                }
             } catch (Exception e) {
                 System.out.println("Error converting position to holding: " + symbol);
                 e.printStackTrace();

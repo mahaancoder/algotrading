@@ -36,7 +36,7 @@ public class BrokerOrderEvent {
     private BrokerOrderStatus status;
 
     /** Quantity filled so far (cumulative). */
-    private int filledQuantity;
+    private Integer filledQuantity;
 
     /** Average fill price (0 until filled). */
     private double averagePrice;

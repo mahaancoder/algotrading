@@ -44,6 +44,7 @@ public class OrderCompletionProcessor {
     private final com.satyam.trading2.service.MarketContextBuilder marketContextBuilder;
     private final com.satyam.trading2.service.TradeMetricsCollector tradeMetricsCollector;
     private final com.satyam.trading2.broker.BrokerRouter brokerRouter;
+    private final BrokerOrderRouter brokerOrderRouter;
 
 
     // Async executor for non-blocking broadcasts
@@ -57,12 +58,10 @@ public class OrderCompletionProcessor {
             }
     );
 
-    // ===== FIX: Helper method to get symbol+strategy lock from ExecutionEngine =====
+    // Use the same symbol lock as BUY execution, SELL lifecycle, and schedulers.
     private Object getSymbolStrategyLock(String symbol, String strategy) {
-        return executionEngine.getSymbolStrategyLocks().computeIfAbsent(
-            symbol + "_" + strategy,
-            k -> new Object()
-        );
+        return SellLifecycleLockRegistry.lockFor(
+                symbol, strategy, "KITE", Position.PositionType.INTRADAY);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -77,18 +76,21 @@ public class OrderCompletionProcessor {
     // ─────────────────────────────────────────────────────────────────────
 
     private com.satyam.trading2.broker.ExecutionRoute routeOf(Position position) {
-        return position.getExecutionRoute() != null
-                ? position.getExecutionRoute() : com.satyam.trading2.broker.ExecutionRoute.KITE;
+        if (position.getExecutionRoute() != null) return position.getExecutionRoute();
+        if (position.getBroker() != null) {
+            try {
+                return com.satyam.trading2.broker.ExecutionRoute.valueOf(
+                        position.getBroker().trim().toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // Legacy/unknown broker labels use the backward-compatible default.
+            }
+        }
+        return com.satyam.trading2.broker.ExecutionRoute.KITE;
     }
 
     /** Cancel an order at the broker that owns the position. */
     private void cancelViaBroker(Position position, String orderId) {
-        if (orderId == null) return;
-        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
-            orderServiceV2.cancelOrder(orderId);
-        } else {
-            brokerRouter.getBrokerWithFallback(routeOf(position)).cancelOrder(orderId);
-        }
+        brokerOrderRouter.cancelViaBroker(position, orderId);
     }
 
     /**
@@ -99,11 +101,8 @@ public class OrderCompletionProcessor {
      */
     private String placeTargetSell(Position position, String symbol, double price, int qty,
                                    String oldTargetOrderId, boolean isHolding, String strategy) {
-        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
-            return orderServiceV2.updateTargetOrder(symbol, price, qty, oldTargetOrderId, isHolding, strategy);
-        }
-        cancelViaBroker(position, oldTargetOrderId);
-        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
+        return brokerOrderRouter.placeTargetSell(
+                position, symbol, price, qty, oldTargetOrderId, isHolding, strategy);
     }
 
     /**
@@ -114,41 +113,9 @@ public class OrderCompletionProcessor {
      */
     private String placeLimitSell(Position position, String symbol, double price, int qty,
                                   boolean isHolding, String strategy) {
-        if (routeOf(position) == com.satyam.trading2.broker.ExecutionRoute.KITE) {
-            return orderServiceV2.placeOrder(symbol, "SELL", "LIMIT", qty, price, 0,
-                    isHolding ? "CNC" : "MIS", strategy);
-        }
-        return placeLimitSellViaBroker(position, symbol, price, qty, isHolding, strategy);
-    }
-
-    private String placeLimitSellViaBroker(Position position, String symbol, double price, int qty,
-                                           boolean isHolding, String strategy) {
-        com.satyam.trading2.broker.ExecutionRoute route = routeOf(position);
-        com.satyam.trading2.broker.Broker broker = brokerRouter.getBrokerWithFallback(route);
-        com.satyam.trading2.broker.model.OrderRequest req =
-                com.satyam.trading2.broker.model.OrderRequest.builder()
-                        .symbol(symbol)
-                        .exchange("NSE")
-                        .transactionType(com.satyam.trading2.broker.model.TransactionType.SELL)
-                        .orderType(com.satyam.trading2.broker.model.OrderType.LIMIT)
-                        .quantity(qty)
-                        .price(price)
-                        .productType(isHolding
-                                ? com.satyam.trading2.broker.model.ProductType.DELIVERY
-                                : com.satyam.trading2.broker.model.ProductType.INTRADAY)
-                        .strategyId(strategy)
-                        .build();
-//        System.out.println("🎯 [OrderCompletionProcessor] Placing " + (isHolding ? "DELIVERY" : "INTRADAY")
-//                + " SELL via " + route + " for " + symbol + " qty=" + qty + " @ ₹" + String.format("%.2f", price));
-        com.satyam.trading2.broker.model.BrokerOrderResponse resp = broker.placeOrder(req);
-        if (resp != null && resp.isAccepted() && resp.getBrokerOrderId() != null) {
-//            System.out.println("🎯 [OrderCompletionProcessor] " + route + " sell placed for " + symbol
-//                    + " @ ₹" + String.format("%.2f", price) + " (qty=" + qty + ", id=" + resp.getBrokerOrderId() + ")");
-            return resp.getBrokerOrderId();
-        }
-//        System.out.println("❌ [OrderCompletionProcessor] " + route + " sell REJECTED for " + symbol
-//                + ": " + (resp != null ? resp.getRejectionReason() : "null response"));
-        return null;
+        // All completion-triggered exits use the same broker-symbol lock and
+        // quantity-reservation guard as scheduler/manual SELL paths.
+        return brokerOrderRouter.placeLimitSell(position, symbol, price, qty, isHolding, strategy);
     }
 
     /** Create a SELL PendingOrder tagged with the position's broker + route so the
@@ -206,7 +173,9 @@ public class OrderCompletionProcessor {
                 }
             }
 
-//        2. IDEMPOTENCY
+// Serialize BUY-fill position updates with the same lock used by all SELL lifecycle paths.
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            //        2. IDEMPOTENCY
             if(position.getBuyOrderIds().contains(orderId)) {
                 System.out.println("⚠️ Order already processed (idempotency check), exiting");
                 return;
@@ -277,7 +246,15 @@ public class OrderCompletionProcessor {
                 }
 
                 // --- Sell Order A: holding target (total qty, 0.03% above blended avg) ---
-                if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), holdingTargetPrice)) {
+                // If a legacy secondary SELL exists, do not place a new full-quantity
+                // primary SELL until that order is reconciled. A cancel request alone is
+                // not proof that the secondary order cannot still execute.
+                if (oldSecondaryOrderId != null) {
+                    System.err.println("🛑 [OrderCompletionProcessor] Not placing a replacement holding SELL for "
+                            + pendingOrder.getSymbol() + " while legacy secondary SELL "
+                            + oldSecondaryOrderId + " is unresolved.");
+                    position.setTargetPlaced(false);
+                } else if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), holdingTargetPrice)) {
                     String holdingSellOrderId = placeTargetSell(
                             position, pendingOrder.getSymbol(), holdingTargetPrice, newQty, oldTargetOrderId, true, position.getStrategy());
                     if (holdingSellOrderId != null) {
@@ -300,30 +277,27 @@ public class OrderCompletionProcessor {
                     position.setTargetOrderId(null);
                 }
 
-                // --- Sell Order B: quick exit (new buy qty only, 1% above new buy avg) ---
-                if (com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(pendingOrder.getSymbol(), quickExitPrice)) {
-                    String quickExitOrderId = placeLimitSell(
-                            position, pendingOrder.getSymbol(), quickExitPrice, newBuyQty, true, position.getStrategy());
-                    if (quickExitOrderId != null) {
-                        position.setSecondaryTargetOrderId(quickExitOrderId);
-                        position.setSecondaryTargetQty(newBuyQty);
-                        position.setSecondaryTargetPlaced(true);
-                        PendingOrder quickPO = createSellPending(
-                                position, quickExitOrderId, pendingOrder.getSymbol(),
-                                pendingOrder.getStrategy(), newBuyQty, quickExitPrice, true);
-                        pendingOrderRepository.save(quickPO);
-                        System.out.println("✅ [OrderCompletionProcessor] Quick-exit sell placed: " + quickExitOrderId +
-                                         " (qty=" + newBuyQty + ", price=₹" + String.format("%.2f", quickExitPrice) + ")");
-                    } else {
-                        System.err.println("❌ [OrderCompletionProcessor] Quick-exit sell FAILED for " + pendingOrder.getSymbol());
-                        position.setSecondaryTargetPlaced(false);
-                        position.setSecondaryTargetOrderId(null);
-                    }
-                } else {
-                    System.out.println("🚫 [OrderCompletionProcessor] Quick-exit price hits circuit limit — skipping sell B");
+                // SAFETY: Do not place a second, overlapping SELL order for the new
+                // buy quantity. The primary holding target already covers the full
+                // holding quantity (new + existing shares); a concurrent quick-exit
+                // SELL can execute before the primary cancellation is confirmed and
+                // sell more shares than are owned.
+                // Do not forget a legacy secondary order merely because cancellation
+                // was requested. Keep its ID attached until broker reconciliation confirms
+                // it is terminal and its fills have been accounted for. The trailing
+                // scheduler fails closed while this ID remains associated with the holding.
+                if (oldSecondaryOrderId == null) {
+                    position.setSecondaryTargetQty(0);
                     position.setSecondaryTargetPlaced(false);
-                    position.setSecondaryTargetOrderId(null);
+                } else {
+                    position.setSecondaryTargetOrderId(oldSecondaryOrderId);
+                    position.setSecondaryTargetPlaced(true);
+                    System.err.println("🛑 [OrderCompletionProcessor] Legacy secondary SELL "
+                            + oldSecondaryOrderId + " remains unresolved for " + pendingOrder.getSymbol()
+                            + "; manual/broker reconciliation is required before another SELL is placed.");
                 }
+                System.out.println("🛡️ [OrderCompletionProcessor] Holding uses one SELL order only for "
+                        + pendingOrder.getSymbol() + " (qty=" + newQty + ") for new orders.");
 
             } else {
                 // ===== INTRADAY / MIS: Single target sell order (existing logic) =====
@@ -422,6 +396,8 @@ public class OrderCompletionProcessor {
             String entryType = position.getEntryType() != null ? position.getEntryType().name() : null;
             broadcastService.broadcastBuy(symbol, pendingOrder.getStrategy(), pendingOrder.getAvgPrice(), pendingOrder.getFilledQty(), entryType);
 
+            }
+
         } catch (Exception e) {
             System.out.println("❌❌❌ EXCEPTION in onBuyCompleted for " + pendingOrder.getSymbol()
                     + " " + pendingOrder.getStrategy() + " (orderId=" + pendingOrder.getOrderId()
@@ -454,24 +430,35 @@ public class OrderCompletionProcessor {
                 return;
             }
 
-            // ===== DUAL SELL-ORDER: Cancel the other sell order when one fills =====
+            // Serialize the entire fill/cancel/position-update lifecycle against all schedulers.
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            int confirmedSoldQty = pendingOrder.getFilledQty();
+            if (confirmedSoldQty <= 0 || confirmedSoldQty > position.getTotalQuantity()) {
+                System.err.println("🚨 [OrderCompletionProcessor] Refusing to apply SELL " + sellOrderId
+                        + " with filledQty=" + confirmedSoldQty + " to local position quantity="
+                        + position.getTotalQuantity() + "; retaining order reservation for reconciliation.");
+                return;
+            }
+            // ===== LEGACY DUAL SELL: confirm the other order is cancelled with zero fills =====
+            boolean otherSellCancelled = true;
+            String unresolvedOtherSellId = null;
             if (position.getTargetOrderId() != null && position.getSecondaryTargetOrderId() != null) {
-                if (isSecondarySell) {
-                    // Quick-exit (secondary) filled → cancel the holding target (primary)
-                    String primaryOrderId = position.getTargetOrderId();
-                    System.out.println("🔗 [OrderCompletionProcessor] Quick-exit sell filled for " + symbol +
-                                     " → cancelling holding target sell " + primaryOrderId);
-                    try { cancelViaBroker(position, primaryOrderId); } catch (Exception e) {
-                        System.err.println("⚠️ Failed to cancel primary sell " + primaryOrderId + ": " + e.getMessage());
-                    }
+                String otherOrderId = isSecondarySell
+                        ? position.getTargetOrderId()
+                        : position.getSecondaryTargetOrderId();
+                otherSellCancelled = brokerOrderRouter.cancelAndConfirmSell(position, otherOrderId, 2500L);
+                if (!otherSellCancelled) {
+                    unresolvedOtherSellId = otherOrderId;
+                    System.err.println("🚨 [OrderCompletionProcessor] SELL fill for " + symbol
+                            + " raced with cancellation of other SELL " + otherOrderId
+                            + ". No replacement SELL will be placed; position requires immediate broker reconciliation.");
+                } else if (isSecondarySell) {
+                    position.setTargetOrderId(null);
+                    position.setTargetPlaced(false);
                 } else {
-                    // Holding target (primary) filled → cancel the quick-exit (secondary)
-                    String secondaryOrderId = position.getSecondaryTargetOrderId();
-                    System.out.println("🔗 [OrderCompletionProcessor] Holding target sell filled for " + symbol +
-                                     " → cancelling quick-exit sell " + secondaryOrderId);
-                    try { cancelViaBroker(position, secondaryOrderId); } catch (Exception e) {
-                        System.err.println("⚠️ Failed to cancel secondary sell " + secondaryOrderId + ": " + e.getMessage());
-                    }
+                    position.setSecondaryTargetOrderId(null);
+                    position.setSecondaryTargetQty(0);
+                    position.setSecondaryTargetPlaced(false);
                 }
             }
 
@@ -482,31 +469,50 @@ public class OrderCompletionProcessor {
             double pnl = (sellPrice - buyPrice) * soldQty;
 
             // ===== FIX: Synchronize on symbol+strategy lock to prevent race with scheduler =====
-            synchronized (getSymbolStrategyLock(symbol, strategy)) {
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
                 // Double-check exit status after acquiring lock
                 if(position.isExitProcessed()){
                     System.out.println("⚠️ Position already exited (after lock acquisition), exiting");
                     return;
                 }
             position.setRealizedPnl(pnl);
-
-            position.setExitProcessed(true);
             position.setUpdatedAt(System.currentTimeMillis());
-            if (position.getTotalQuantity() == soldQty) {
-                // Full exit
+            boolean fullExit = position.getTotalQuantity() == soldQty;
+            if (fullExit) {
                 position.setOpen(false);
-                positionManager.updatePosition(position);
-                // Broker-aware removal: use the position's broker dimension
-                String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
-                positionManager.removePosition(symbol, strategy, posBroker);
+                position.setExitProcessed(true);
+                if (otherSellCancelled) {
+                    positionManager.updatePosition(position);
+                    // Broker-aware removal: use the position's broker dimension.
+                    String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
+                    positionManager.removePosition(symbol, strategy, posBroker);
+                } else {
+                    // Keep a tombstone with the unresolved order IDs so a later broker
+                    // event/reconciliation can still find it. Never place a replacement.
+                    if (unresolvedOtherSellId != null && isSecondarySell) {
+                        position.setTargetOrderId(unresolvedOtherSellId);
+                    } else if (unresolvedOtherSellId != null) {
+                        position.setSecondaryTargetOrderId(unresolvedOtherSellId);
+                        position.setSecondaryTargetPlaced(true);
+                    }
+                    positionManager.updatePosition(position);
+                }
             } else {
-                // Partial exit
+                // Partial exit: keep the remaining long position active. If the other
+                // SELL cannot be confirmed cancelled, retain its ID and do not replace it.
                 position.setTotalQuantity(position.getTotalQuantity() - soldQty);
+                position.setExitProcessed(false);
                 positionManager.updatePosition(position);
             }
 
                 dipAccumulatorService.remove(symbol, strategy);
                 pendingOrder.markCompletionProcessed();
+                // A terminal order can have a partial cumulative fill. Its executed
+                // shares have now been applied to Position, but the broker order itself
+                // remains CANCELLED/REJECTED rather than COMPLETE.
+                if (pendingOrder.getFilledQty() < pendingOrder.getRequestQty()) {
+                    pendingOrder.markCancelled();
+                }
                 pendingOrderRepository.save(pendingOrder);
                 String tradeBroker = position.getBroker() != null ? position.getBroker() : "KITE";
                 pnlCalculator.recordTrade(pnl, strategy, tradeBroker);
@@ -517,7 +523,7 @@ public class OrderCompletionProcessor {
                 // ===== DUAL SELL: If quick-exit (secondary) filled, re-place a sell
                 // for the remaining holdings (since we cancelled the holding target).
                 // The remaining qty = total - secondaryTargetQty.
-                if (isSecondarySell && position.isOpen()) {
+                if (isSecondarySell && position.isOpen() && otherSellCancelled) {
                     int remainingQty = position.getTotalQuantity(); // already reduced by partial exit
                     if (remainingQty > 0) {
                         double remainingAvg = position.getAveragePrice();
@@ -612,6 +618,8 @@ public class OrderCompletionProcessor {
             sellEvent.setTime(System.currentTimeMillis());
             sellEvent.setBroker(position.getBroker() != null ? position.getBroker() : "KITE");
             tradeJournalService.saveEvent(sellEvent);
+
+            }
 
         } catch (Exception e) {
             System.err.println("❌❌❌ EXCEPTION in onSellCompleted ❌❌❌");

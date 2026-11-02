@@ -10,6 +10,8 @@ import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.infrastructure.messaging.BroadcastService;
 import com.satyam.trading2.infrastructure.messaging.SnapshotService;
 import com.satyam.trading2.order.PendingOrderRepository;
+import com.satyam.trading2.order.BrokerOrderRouter;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.websocket.WebSocketBroadcaster;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -36,18 +38,19 @@ public class ExecutionEngine {
     private final PositionManager positionManager;
     private final OrderExecutor orderExecutor;
     private final PendingOrderRepository pendingOrderRepository;
+    private final BrokerOrderRouter brokerOrderRouter;
     private final DipAccumulatorService dipAccumulatorService;
     private final SignalAnalyticsService signalAnalyticsService;
     private final KillSwitchService killSwitchService;
     private final ProductToggleService productToggleService;
 
-    // ===== GETTER: Allow other components to use the same locks for synchronization =====
-    private final Map<String, Object> symbolStrategyLocks = new ConcurrentHashMap<>();
+    // Legacy execution is Kite-only. Reuse the shared broker-symbol lock so
+    // strategy and MIS/CNC allocations cannot race SELL lifecycle operations.
     public final Map<String, MarketContext> symbolMarketContext = new ConcurrentHashMap<>();
 
     private Object getSymbolStrategyLock(String symbol, String strategy) {
-        String lockKey = symbol + "_" + strategy;
-        return symbolStrategyLocks.computeIfAbsent(lockKey, k -> new Object());
+        return SellLifecycleLockRegistry.lockFor(
+                symbol, strategy, "KITE", Position.PositionType.INTRADAY);
     }
 
     private boolean isOutsideTradingHours() {
@@ -179,8 +182,21 @@ public class ExecutionEngine {
             return;
         }
 
+        boolean pendingBuyExists = pendingOrderRepository.findOpenOrders().stream()
+                .filter(java.util.Objects::nonNull)
+                .anyMatch(order -> order.getSide() == TradeSide.BUY
+                        && symbol.equalsIgnoreCase(order.getSymbol())
+                        && "KITE".equalsIgnoreCase(order.getBroker() != null ? order.getBroker() : "KITE"));
+        if (pendingBuyExists) {
+            riskManager.releaseCapital(strategy, actualCapital);
+            riskManager.releaseCapitalForSymbol(symbol, actualCapital);
+            signalAnalyticsService.recordSignal(signal, false,
+                    "Pending BUY already exists for this symbol", actualCapital);
+            return;
+        }
+
         try {
-            // ===== STEP 3: PLACE ENTRY ORDER (This is the critical path - minimize time here) =====
+            // ===== STEP 3: PLACE ENTRY ORDER (This is the critical path - minimize time here)
             OrderResponse res = orderExecutor.placeBuyOrder(symbol, qty, entry, isHolding, strategy);
 
             // ===== STEP 4: CREATE PENDING ORDER =====
@@ -246,44 +262,112 @@ public class ExecutionEngine {
     }
 
     public void executeSell(TradeSignal signal, Position position) throws IOException {
-
-        String symbol = signal.getSymbol();
-        String strategy = signal.getStrategyName();
-        int qty = position.getTotalQuantity();
-
-        // ===== KILL SWITCH CHECK (highest priority - stops all trading) =====
-        if (killSwitchService.isActive()) {
-            System.out.println("🛑 [KILL SWITCH] Sell rejected for " + symbol + " - Kill switch is ACTIVE");
+        if (position == null || signal == null) {
+            System.err.println("🛑 [executeSell] Refusing SELL with null signal/position.");
             return;
         }
 
-        if(isOutsideTradingHours()) return;
-        // Validation
-        if (position == null || !position.isOpen() || qty <= 0 || position.isExitProcessed()) {
-            System.out.println("Position not valid for sell: isOpen=" + position.isOpen() + ", qty=" + qty);
-            return;
+        String symbol = position.getSymbol();
+        String strategy = position.getStrategy() != null
+                ? position.getStrategy() : signal.getStrategyName();
+
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            // Kill switch and trading-window checks are repeated inside the shared
+            // lock so another scheduler cannot race a forced exit against a target update.
+            if (killSwitchService.isActive()) {
+                System.out.println("🛑 [KILL SWITCH] Sell rejected for " + symbol + " - Kill switch is ACTIVE");
+                return;
+            }
+            if (isOutsideTradingHours()) return;
+
+            int qty = position.getTotalQuantity();
+            if (!position.isOpen() || qty <= 0 || position.isExitProcessed()) {
+                System.out.println("Position not valid for sell: isOpen=" + position.isOpen()
+                        + ", qty=" + qty + ", exitProcessed=" + position.isExitProcessed());
+                return;
+            }
+
+            // A legacy second holding SELL makes the available long quantity uncertain.
+            // Do not place another order until the legacy order is reconciled.
+            if (position.getPositionType() == HOLDING && position.getSecondaryTargetOrderId() != null) {
+                System.err.println("🛑 [executeSell] Blocking exit for " + symbol
+                        + ": legacy secondary SELL " + position.getSecondaryTargetOrderId()
+                        + " still requires broker reconciliation.");
+                return;
+            }
+
+            String oldTargetId = position.getTargetOrderId();
+            if (oldTargetId != null
+                    && !brokerOrderRouter.cancelAndConfirmSell(position, oldTargetId, 2500L)) {
+                System.err.println("🛑 [executeSell] Blocking replacement exit for " + symbol
+                        + ": existing SELL " + oldTargetId
+                        + " is not confirmed terminal with zero fills.");
+                return;
+            }
+
+            // Cancellation has been confirmed with zero fills; retire the local pending
+            // record before submitting a replacement. If persistence fails, fail closed.
+            if (oldTargetId != null) {
+                try {
+                    pendingOrderRepository.findByBrokerAndBrokerOrderId(
+                                    brokerOrderRouter.brokerOf(position), oldTargetId)
+                            .ifPresent(oldPending -> {
+                                com.satyam.trading2.datamodel.PendingOrderState previousState = oldPending.getState();
+                                long previousUpdatedTime = oldPending.getUpdatedTime();
+                                oldPending.markCancelled();
+                                try {
+                                    pendingOrderRepository.save(oldPending);
+                                } catch (IOException e) {
+                                    oldPending.setState(previousState);
+                                    oldPending.setUpdatedTime(previousUpdatedTime);
+                                    throw new IllegalStateException("Could not persist cancelled SELL " + oldTargetId, e);
+                                }
+                            });
+                } catch (RuntimeException e) {
+                    System.err.println("🛑 [executeSell] Could not persist old SELL cancellation for "
+                            + symbol + "; refusing replacement: " + e.getMessage());
+                    return;
+                }
+                position.setTargetOrderId(null);
+                position.setTargetPlaced(false);
+            }
+
+            String orderId = brokerOrderRouter.placeLimitSell(
+                    position, symbol, signal.getEntryPrice(), qty,
+                    position.getPositionType() == HOLDING, strategy);
+
+            if (orderId == null) {
+                System.err.println("❌ [executeSell] Exit SELL placement failed for " + symbol);
+                return;
+            }
+
+            PendingOrder pending = brokerOrderRouter.createSellPending(
+                    position, orderId, symbol, strategy, qty, signal.getEntryPrice(),
+                    position.getPositionType() == HOLDING);
+            try {
+                pendingOrderRepository.save(pending);
+            } catch (IOException e) {
+                // The broker order exists but local tracking failed. Keep the order ID on
+                // the position so reconciliation can find it; do not submit another SELL.
+                position.setTargetOrderId(orderId);
+                position.setTargetPlaced(true);
+                positionManager.updatePosition(position);
+                System.err.println("🚨 [executeSell] SELL " + orderId + " was accepted but pending-order persistence failed. "
+                        + "Reconcile broker order immediately: " + e.getMessage());
+                throw e;
+            }
+
+            // Do not set exitProcessed here: the completion handler uses it to decide
+            // whether the actual fill has already been accounted for. The active order
+            // ID itself prevents unsafe cancel/replace because cancellation must be
+            // confirmed with zero fills first.
+            position.setTargetOrderId(orderId);
+            position.setTargetPlaced(true);
+            positionManager.updatePosition(position);
+
+            Exits.markAsExitedToday(symbol, strategy);
+            dipAccumulatorService.remove(symbol, strategy);
         }
-
-        // ===== EXECUTE SELL (using OrderExecutor) =====
-        boolean isHolding = position.getPositionType() == HOLDING;
-        orderExecutor.cancelOrder(position.getTargetOrderId());
-        String orderId = orderExecutor.placeSellOrder(symbol, qty, signal.getEntryPrice(), isHolding,strategy);
-
-        // Null check - if order placement failed, don't proceed
-        if (orderId == null) {
-            System.out.println("❌ [executeSell] Order placement FAILED for " + symbol + " - orderId is null. Aborting.");
-            return;
-        }
-
-        PendingOrder po = pendingOrderRepository.create(orderId, symbol, TradeSide.SELL, strategy, qty , signal.getEntryPrice(), isHolding);
-        pendingOrderRepository.save(po);  // ✅ Save to repository so webhook can find it
-
-//        ALL 3 below steps we are doing at onsellcompleted event too here we are doing only for safety sake
-        position.setExitProcessed(true);
-        // ===== MARK AS EXITED (using RiskManager) - PER STRATEGY =====
-        Exits.markAsExitedToday(symbol, strategy);
-        // ===== CLEANUP STATE =====
-        dipAccumulatorService.remove(symbol, strategy);
     }
 
     private boolean isAccumulationAllowed(Position existingPosition, double newPrice, String symbol, String strategy) {
