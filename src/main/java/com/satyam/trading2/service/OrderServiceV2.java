@@ -394,15 +394,14 @@ public class OrderServiceV2 {
             for (JsonNode row : rows) {
                 if (!symbol.equalsIgnoreCase(row.path("tradingsymbol").asText())) continue;
                 if (holding) {
-                    // Kite quantity is settled demat inventory. used_quantity is
-                    // already committed/sold during the day and must not be made
-                    // available for another SELL. T1 and collateral quantities are
-                    // intentionally excluded from this sell authorization.
-                    JsonNode qty = row.get("quantity");
-                    JsonNode used = row.get("used_quantity");
-                    if (qty == null || !qty.canConvertToInt()
-                            || used == null || !used.canConvertToInt()) return null;
-                    return Math.max(0, qty.asInt() - used.asInt());
+                    // Use the same broker-reported inventory buckets as getHoldings():
+                    // settled/free quantity + T1 quantity + pledged collateral quantity.
+                    // Kite reports collateral_quantity separately from free quantity, so
+                    // it must be included once. used_quantity is a reporting field for
+                    // quantities sold from the net holding; quantity is already the
+                    // current quantity and must not be decremented a second time.
+                    Integer sellableQuantity = calculateKiteSellableHoldingQuantity(row);
+                    return sellableQuantity;
                 }
                 if (!"MIS".equalsIgnoreCase(row.path("product").asText())) continue;
                 JsonNode qty = row.get("quantity");
@@ -596,6 +595,47 @@ public class OrderServiceV2 {
         return result;
     }
 
+
+    /**
+     * Calculate current Kite CNC sellable inventory from the separate holding buckets.
+     *
+     * Kite reports settled quantity, T1 quantity and pledged collateral quantity
+     * separately. All three can be sold using CNC subject to the broker/exchange's
+     * normal RMS and depository authorisation checks. used_quantity is not subtracted
+     * again because the quantity fields already represent the current holdings state;
+     * subtracting it again would double-count a sale.
+     *
+     * Missing or malformed quantity fields fail closed (null).
+     */
+    private Integer calculateKiteSellableHoldingQuantity(JsonNode holdingNode) {
+        if (holdingNode == null) return null;
+
+        JsonNode settledNode = holdingNode.get("quantity");
+        JsonNode t1Node = holdingNode.get("t1_quantity");
+        JsonNode collateralNode = holdingNode.get("collateral_quantity");
+        JsonNode usedNode = holdingNode.get("used_quantity");
+
+        if (settledNode == null || !settledNode.canConvertToInt()
+                || t1Node == null || !t1Node.canConvertToInt()
+                || collateralNode == null || !collateralNode.canConvertToInt()) {
+            return null;
+        }
+
+        long settledQuantity = settledNode.asLong();
+        long t1Quantity = t1Node.asLong();
+        long collateralQuantity = collateralNode.asLong();
+        if (settledQuantity < 0 || t1Quantity < 0 || collateralQuantity < 0) {
+            return null;
+        }
+        if (usedNode != null && usedNode.canConvertToInt() && usedNode.asLong() < 0) {
+            return null;
+        }
+
+        long sellableQuantity = settledQuantity + t1Quantity + collateralQuantity;
+        if (sellableQuantity > Integer.MAX_VALUE) return null;
+        return (int) sellableQuantity;
+    }
+
     public List<Position> getHoldings() {
         List<Position> holdings = new ArrayList<>();
 
@@ -636,26 +676,16 @@ public class OrderServiceV2 {
                 for (JsonNode holdingNode : data) {
                     try {
                         String symbol = holdingNode.path("tradingsymbol").asText(null);
-                        JsonNode settledNode = holdingNode.get("quantity");
-                        JsonNode usedNode = holdingNode.get("used_quantity");
                         JsonNode averageNode = holdingNode.get("average_price");
-                        // PositionManager must track the same sellable quantity that
-                        // getNetSellableQuantity authorizes: settled demat shares less
-                        // broker-used shares. T1 and collateral are deliberately excluded.
+                        Integer quantityValue = calculateKiteSellableHoldingQuantity(holdingNode);
                         if (symbol == null || symbol.trim().isEmpty()
-                                || settledNode == null || !settledNode.canConvertToInt()
-                                || usedNode == null || !usedNode.canConvertToInt()
-                                || averageNode == null || !averageNode.isNumber()) {
-                            System.err.println("⚠️ [getHoldings] Skipping malformed Kite holding row; inventory fields are incomplete.");
+                                || quantityValue == null
+                                || averageNode == null || !averageNode.isNumber()
+                                || averageNode.asDouble() <= 0) {
+                            System.err.println("⚠️ [getHoldings] Skipping malformed Kite holding row; sellable inventory or average price is incomplete.");
                             continue;
                         }
-                        int settledQuantity = settledNode.asInt();
-                        int usedQuantity = usedNode.asInt();
-                        if (settledQuantity < 0 || usedQuantity < 0 || usedQuantity > settledQuantity) {
-                            System.err.println("⚠️ [getHoldings] Skipping inconsistent Kite holding row for " + symbol);
-                            continue;
-                        }
-                        int quantity = settledQuantity - usedQuantity;
+                        int quantity = quantityValue;
                         double avgPrice = averageNode.asDouble();
 
                         // Skip if no shares are currently sellable.
