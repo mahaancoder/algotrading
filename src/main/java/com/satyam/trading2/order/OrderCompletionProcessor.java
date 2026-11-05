@@ -192,6 +192,11 @@ public class OrderCompletionProcessor {
             position.setAveragePrice(newAvg);
             position.getBuyOrderIds().add(orderId);
 
+            // Publish the broker-confirmed BUY fill before placing its protective SELL.
+            // A newly-created position is otherwise absent from PositionManager, so
+            // BrokerOrderRouter sees local quantity 0 while the broker sees the fill.
+            positionManager.updatePosition(position);
+
             // Log accumulation for debugging
             if (oldQty > 0) {
                 System.out.println("📈 [OrderCompletionProcessor] ACCUMULATION for " + pendingOrder.getSymbol() +
