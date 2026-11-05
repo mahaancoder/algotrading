@@ -82,6 +82,7 @@ public class TrailingStopScheduler {
         try {
             // Process BOTH intraday and holding positions
             List<Position> openPositions = positionManager.getAllOpenPositions().stream()
+                    .filter(p -> p.isOpen())
                     .filter(p -> p.getPositionType() == INTRADAY || p.getPositionType() == HOLDING)
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
