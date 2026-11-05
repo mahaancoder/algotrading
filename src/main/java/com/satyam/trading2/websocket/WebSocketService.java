@@ -99,7 +99,16 @@ public class WebSocketService {
                     candleAggregator.onTick(symbol, price, volume);
 
                     // Check ATR target for all open positions of this symbol
+                    // regardless of BUY toggles; disabling entries must not disable exits.
                     checkATRTargetForSymbol(symbol, price);
+
+                    // When both product toggles are OFF, stop the signal pipeline here.
+                    // Price/candle/ATR maintenance above continues, but no market context
+                    // or strategy evaluation is performed and no rejected-signal logs are emitted.
+                    if (!orderExecutionService.isMisEnabledAtWebSocket()
+                            && !orderExecutionService.isCncEnabledAtWebSocket()) {
+                        return;
+                    }
 
                     // Throttle per-symbol strategy evaluation to cut CPU on the tick path.
                     long nowMs = System.currentTimeMillis();
@@ -114,7 +123,12 @@ public class WebSocketService {
 
                     if (signals != null && !signals.isEmpty()) {
                         for (TradeSignal signal : signals) {
-                            // Use the multi-broker OrderExecutionService (broker-aware risk + routing)
+                            // Product-specific pre-filter at the WebSocket boundary.
+                            // Disabled MIS/CNC signals never enter execution analytics,
+                            // risk checks, broker routing, or their associated log paths.
+                            if (!orderExecutionService.isSignalProductEnabledAtWebSocket(signal)) {
+                                continue;
+                            }
                             orderExecutionService.execute(signal, ctx);
                         }
                     }

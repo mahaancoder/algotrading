@@ -70,12 +70,19 @@ public class TrailingStopScheduler {
 
         long nowMillis = System.currentTimeMillis();
         if (nowMillis - lastPositionSyncAtMillis >= POSITION_SYNC_INTERVAL_MILLIS) {
-            reconciliationService.syncBrokerPositions(false);
-            lastPositionSyncAtMillis = nowMillis;
+            try {
+                reconciliationService.syncBrokerPositions(false);
+                lastPositionSyncAtMillis = System.currentTimeMillis();
+            } catch (Exception syncException) {
+                System.err.println("⚠️ [TrailingStop] Broker position sync failed; skipping this trailing cycle to avoid acting on stale quantities: "
+                        + syncException.getMessage());
+                return;
+            }
         }
         try {
             // Process BOTH intraday and holding positions
             List<Position> openPositions = positionManager.getAllOpenPositions().stream()
+                    .filter(p -> p.isOpen())
                     .filter(p -> p.getPositionType() == INTRADAY || p.getPositionType() == HOLDING)
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
@@ -117,6 +124,12 @@ public class TrailingStopScheduler {
                     String symbol = position.getSymbol();
                     double avgPrice = position.getAveragePrice();
                     int qty = position.getTotalQuantity();
+                    if (avgPrice <= 0 || qty <= 0) {
+                        skippedCount++;
+                        System.err.println("⚠️ [TrailingStop] " + symbol
+                                + ": invalid entry price/quantity (avgPrice=" + avgPrice + ", qty=" + qty + "), skipping");
+                        continue;
+                    }
 
                     double ltp = LatestPriceHelper.getLatestPrice(symbol);
 
@@ -138,8 +151,11 @@ public class TrailingStopScheduler {
                     // 0.1% change from the currently recorded target.
                     String oldOrderId = position.getTargetOrderId();
                     double currentTarget = position.getTarget();
+                    // A trailing target must only move upward. Using abs() here
+                    // also allowed a falling LTP to pull an already-raised SELL target
+                    // downward, surrendering the protection the trail is meant to keep.
                     if (oldOrderId != null && currentTarget > 0
-                            && Math.abs(ltp - currentTarget) / currentTarget < MIN_TARGET_CHANGE_FRACTION) {
+                            && ltp <= currentTarget * (1.0 + MIN_TARGET_CHANGE_FRACTION)) {
                         skippedCount++;
                         continue;
                     }
