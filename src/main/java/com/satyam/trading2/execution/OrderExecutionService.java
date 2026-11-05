@@ -93,6 +93,34 @@ public class OrderExecutionService {
     // BUY execution — the main entry point for strategies
     // ─────────────────────────────────────────────────────────────────────
 
+    public boolean isMisEnabledAtWebSocket() {
+        return productToggleService.isMisEnabled();
+    }
+
+    public boolean isCncEnabledAtWebSocket() {
+        return productToggleService.isCncEnabled();
+    }
+
+    /**
+     * WebSocket pre-filter: mirrors the exact product selection used by executeBuy()
+     * without recording a rejected signal in analytics/logs.
+     */
+    public boolean isSignalProductEnabledAtWebSocket(TradeSignal signal) {
+        if (signal == null || signal.getSymbol() == null || signal.getStrategyName() == null) {
+            return false;
+        }
+        if (productToggleService.isMisOnlyMode()) {
+            return productToggleService.isMisEnabled();
+        }
+        Position existingPosition = findExistingPositionAcrossBrokers(
+                signal.getSymbol(), signal.getStrategyName());
+        boolean isHolding = existingPosition != null
+                && existingPosition.getPositionType() == HOLDING;
+        return isHolding
+                ? productToggleService.isCncEnabled()
+                : productToggleService.isMisEnabled();
+    }
+
     public void execute(TradeSignal signal, MarketContext ctx) throws Exception {
         String symbol = signal.getSymbol();
         String strategy = signal.getStrategyName();
