@@ -47,7 +47,7 @@ public class TrailingStopScheduler {
         }
 
         // Stop running after 15:00
-        if (now.isAfter(LocalTime.of(15, 3))) {
+        if (now.isAfter(LocalTime.of(10, 3))) {
             return;
         }
 
@@ -80,10 +80,10 @@ public class TrailingStopScheduler {
             }
         }
         try {
-            // Process BOTH intraday and holding positions
+            // Process ONLY intraday positions
             List<Position> openPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.isOpen())
-                    .filter(p -> p.getPositionType() == INTRADAY || p.getPositionType() == HOLDING)
+                    .filter(p -> p.getPositionType() == INTRADAY)
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
@@ -93,8 +93,7 @@ public class TrailingStopScheduler {
             }
 
             long intradayCount = openPositions.stream().filter(p -> p.getPositionType() == INTRADAY).count();
-            long holdingCount = openPositions.stream().filter(p -> p.getPositionType() == HOLDING).count();
-            System.out.println("📊 [TrailingStop] Found " + intradayCount + " INTRADAY + " + holdingCount + " HOLDING positions");
+            System.out.println("📊 [TrailingStop] Found " + intradayCount + " INTRADAY");
 
             int updatedCount = 0;
             int skippedCount = 0;
@@ -108,18 +107,6 @@ public class TrailingStopScheduler {
             for (Position position : openPositions) {
                 try {
                     boolean isHolding = position.getPositionType() == HOLDING;
-
-                    // Legacy protection: older versions could leave a secondary quick-exit
-                    // SELL active alongside the full-quantity holding target. Do not replace
-                    // the full-quantity target while that second order is still associated
-                    // with the position; reconcile/cancel the legacy order first.
-                    if (isHolding && position.getSecondaryTargetOrderId() != null) {
-                        System.err.println("🛑 [TrailingStop] " + position.getSymbol()
-                                + ": skipping target replacement while legacy secondary SELL "
-                                + position.getSecondaryTargetOrderId() + " is associated with the holding.");
-                        skippedCount++;
-                        continue;
-                    }
 
                     String symbol = position.getSymbol();
                     double avgPrice = position.getAveragePrice();
