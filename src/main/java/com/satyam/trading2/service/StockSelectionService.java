@@ -70,18 +70,22 @@ public class StockSelectionService {
         // ===== TOP 20 LOSERS (biggest negative changes) =====
         Set<String> newLosers = ConcurrentHashMap.newKeySet();
         List<StockChange> topLosers = new ArrayList<>();
-        list.stream()
-                .filter(s -> s.getChange() <= -0.25)           // Only stocks down 2% or more
-                .filter(s -> !Exits.isSymbolExitedToday(s.getSymbol()))  // Skip symbols exited today
-                .filter(s -> {
-                    double ltp = ltpMap.getOrDefault(s.getSymbol(), 0.0);
-                    return stockFilterService.passesLoserFilter(s.getSymbol(), ltp, s.getChange());
-                })
-                .limit(50)                                   // Top 20 biggest losers
-                .forEach(s -> {
-                    newLosers.add(s.getSymbol());
-                    topLosers.add(s);
-                });
+        // removing losers for now will only trade with GAINERS. This is my Logic -> If a stock is part of gainer->
+        // It means that stock has touched that stock price and after that it might hve went down (in case of stuck due to Holdings), 
+        // so it's high chance that this stock will again reach that stock price in near future (in next few days). but in case of Losers
+        // that stock might keep on going down and remained down for so long.  -> this automatically avoids negative news or neagtive earnings stock.
+        // list.stream()
+        //         .filter(s -> s.getChange() <= -0.25)           // Only stocks down 2% or more
+        //         .filter(s -> !Exits.isSymbolExitedToday(s.getSymbol()))  // Skip symbols exited today
+        //         .filter(s -> {
+        //             double ltp = ltpMap.getOrDefault(s.getSymbol(), 0.0);
+        //             return stockFilterService.passesLoserFilter(s.getSymbol(), ltp, s.getChange());
+        //         })
+        //         .limit(50)                                   // Top 20 biggest losers
+        //         .forEach(s -> {
+        //             newLosers.add(s.getSymbol());
+        //             topLosers.add(s);
+        //         });
 
         // ===== TOP 20 GAINERS (biggest positive changes) =====
         Set<String> newGainers = ConcurrentHashMap.newKeySet();
@@ -105,8 +109,8 @@ public class StockSelectionService {
         }
 
         // ===== ATOMIC SWAP: Replace old sets with new ones =====
-        selectedLosers.clear();
-        selectedLosers.addAll(newLosers);
+        // selectedLosers.clear();
+        // selectedLosers.addAll(newLosers);
         selectedGainers.clear();
         selectedGainers.addAll(newGainers);
 
