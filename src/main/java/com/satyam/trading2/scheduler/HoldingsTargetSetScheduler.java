@@ -46,69 +46,6 @@ public class HoldingsTargetSetScheduler {
     }
 
     /**
-     * Retry Kite holdings that did not receive a target during the 9:05 pass.
-     * This covers transient API/rate-limit responses and short-lived inventory
-     * mismatches without cancelling or replacing targets that are already live.
-     * The regular Kite target reconciliation cycle starts at 9:20 AM.
-     */
-    @Scheduled(fixedDelay = 30000)
-    public void retryMissingKiteHoldingTargets() {
-        java.time.LocalTime now = java.time.LocalTime.now();
-        if (now.isBefore(java.time.LocalTime.of(9, 5))
-                || !now.isBefore(java.time.LocalTime.of(9, 20))
-                || killSwitchService.isActive()) {
-            return;
-        }
-
-        try {
-            List<Position> brokerHoldings = orderServiceV2.getHoldings();
-            if (brokerHoldings == null || brokerHoldings.isEmpty()) {
-                // An empty response is not proof that the account has no holdings.
-                // Retry on the next bounded pass in case this was a transient API failure.
-                return;
-            }
-
-            for (Position brokerHolding : brokerHoldings) {
-                if (brokerHolding == null || brokerHolding.getSymbol() == null
-                        || brokerHolding.getTotalQuantity() <= 0) {
-                    continue;
-                }
-                Position existing = findExistingHolding(
-                        brokerHolding.getSymbol(), brokerHolding.getBroker());
-                Position holding = existing != null ? existing : brokerHolding;
-
-                // Refresh local quantity from the latest Kite holdings snapshot.
-                holding.setTotalQuantity(brokerHolding.getTotalQuantity());
-                holding.setAveragePrice(brokerHolding.getAveragePrice());
-                positionManager.addPosition(holding);
-
-                // Retry only genuinely missing targets. Never churn a live or
-                // unresolved SELL order during this recovery pass.
-                if (holding.getTargetOrderId() != null
-                        || holding.getSecondaryTargetOrderId() != null
-                        || holding.isExitProcessed()
-                        || !holding.isOpen()) {
-                    continue;
-                }
-                placeTargetForHolding(holding, 1.003);
-            }
-        } catch (Exception e) {
-            System.err.println("⚠️ [HoldingsTargetSetScheduler] Retry of missing morning holding targets failed: "
-                    + e.getMessage());
-        }
-    }
-
-    /**
-     * Second run at 9:15 AM with 0.3% target
-     */
-
- /*   @Scheduled(cron = "0 15 9 * * MON-FRI")
-    public void morningHoldingCheck_915() throws Exception {
-        System.out.println("🕐 [9:15 AM] Running Holdings Target Set with 0.3% target");
-        morningHoldingCheckWithTarget(1.003); // 0.3% target
-    }
-*/
-    /**
      * Common method to check holdings and set targets with specified multiplier
      */
     private void morningHoldingCheckWithTarget(double targetMultiplier) throws Exception {
@@ -216,39 +153,9 @@ public class HoldingsTargetSetScheduler {
         try {
             synchronized (SellLifecycleLockRegistry.lockFor(holding)) {
             // If primary target already exists, cancel it first to place new one
-            if (holding.getTargetOrderId() != null) {
-                System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing target for " + holding.getSymbol() +
-                                 " to update with new target (multiplier: " + targetMultiplier + ")");
-                if (brokerOrderRouter.cancelAndConfirmSell(holding, holding.getTargetOrderId(), 2500L)) {
-                    holding.setTargetOrderId(null);
-                    holding.setTargetPlaced(false);
-                } else {
-                    System.err.println("🛑 [HoldingsTargetSetScheduler] Existing target for "
-                            + holding.getSymbol() + " is not confirmed cancelled with zero fills; refusing replacement.");
-                    return;
-                }
-            }
-            // Also cancel any existing secondary (quick-exit) sell order
-            if (holding.getSecondaryTargetOrderId() != null) {
-                System.out.println("🔄 [HoldingsTargetSetScheduler] Canceling existing quick-exit sell for " + holding.getSymbol());
-                if (brokerOrderRouter.cancelAndConfirmSell(holding, holding.getSecondaryTargetOrderId(), 2500L)) {
-                    holding.setSecondaryTargetOrderId(null);
-                    holding.setSecondaryTargetQty(0);
-                    holding.setSecondaryTargetPlaced(false);
-                } else {
-                    System.err.println("🛑 [HoldingsTargetSetScheduler] Legacy secondary SELL for "
-                            + holding.getSymbol() + " is not confirmed cancelled with zero fills; refusing replacement.");
-                    return;
-                }
-            }
 
             double target = holding.getAveragePrice() * targetMultiplier;
             double targetPercent = (targetMultiplier - 1.0) * 100;
-
-            System.out.println("📊 [HoldingsTargetSetScheduler] Setting target for " + holding.getSymbol() +
-                             " @ ₹" + String.format("%.2f", target) +
-                             " (" + String.format("%.1f", targetPercent) + "% above avg price ₹" +
-                             String.format("%.2f", holding.getAveragePrice()) + ")");
 
             // ===== CIRCUIT LIMIT CHECK =====
             if (!com.satyam.trading2.helpers.CircuitLimitChecker.isSpecificTargetWithinCircuitLimits(holding.getSymbol(), target)) {
