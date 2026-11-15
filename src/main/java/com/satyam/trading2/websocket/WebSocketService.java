@@ -89,7 +89,7 @@ public class WebSocketService {
                 Instrument instrument = getInstrumentFromToken(tick.getInstrumentToken());
                 String symbol = instrument.getTradingSymbol();
                 Nifty500Stocks.tradingSymbols.add(symbol);
-                if (symbol == null || isSymbolExitedToday(symbol) || isRejectedToday(symbol)) return;
+                if (symbol == null) return;
 
                 double price = tick.getLastTradedPrice();
                 long volume = tick.getVolumeTradedToday(); // Get cumulative volume for the day
@@ -98,6 +98,7 @@ public class WebSocketService {
 
                     candleAggregator.onTick(symbol, price, volume);
 
+                    if( isSymbolExitedToday(symbol) || isRejectedToday(symbol)) return;
                     // Check ATR target for all open positions of this symbol
                     // regardless of BUY toggles; disabling entries must not disable exits.
                     checkATRTargetForSymbol(symbol, price);
