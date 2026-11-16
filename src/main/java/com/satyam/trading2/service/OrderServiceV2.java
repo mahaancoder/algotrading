@@ -762,8 +762,8 @@ public class OrderServiceV2 {
 
             // Parse the data object
             JsonNode data = json.get("data");
-            if (data == null) {
-                return positions;
+            if (data == null || !data.isObject() || !data.has("day") || !data.get("day").isArray()) {
+                return null;
             }
 
             // Get "day" positions (MIS intraday positions)
@@ -803,6 +803,7 @@ public class OrderServiceV2 {
 
         } catch (Exception e) {
             e.printStackTrace();
+            return null;
         }
 
         return positions;
