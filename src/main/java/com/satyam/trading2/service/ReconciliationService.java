@@ -164,11 +164,14 @@ public class ReconciliationService {
                 orderSnapshot = orderServiceV2.fetchOrdersSnapshot();
                 if (orderSnapshot == null) {
                     log.error("[Reconciliation] Missing positions detected but Kite order book is unavailable; retaining local positions.");
-                    return true; // valid positions snapshot applied; deletion deliberately withheld
+                    return false; // do not let trailing/target logic run on an incomplete reconciliation cycle
                 }
             }
 
+            List<PendingOrder> unresolvedOrders = pendingOrderRepository.findOrdersRequiringReconciliation();
             for (Position local : missingLocals) {
+                synchronized (SellLifecycleLockRegistry.lockFor(local)) {
+                if (local.isExitProcessed()) continue;
                 String key = missingKey(local);
                 int missingCount = consecutiveMissingSnapshots.merge(key, 1, Integer::sum);
                 if (missingCount < MISSING_SNAPSHOTS_BEFORE_REMOVAL) {
@@ -186,7 +189,7 @@ public class ReconciliationService {
                                 ? "MIS" : "CNC").equalsIgnoreCase(o.getProduct()))
                         .anyMatch(o -> isLiveOrderStatus(o.getStatus()));
 
-                boolean unresolvedSell = pendingOrderRepository.findOrdersRequiringReconciliation().stream()
+                boolean unresolvedSell = unresolvedOrders.stream()
                         .filter(java.util.Objects::nonNull)
                         .filter(po -> po.getSymbol() != null && local.getSymbol().equalsIgnoreCase(po.getSymbol()))
                         .filter(po -> "KITE".equalsIgnoreCase(po.getBroker() == null ? "KITE" : po.getBroker()))
@@ -205,6 +208,7 @@ public class ReconciliationService {
                         local.getPositionType(), local.getSymbol(), local.getStrategy());
                 positionRepository.removePosition(local.getSymbol(), local.getStrategy(), brokerOf(local));
                 consecutiveMissingSnapshots.remove(key);
+                }
             }
 
             return true;
