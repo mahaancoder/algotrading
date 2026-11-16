@@ -60,6 +60,10 @@ public class HoldingsTargetSetScheduler {
         // source; Shoonya/INDstocks holdings are tracked in PositionManager and are
         // handled in the non-KITE loop below).
         List<Position> brokerHoldings = orderServiceV2.getHoldings();
+        if (brokerHoldings == null) {
+            System.err.println("🛑 [HoldingsTargetSetScheduler] Kite holdings snapshot unavailable/incomplete; skipping the entire 9:05 target pass.");
+            return;
+        }
 
         // Process each KITE holding from the broker
         for (Position brokerHolding : brokerHoldings) {
