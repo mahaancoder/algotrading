@@ -78,110 +78,75 @@ public class ReconciliationService {
 
     public void syncBrokerPositions(boolean setTargetOrderId) {
         try {
-            // Fetch actual positions from broker (includes both MIS and CNC day positions)
+            // A null snapshot means the Kite API failed or returned an invalid payload.
+            // Never interpret an unavailable snapshot as an empty account: that would
+            // erase every local position and disable trailing protection.
             List<Position> brokerPositions = orderServiceV2.getPositions();
+            if (brokerPositions == null) {
+                log.error("[Reconciliation] Kite positions snapshot unavailable; retaining all local positions.");
+                return;
+            }
 
-            // Also fetch holdings (CNC long-term holdings - already merged by broker)
             List<Position> brokerHoldings = orderServiceV2.getHoldings();
+            if (brokerHoldings == null) {
+                log.error("[Reconciliation] Kite holdings snapshot unavailable; retaining all local positions.");
+                return;
+            }
 
-            // ===== FIX: Don't merge CNC day positions with holdings - holdings are already merged! =====
-            // Filter out CNC positions from brokerPositions to avoid double-counting
-            // When you buy CNC, broker returns it in BOTH /positions (day) AND /holdings (merged)
-            List<Position> brokerPositionsMISOnly = brokerPositions.stream()
-                    .filter(p -> p.getPositionType() == Position.PositionType.INTRADAY) // Only MIS
-                    .collect(java.util.stream.Collectors.toList());
-
-//            System.out.println("🔍 [syncBrokerPositions] Broker positions (MIS only): " + brokerPositionsMISOnly.size() +
-//                             ", Broker holdings (CNC): " + brokerHoldings.size());
-
-            // Merge MIS positions + Holdings (no overlap now!)
             List<Position> allBrokerPositions = new ArrayList<>();
-            allBrokerPositions.addAll(brokerPositionsMISOnly);
+            allBrokerPositions.addAll(brokerPositions.stream()
+                    .filter(p -> p != null && p.getPositionType() == Position.PositionType.INTRADAY)
+                    .collect(Collectors.toList()));
             allBrokerPositions.addAll(brokerHoldings);
 
-            // Get our current open positions
-            List<Position> ourPositions = positionRepository.getAllOpenPositions();
+            List<Position> ourPositions = positionRepository.getAllOpenPositions().stream()
+                    .filter(java.util.Objects::nonNull)
+                    .filter(ReconciliationService::isKite)
+                    .collect(Collectors.toList());
 
-            // Create maps for efficient lookup by symbol + strategy
-            // After filtering out CNC day positions, there should be NO duplicates
-            // (MIS positions are separate from Holdings by definition)
-            Map<String, Position> brokerMap = allBrokerPositions.stream()
-                    .collect(Collectors.toMap(
-                            ReconciliationService::posKey,
-                            p -> p,
-                            (p1, p2) -> {
-                                // This should NOT happen after filtering - log if it does!
-//                                log.warn("⚠️ [syncBrokerPositions] Unexpected duplicate broker position: {} ({}) - Type: {}, Qty: {}, Avg: {}",
-//                                        p1.getSymbol(), p1.getStrategy(), p1.getPositionType(),
-//                                        p1.getTotalQuantity(), p1.getAveragePrice());
-//                                log.warn("   Duplicate 2: Type: {}, Qty: {}, Avg: {}",
-//                                        p2.getPositionType(), p2.getTotalQuantity(), p2.getAveragePrice());
-                                // Keep first one
-                                return p1;
-                            }
-                    ));
-
-            Map<String, Position> ourMap = ourPositions.stream()
-                    .collect(Collectors.toMap(
-                            ReconciliationService::posKey,
-                            p -> p,
-                            (p1, p2) -> {
-                                log.warn("⚠️ [syncBrokerPositions] Duplicate local position: {} ({})",
-                                        p1.getSymbol(), p1.getStrategy());
-                                return p1;
-                            }
-                    ));
-
-            // Step 1: Add positions from broker that we don't have, or update mismatched ones.
-            // allBrokerPositions come from the Kite API, so they are KITE-owned; keying by
-            // broker ensures we never collide with a same-symbol Shoonya/INDstocks position.
+            // Kite's portfolio API does not expose our strategy allocation. Match
+            // broker inventory by symbol + product type + broker, never by strategy.
+            // If multiple local strategies share a symbol, preserve their allocations:
+            // the aggregate broker quantity cannot safely be assigned to one strategy.
             for (Position brokerPos : allBrokerPositions) {
-                String symbol = brokerPos.getSymbol();
-                String strategy = brokerPos.getStrategy();
-                String key = posKey(brokerPos);
-                Position ourPos = ourMap.get(key);
+                List<Position> localMatches = ourPositions.stream()
+                        .filter(p -> p.getSymbol().equalsIgnoreCase(brokerPos.getSymbol()))
+                        .filter(p -> p.getPositionType() == brokerPos.getPositionType())
+                        .collect(Collectors.toList());
 
-                if (ourPos == null) {
-                    // Broker has position but we don't - add it
-//                    System.out.println("⚠️ Broker has position " + symbol + " (" + strategy + ", " +
-//                                     brokerPos.getPositionType() + ") but we don't. Adding to PositionManager.");
-                    positionRepository.addPosition(brokerPos);
-                } else {
-                    // Position exists in both - verify quantities match
-                    if (ourPos.getTotalQuantity() != brokerPos.getTotalQuantity() ||
-                        Math.abs(ourPos.getAveragePrice() - brokerPos.getAveragePrice()) > 0.01) {
-
-                        System.out.println("⚠️ Position " + symbol + " (" + strategy + ", " + brokerPos.getPositionType() +
-                                ") mismatch - Our qty=" + ourPos.getTotalQuantity() +
-                                ", avgPrice=" + String.format("%.2f", ourPos.getAveragePrice()) +
-                                " vs Broker qty=" + brokerPos.getTotalQuantity() +
-                                ", avgPrice=" + String.format("%.2f", brokerPos.getAveragePrice()) + ". Updating.");
-
-                        ourPos.setTotalQuantity(brokerPos.getTotalQuantity());
-                        ourPos.setAveragePrice(brokerPos.getAveragePrice());
-                        positionRepository.updatePosition(ourPos);
+                if (localMatches.size() == 1) {
+                    Position local = localMatches.get(0);
+                    if (local.getTotalQuantity() != brokerPos.getTotalQuantity()
+                            || Math.abs(local.getAveragePrice() - brokerPos.getAveragePrice()) > 0.01) {
+                        log.warn("[Reconciliation] Updating aggregate Kite inventory for {} {}: local qty={} avg={}, broker qty={} avg={}",
+                                local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
+                                local.getAveragePrice(), brokerPos.getTotalQuantity(), brokerPos.getAveragePrice());
+                        local.setTotalQuantity(brokerPos.getTotalQuantity());
+                        local.setAveragePrice(brokerPos.getAveragePrice());
+                        positionRepository.updatePosition(local);
                     }
+                } else if (localMatches.isEmpty()) {
+                    positionRepository.addPosition(brokerPos);
+                    log.warn("[Reconciliation] Restored broker-reported Kite position {} {} qty={} avg={} with broker fallback strategy={}",
+                            brokerPos.getSymbol(), brokerPos.getPositionType(), brokerPos.getTotalQuantity(),
+                            brokerPos.getAveragePrice(), brokerPos.getStrategy());
+                } else {
+                    log.error("[Reconciliation] Cannot allocate aggregate Kite quantity for {} {} across {} local strategies; preserving all local allocations.",
+                            brokerPos.getSymbol(), brokerPos.getPositionType(), localMatches.size());
                 }
             }
 
-            // Step 2: Remove positions we have but broker doesn't.
-            // ===== MULTI-BROKER SAFETY: only KITE positions are reconciled against the
-            // Kite API. Shoonya/INDstocks positions are NEVER removed here — they are
-            // absent from the Kite response by definition, not because they were exited.
-            for (Position ourPos : ourPositions) {
-                if (!isKite(ourPos)) {
-                    continue; // never remove non-KITE positions during Kite reconciliation
-                }
-                String symbol = ourPos.getSymbol();
-                String strategy = ourPos.getStrategy();
-                String key = posKey(ourPos);
-                Position brokerPos = brokerMap.get(key);
-
-                if (brokerPos == null) {
-                    // We have position but broker doesn't - this position was likely exited
-//                    System.out.println("⚠️ We have position " + symbol + " (" + strategy + ", " +
-//                                     ourPos.getPositionType() + ") but broker doesn't. Removing from PositionManager.");
-                    positionRepository.removePosition(symbol, ourPos.getStrategy(), brokerOf(ourPos));
+            // Only remove a local Kite position when a successful broker snapshot
+            // confirms that the symbol/product has no net position. Strategy is not
+            // part of the broker identity because Kite does not return it.
+            for (Position local : ourPositions) {
+                boolean brokerStillHasPosition = allBrokerPositions.stream()
+                        .anyMatch(p -> p.getSymbol().equalsIgnoreCase(local.getSymbol())
+                                && p.getPositionType() == local.getPositionType());
+                if (!brokerStillHasPosition) {
+                    log.warn("[Reconciliation] Kite confirms no remaining {} inventory for {}; removing local strategy position {}.",
+                            local.getPositionType(), local.getSymbol(), local.getStrategy());
+                    positionRepository.removePosition(local.getSymbol(), local.getStrategy(), brokerOf(local));
                 }
             }
         } catch (Exception e) {
