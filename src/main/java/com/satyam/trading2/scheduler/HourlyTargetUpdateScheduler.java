@@ -104,7 +104,10 @@ public class HourlyTargetUpdateScheduler {
         System.out.println("🔔 " + timeLabel + " - Updating target orders - " + timeWindow);
 
         try {
-            reconciliationService.syncBrokerPositions(false);
+            if (!reconciliationService.syncBrokerPositions(false)) {
+                System.err.println("🛑 [HourlyTargetUpdateScheduler] Skipping target update because broker position sync was not authoritative.");
+                return;
+            }
             List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.getPositionType() == INTRADAY)
                     .filter(p -> !p.isExitProcessed())
