@@ -869,15 +869,13 @@ public class OrderServiceV2 {
      *
      * @return parsed order book, including an empty list when the broker
      *         successfully reports no orders; null when the request/response
-     *         cannot be trusted. Callers reconciling SELL reservations must
-     *         fail closed on null rather than treating an API failure as an
-     *         empty order book.
+     *         cannot be trusted. Safety-critical reconciliation must fail
+     *         closed on null rather than treating an API failure as an empty book.
      */
     public List<Order> fetchOrdersSnapshot() {
         List<Order> orders = new ArrayList<>();
         try {
             rateLimiter.acquire("getAllOrders");
-
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(kiteConfig.getBaseUrl() + "/orders"))
                     .header("X-Kite-Version", "3")
@@ -921,13 +919,41 @@ public class OrderServiceV2 {
     }
 
     /**
-     * Backward-compatible order-book method for legacy callers that expect a
-     * collection. Safety-critical reconciliation should use fetchOrdersSnapshot()
-     * so an API failure is distinguishable from a genuinely empty order book.
+     * Legacy-compatible order-book fetch. Existing callers retain the original
+     * partial-parse/empty-on-error behavior; safety-critical recovery uses the
+     * strict fetchOrdersSnapshot() method above.
      */
     public List<Order> fetchOrders() {
-        List<Order> snapshot = fetchOrdersSnapshot();
-        return snapshot != null ? snapshot : new ArrayList<>();
+        List<Order> orders = new ArrayList<>();
+        try {
+            rateLimiter.acquire("getAllOrders");
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(kiteConfig.getBaseUrl() + "/orders"))
+                    .header("X-Kite-Version", "3")
+                    .header("Authorization", kiteConfig.getAuthHeader())
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            JsonNode json = objectMapper.readTree(response.body());
+            if (!"success".equals(json.get("status").asText())) {
+                return orders;
+            }
+
+            JsonNode data = json.get("data");
+            if (data != null && data.isArray()) {
+                for (JsonNode orderNode : data) {
+                    try {
+                        orders.add(objectMapper.treeToValue(orderNode, Order.class));
+                    } catch (Exception e) {
+                        System.err.println("Failed to parse order: " + e.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return orders;
     }
 
     public List<Instrument> populateInstrumentsData() {
