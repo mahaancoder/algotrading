@@ -13,6 +13,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -41,13 +42,10 @@ public class TrailingStopScheduler {
             return;
         }
 
-        LocalTime now = LocalTime.now();
-        if (now.isBefore(LocalTime.of(9, 15,30))) {
-            return;
-        }
-
-        // Stop running after 15:00
-        if (now.isAfter(LocalTime.of(3, 5, 5))) {
+        // NSE regular market session in India Standard Time. Use an explicit
+        // timezone so an EC2 host configured for UTC cannot shift the window.
+        LocalTime now = LocalTime.now(ZoneId.of("Asia/Kolkata"));
+        if (now.isBefore(LocalTime.of(9, 15)) || !now.isBefore(LocalTime.of(15, 30))) {
             return;
         }
 
