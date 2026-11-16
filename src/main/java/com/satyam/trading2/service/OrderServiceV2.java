@@ -757,7 +757,7 @@ public class OrderServiceV2 {
 
             // Check if API call was successful
             if (!"success".equals(json.get("status").asText())) {
-                return positions;
+                return null;
             }
 
             // Parse the data object
