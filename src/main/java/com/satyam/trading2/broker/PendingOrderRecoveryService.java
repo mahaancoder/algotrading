@@ -9,6 +9,7 @@ import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.order.PendingOrderRepository;
+import com.satyam.trading2.service.OrderServiceV2;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
