@@ -753,6 +753,10 @@ public class OrderServiceV2 {
                     .build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                System.err.println("❌ Kite positions request failed with HTTP " + response.statusCode());
+                return null;
+            }
             JsonNode json = objectMapper.readTree(response.body());
 
             // Check if API call was successful
@@ -796,7 +800,9 @@ public class OrderServiceV2 {
                         );
 
                         positions.add(position);
-                    } catch (Exception ignored) {
+                    } catch (Exception rowException) {
+                        System.err.println("❌ Invalid row in Kite positions snapshot; rejecting snapshot: " + rowException.getMessage());
+                        return null;
                     }
                 }
             }
