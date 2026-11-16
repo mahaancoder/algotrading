@@ -128,14 +128,17 @@ public class ReconciliationService {
                     Position local = localMatches.get(0);
                     String key = missingKey(local);
                     consecutiveMissingSnapshots.remove(key);
-                    if (local.getTotalQuantity() != brokerPos.getTotalQuantity()
-                            || Math.abs(local.getAveragePrice() - brokerPos.getAveragePrice()) > 0.01) {
-                        log.warn("[Reconciliation] Updating aggregate Kite inventory for {} {}: local qty={} avg={}, broker qty={} avg={}",
-                                local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
-                                local.getAveragePrice(), brokerPos.getTotalQuantity(), brokerPos.getAveragePrice());
-                        local.setTotalQuantity(brokerPos.getTotalQuantity());
-                        local.setAveragePrice(brokerPos.getAveragePrice());
-                        positionRepository.updatePosition(local);
+                    synchronized (SellLifecycleLockRegistry.lockFor(local)) {
+                        if (local.isExitProcessed()) continue;
+                        if (local.getTotalQuantity() != brokerPos.getTotalQuantity()
+                                || Math.abs(local.getAveragePrice() - brokerPos.getAveragePrice()) > 0.01) {
+                            log.warn("[Reconciliation] Updating aggregate Kite inventory for {} {}: local qty={} avg={}, broker qty={} avg={}",
+                                    local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
+                                    local.getAveragePrice(), brokerPos.getTotalQuantity(), brokerPos.getAveragePrice());
+                            local.setTotalQuantity(brokerPos.getTotalQuantity());
+                            local.setAveragePrice(brokerPos.getAveragePrice());
+                            positionRepository.updatePosition(local);
+                        }
                     }
                 } else if (localMatches.isEmpty()) {
                     positionRepository.addPosition(brokerPos);
@@ -223,12 +226,16 @@ public class ReconciliationService {
     }
 
     private static boolean isLiveOrderStatus(String status) {
-        return "OPEN".equalsIgnoreCase(status)
-                || "TRIGGER PENDING".equalsIgnoreCase(status)
-                || "PARTIALLY FILLED".equalsIgnoreCase(status)
-                || "PENDING".equalsIgnoreCase(status)
-                || "VALIDATION PENDING".equalsIgnoreCase(status)
-                || "AMO REQ RECEIVED".equalsIgnoreCase(status);
+        if (status == null || status.trim().isEmpty()) return true;
+        String normalized = status.trim().toUpperCase();
+        // Fail closed: only an explicitly terminal broker status is safe evidence
+        // that an order no longer reserves inventory.
+        return !("COMPLETE".equals(normalized)
+                || "FILLED".equals(normalized)
+                || "REJECTED".equals(normalized)
+                || "CANCELLED".equals(normalized)
+                || "CANCELED".equals(normalized)
+                || "EXPIRED".equals(normalized));
     }
 
     /**
