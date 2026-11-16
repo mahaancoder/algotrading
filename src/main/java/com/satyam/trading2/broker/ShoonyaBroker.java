@@ -814,8 +814,20 @@ public class ShoonyaBroker extends AbstractRestBroker {
                 int usedQty = strictInt(node, "usedqty");
                 if (holdQty < 0 || dpQty < 0 || npoadQty < 0 || benQty < 0
                         || unplgdQty < 0 || brkcolQty < 0 || btstQty < 0 || usedQty < 0) {
-                    log.warn("[ShoonyaBroker] Skipping malformed holding row for {}; sellable inventory fields are incomplete",
-                            symbol);
+                    List<String> invalidFields = new java.util.ArrayList<>();
+                    if (holdQty < 0) invalidFields.add("holdqty");
+                    if (dpQty < 0) invalidFields.add("dpqty");
+                    if (npoadQty < 0) invalidFields.add("npoadqty");
+                    if (benQty < 0) invalidFields.add("benqty");
+                    if (unplgdQty < 0) invalidFields.add("unplgdqty");
+                    if (brkcolQty < 0) invalidFields.add("brkcolqty");
+                    if (btstQty < 0) invalidFields.add("btstqty");
+                    if (usedQty < 0) invalidFields.add("usedqty");
+                    List<String> responseKeys = new java.util.ArrayList<>();
+                    node.fieldNames().forEachRemaining(responseKeys::add);
+                    log.error("[ShoonyaBroker] Cannot reconcile holding {}: missing/invalid fields={}, response keys={}. "
+                                    + "Retaining any existing local holding; verify this payload against the broker's current Holdings schema.",
+                            symbol, invalidFields, responseKeys);
                     continue;
                 }
                 // Use Shoonya's documented SALABLE formula, not its valuation
