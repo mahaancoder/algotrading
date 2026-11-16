@@ -864,14 +864,69 @@ public class OrderServiceV2 {
     }
 
 
+    /**
+     * Fetch one authoritative Kite order-book snapshot.
+     *
+     * @return parsed order book, including an empty list when the broker
+     *         successfully reports no orders; null when the request/response
+     *         cannot be trusted. Safety-critical reconciliation must fail
+     *         closed on null rather than treating an API failure as an empty book.
+     */
+    public List<Order> fetchOrdersSnapshot() {
+        List<Order> orders = new ArrayList<>();
+        try {
+            rateLimiter.acquire("getAllOrders");
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(kiteConfig.getBaseUrl() + "/orders"))
+                    .header("X-Kite-Version", "3")
+                    .header("Authorization", kiteConfig.getAuthHeader())
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                System.err.println("❌ Kite order-book request failed with HTTP " + response.statusCode());
+                return null;
+            }
+
+            JsonNode json = objectMapper.readTree(response.body());
+            if (json == null || !"success".equals(json.path("status").asText())) {
+                System.err.println("❌ Kite order-book response was not successful: "
+                        + (json == null ? "empty response" : json.path("message").asText("unknown error")));
+                return null;
+            }
+
+            JsonNode data = json.get("data");
+            if (data == null || !data.isArray()) {
+                System.err.println("❌ Kite order-book response has no valid data array");
+                return null;
+            }
+
+            for (JsonNode orderNode : data) {
+                try {
+                    orders.add(objectMapper.treeToValue(orderNode, Order.class));
+                } catch (Exception parseException) {
+                    System.err.println("❌ Failed to parse Kite order-book row; rejecting snapshot: "
+                            + parseException.getMessage());
+                    return null;
+                }
+            }
+            return orders;
+        } catch (Exception e) {
+            System.err.println("❌ Failed to fetch authoritative Kite order-book snapshot: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Legacy-compatible order-book fetch. Existing callers retain the original
+     * partial-parse/empty-on-error behavior; safety-critical recovery uses the
+     * strict fetchOrdersSnapshot() method above.
+     */
     public List<Order> fetchOrders() {
         List<Order> orders = new ArrayList<>();
-
         try {
-            // 🚦 Rate limiting
             rateLimiter.acquire("getAllOrders");
-
-            // Call Kite API: GET /orders
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(kiteConfig.getBaseUrl() + "/orders"))
                     .header("X-Kite-Version", "3")
@@ -881,29 +936,23 @@ public class OrderServiceV2 {
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             JsonNode json = objectMapper.readTree(response.body());
-
-            // Check if API call was successful
             if (!"success".equals(json.get("status").asText())) {
                 return orders;
             }
 
-            // Parse the data array
             JsonNode data = json.get("data");
             if (data != null && data.isArray()) {
                 for (JsonNode orderNode : data) {
                     try {
-                        Order order = objectMapper.treeToValue(orderNode, Order.class);
-                        orders.add(order);
+                        orders.add(objectMapper.treeToValue(orderNode, Order.class));
                     } catch (Exception e) {
                         System.err.println("Failed to parse order: " + e.getMessage());
                     }
                 }
             }
-
         } catch (Exception e) {
             e.printStackTrace();
         }
-
         return orders;
     }
 
