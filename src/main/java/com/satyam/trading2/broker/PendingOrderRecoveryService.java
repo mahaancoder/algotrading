@@ -3,6 +3,7 @@ package com.satyam.trading2.broker;
 import com.satyam.trading2.broker.model.BrokerOrderEvent;
 import com.satyam.trading2.broker.model.BrokerOrderStatus;
 import com.satyam.trading2.datamodel.PendingOrder;
+import com.satyam.trading2.datamodel.Order;
 import com.satyam.trading2.datamodel.PendingOrderState;
 import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.datamodel.Position;
@@ -37,6 +38,7 @@ public class PendingOrderRecoveryService {
     private static final long MIN_ORDER_AGE_MS = 30_000L;
 
     private final BrokerRouter brokerRouter;
+    private final OrderServiceV2 orderServiceV2;
     private final PendingOrderRepository pendingOrderRepository;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
     private final PositionManager positionManager;
@@ -66,6 +68,28 @@ public class PendingOrderRecoveryService {
 
         try {
             List<PendingOrder> openOrders = pendingOrderRepository.findOrdersRequiringReconciliation();
+
+            // Kite exposes a complete order book. Fetch it ONCE for this recovery
+            // pass and resolve every Kite pending order from the same snapshot.
+            // The old per-order status + filled-quantity + average-price calls
+            // could issue up to 3 x N GET /orders requests (86 pending holdings
+            // SELLs could therefore create 258 requests in one recovery cycle).
+            boolean hasKiteOrders = openOrders.stream()
+                    .filter(java.util.Objects::nonNull)
+                    .anyMatch(pending -> routeOf(pending) == ExecutionRoute.KITE);
+            List<Order> kiteSnapshot = hasKiteOrders ? orderServiceV2.fetchOrdersSnapshot() : null;
+            boolean kiteSnapshotAvailable = !hasKiteOrders || kiteSnapshot != null;
+            java.util.Map<String, Order> kiteOrdersById = new java.util.HashMap<>();
+            if (kiteSnapshot != null) {
+                for (Order order : kiteSnapshot) {
+                    if (order != null && order.getOrderId() != null) {
+                        kiteOrdersById.put(order.getOrderId(), order);
+                    }
+                }
+            } else if (hasKiteOrders) {
+                log.error("[PendingOrderRecovery] Kite order-book snapshot unavailable; skipping Kite pending orders and retaining all SELL reservations");
+            }
+
             long nowMillis = System.currentTimeMillis();
             for (PendingOrder pending : openOrders) {
                 if (pending == null || pending.getBrokerOrderId() == null
@@ -76,7 +100,7 @@ public class PendingOrderRecoveryService {
                         && pending.getState() != PendingOrderState.PARTIALLY_FILLED) {
                     continue;
                 }
-                reconcileOne(pending);
+                reconcileOne(pending, kiteOrdersById, kiteSnapshotAvailable);
             }
         } catch (RuntimeException e) {
             log.error("[PendingOrderRecovery] Reconciliation pass failed: {}", e.getMessage(), e);
@@ -85,7 +109,8 @@ public class PendingOrderRecoveryService {
         }
     }
 
-    private void reconcileOne(PendingOrder pending) {
+    private void reconcileOne(PendingOrder pending, java.util.Map<String, Order> kiteOrdersById,
+                              boolean kiteSnapshotAvailable) {
         ExecutionRoute route = routeOf(pending);
         if (route == null) {
             log.warn("[PendingOrderRecovery] Unknown broker for order {}; reservation retained",
@@ -100,8 +125,26 @@ public class PendingOrderRecoveryService {
         }
 
         try {
-            BrokerOrderStatus status = broker.getOrderStatus(pending.getBrokerOrderId());
-            Integer cumulativeFilled = broker.getOrderFilledQuantity(pending.getBrokerOrderId());
+            boolean kiteRoute = route == ExecutionRoute.KITE;
+            Order kiteOrder = null;
+            BrokerOrderStatus status;
+            Integer cumulativeFilled;
+            if (kiteRoute) {
+                if (!kiteSnapshotAvailable) {
+                    return; // failed snapshot: preserve reservation and do not infer order state
+                }
+                kiteOrder = kiteOrdersById.get(pending.getBrokerOrderId());
+                if (kiteOrder == null) {
+                    log.warn("[PendingOrderRecovery] Kite order {} is absent from the authoritative order-book snapshot; reservation retained",
+                            pending.getBrokerOrderId());
+                    return;
+                }
+                status = mapKiteStatus(kiteOrder);
+                cumulativeFilled = kiteOrder.getFilledQuantity();
+            } else {
+                status = broker.getOrderStatus(pending.getBrokerOrderId());
+                cumulativeFilled = broker.getOrderFilledQuantity(pending.getBrokerOrderId());
+            }
 
             // A missing order/status/fill quantity is not proof of zero fills.
             if (status == null || cumulativeFilled == null
@@ -114,7 +157,9 @@ public class PendingOrderRecoveryService {
 
             double averagePrice = 0.0d;
             if (cumulativeFilled > 0) {
-                Double brokerAveragePrice = broker.getOrderAveragePrice(pending.getBrokerOrderId());
+                Double brokerAveragePrice = kiteRoute
+                        ? kiteOrder.getAveragePrice()
+                        : broker.getOrderAveragePrice(pending.getBrokerOrderId());
                 if (brokerAveragePrice == null || !Double.isFinite(brokerAveragePrice)
                         || brokerAveragePrice <= 0.0d) {
                     // PendingOrder.avgPrice can originate from the requested limit
@@ -245,6 +290,34 @@ public class PendingOrderRecoveryService {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Normalize Kite's order status from the already-fetched order-book row.
+     * Unknown states remain null so recovery fails closed.
+     */
+    private BrokerOrderStatus mapKiteStatus(Order order) {
+        if (order == null || order.getStatus() == null) return null;
+        String status = order.getStatus().trim().toUpperCase(java.util.Locale.ROOT);
+        switch (status) {
+            case "COMPLETE":
+                return BrokerOrderStatus.COMPLETE;
+            case "REJECTED":
+                return BrokerOrderStatus.REJECTED;
+            case "CANCELLED":
+                return BrokerOrderStatus.CANCELLED;
+            case "OPEN":
+            case "UPDATE":
+            case "TRIGGER PENDING":
+                int filled = order.getFilledQuantity() != null ? order.getFilledQuantity() : 0;
+                int total = order.getQuantity() != null ? order.getQuantity() : 0;
+                return filled > 0 && filled < total
+                        ? BrokerOrderStatus.PARTIALLY_FILLED : BrokerOrderStatus.OPEN;
+            case "PARTIALLY FILLED":
+                return BrokerOrderStatus.PARTIALLY_FILLED;
+            default:
+                return null;
+        }
     }
 
     private ExecutionRoute routeOf(PendingOrder pending) {
