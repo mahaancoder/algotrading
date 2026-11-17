@@ -652,24 +652,26 @@ public class OrderServiceV2 {
                     .build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                System.err.println("❌ Kite holdings request failed with HTTP " + response.statusCode());
+                return null;
+            }
 
             JsonNode json = objectMapper.readTree(response.body());
 
             // Check if API call was successful
-            if (!"success".equals(json.get("status").asText())) {
-                return holdings;
+            if (json == null || !"success".equals(json.path("status").asText())) {
+                System.err.println("❌ Kite holdings response was not successful; rejecting snapshot.");
+                return null;
             }
 
             // Parse the data array
             JsonNode data = json.get("data");
 
             // 🔍 DEBUG: Check data node
-            if (data == null) {
-                return holdings;
-            }
-
-            if (!data.isArray()) {
-                return holdings;
+            if (data == null || !data.isArray()) {
+                System.err.println("❌ Kite holdings response has no valid data array; rejecting snapshot.");
+                return null;
             }
 
             if (data.isArray()) {
@@ -682,8 +684,8 @@ public class OrderServiceV2 {
                                 || quantityValue == null
                                 || averageNode == null || !averageNode.isNumber()
                                 || averageNode.asDouble() <= 0) {
-                            System.err.println("⚠️ [getHoldings] Skipping malformed Kite holding row; sellable inventory or average price is incomplete.");
-                            continue;
+                            System.err.println("⚠️ [getHoldings] Malformed Kite holding row; rejecting entire snapshot because sellable inventory or average price is incomplete.");
+                            return null;
                         }
                         int quantity = quantityValue;
                         double avgPrice = averageNode.asDouble();
@@ -720,13 +722,15 @@ public class OrderServiceV2 {
 
                         holdings.add(position);
                     } catch (Exception e) {
-                        e.printStackTrace();
+                        System.err.println("❌ Invalid row in Kite holdings snapshot; rejecting snapshot: " + e.getMessage());
+                        return null;
                     }
                 }
             }
         } catch (Exception e) {
             System.err.println("❌ Error fetching holdings: " + e.getMessage());
             e.printStackTrace();
+            return null;
         }
         return holdings;
     }
@@ -780,9 +784,18 @@ public class OrderServiceV2 {
                         double avgPrice = posNode.get("average_price").asDouble();
                         String product = posNode.get("product").asText();
 
-                        // Skip if quantity is 0 or if not MIS
-                        if (quantity <= 0) {
+                        // A negative net quantity is a short position or an unexpected
+                        // broker state. Never hide it by treating it as an empty long position.
+                        if (quantity < 0) {
+                            System.err.println("🚨 Negative Kite day quantity for " + symbol + ": " + quantity + "; rejecting snapshot.");
+                            return null;
+                        }
+                        if (quantity == 0) {
                             continue;
+                        }
+                        if (symbol == null || symbol.trim().isEmpty() || avgPrice <= 0 || product == null) {
+                            System.err.println("❌ Invalid Kite position row; rejecting snapshot.");
+                            return null;
                         }
 
                         // Create Position object with INTRADAY type

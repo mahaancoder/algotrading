@@ -69,8 +69,14 @@ public class TrailingStopScheduler {
         long nowMillis = System.currentTimeMillis();
         if (nowMillis - lastPositionSyncAtMillis >= POSITION_SYNC_INTERVAL_MILLIS) {
             try {
-                reconciliationService.syncBrokerPositions(false);
+                boolean positionSyncSucceeded = reconciliationService.syncBrokerPositions(false);
+                // Throttle retries even when the broker snapshot is unavailable;
+                // otherwise a failed sync would be retried every 10-second trail tick.
                 lastPositionSyncAtMillis = System.currentTimeMillis();
+                if (!positionSyncSucceeded) {
+                    System.err.println("⚠️ [TrailingStop] Position sync was not authoritative; skipping this cycle.");
+                    return;
+                }
             } catch (Exception syncException) {
                 System.err.println("⚠️ [TrailingStop] Broker position sync failed; skipping this trailing cycle to avoid acting on stale quantities: "
                         + syncException.getMessage());

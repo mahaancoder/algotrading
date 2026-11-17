@@ -9,7 +9,6 @@ import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.risk.RiskManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -18,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
@@ -32,6 +32,11 @@ public class ReconciliationService {
     private final RiskManager riskManager;
     private final DipAccumulatorService dipAccumulatorService;
     private final MarketContextBuilder marketContextBuilder;
+
+    // A single transient broker snapshot must never erase a live local position.
+    // Counts are reset as soon as the broker reports the position again.
+    private final Map<String, Integer> consecutiveMissingSnapshots = new ConcurrentHashMap<>();
+    private static final int MISSING_SNAPSHOTS_BEFORE_REMOVAL = 2;
 
     // ─────────────────────────────────────────────────────────────────────
     // Kite is the ONLY positions/holdings source (getPositions()/getHoldings()
@@ -51,7 +56,6 @@ public class ReconciliationService {
         return p.getSymbol() + "_" + p.getStrategy() + "_" + brokerOf(p);
     }
 
-    @Scheduled(fixedDelay = 900000)
     public void reconcile() {
         // Check if current time is within trading window (9:20 AM to 3:00 PM)
         LocalTime now = LocalTime.now();
@@ -65,7 +69,10 @@ public class ReconciliationService {
         log.info("🔄 Starting reconciliation cycle");
         try {
             // Step 1: Sync broker positions with our PositionManager
-            syncBrokerPositions(false);
+            if (!syncBrokerPositions(false)) {
+                log.warn("[Reconciliation] Skipping target-order reconciliation because the broker position snapshot was not safely applied.");
+                return;
+            }
 
             // Step 3: Ensure every open position has a target SELL order
             ensureTargetOrdersForOpenPositions();
@@ -76,21 +83,28 @@ public class ReconciliationService {
         }
     }
 
-    public void syncBrokerPositions(boolean setTargetOrderId) {
+    /**
+     * Applies one serialized, validated Kite position snapshot.
+     *
+     * Missing positions require two consecutive authoritative snapshots and
+     * must have no live or unresolved SELL order before local state is removed.
+     * This protects the in-memory position book from transient broker/API
+     * inconsistencies and delayed order lifecycle events.
+     *
+     * @return true only when both positions and holdings snapshots were valid
+     */
+    public synchronized boolean syncBrokerPositions(boolean setTargetOrderId) {
         try {
-            // A null snapshot means the Kite API failed or returned an invalid payload.
-            // Never interpret an unavailable snapshot as an empty account: that would
-            // erase every local position and disable trailing protection.
             List<Position> brokerPositions = orderServiceV2.getPositions();
             if (brokerPositions == null) {
                 log.error("[Reconciliation] Kite positions snapshot unavailable; retaining all local positions.");
-                return;
+                return false;
             }
 
             List<Position> brokerHoldings = orderServiceV2.getHoldings();
             if (brokerHoldings == null) {
                 log.error("[Reconciliation] Kite holdings snapshot unavailable; retaining all local positions.");
-                return;
+                return false;
             }
 
             List<Position> allBrokerPositions = new ArrayList<>();
@@ -104,10 +118,6 @@ public class ReconciliationService {
                     .filter(ReconciliationService::isKite)
                     .collect(Collectors.toList());
 
-            // Kite's portfolio API does not expose our strategy allocation. Match
-            // broker inventory by symbol + product type + broker, never by strategy.
-            // If multiple local strategies share a symbol, preserve their allocations:
-            // the aggregate broker quantity cannot safely be assigned to one strategy.
             for (Position brokerPos : allBrokerPositions) {
                 List<Position> localMatches = ourPositions.stream()
                         .filter(p -> p.getSymbol().equalsIgnoreCase(brokerPos.getSymbol()))
@@ -116,42 +126,116 @@ public class ReconciliationService {
 
                 if (localMatches.size() == 1) {
                     Position local = localMatches.get(0);
-                    if (local.getTotalQuantity() != brokerPos.getTotalQuantity()
-                            || Math.abs(local.getAveragePrice() - brokerPos.getAveragePrice()) > 0.01) {
-                        log.warn("[Reconciliation] Updating aggregate Kite inventory for {} {}: local qty={} avg={}, broker qty={} avg={}",
-                                local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
-                                local.getAveragePrice(), brokerPos.getTotalQuantity(), brokerPos.getAveragePrice());
-                        local.setTotalQuantity(brokerPos.getTotalQuantity());
-                        local.setAveragePrice(brokerPos.getAveragePrice());
-                        positionRepository.updatePosition(local);
+                    String key = missingKey(local);
+                    consecutiveMissingSnapshots.remove(key);
+                    synchronized (SellLifecycleLockRegistry.lockFor(local)) {
+                        if (local.isExitProcessed()) continue;
+                        if (local.getTotalQuantity() != brokerPos.getTotalQuantity()
+                                || Math.abs(local.getAveragePrice() - brokerPos.getAveragePrice()) > 0.01) {
+                            log.warn("[Reconciliation] Updating aggregate Kite inventory for {} {}: local qty={} avg={}, broker qty={} avg={}",
+                                    local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
+                                    local.getAveragePrice(), brokerPos.getTotalQuantity(), brokerPos.getAveragePrice());
+                            local.setTotalQuantity(brokerPos.getTotalQuantity());
+                            local.setAveragePrice(brokerPos.getAveragePrice());
+                            positionRepository.updatePosition(local);
+                        }
                     }
                 } else if (localMatches.isEmpty()) {
                     positionRepository.addPosition(brokerPos);
+                    consecutiveMissingSnapshots.remove(missingKey(brokerPos));
                     log.warn("[Reconciliation] Restored broker-reported Kite position {} {} qty={} avg={} with broker fallback strategy={}",
                             brokerPos.getSymbol(), brokerPos.getPositionType(), brokerPos.getTotalQuantity(),
                             brokerPos.getAveragePrice(), brokerPos.getStrategy());
                 } else {
                     log.error("[Reconciliation] Cannot allocate aggregate Kite quantity for {} {} across {} local strategies; preserving all local allocations.",
                             brokerPos.getSymbol(), brokerPos.getPositionType(), localMatches.size());
+                    for (Position local : localMatches) consecutiveMissingSnapshots.remove(missingKey(local));
                 }
             }
 
-            // Only remove a local Kite position when a successful broker snapshot
-            // confirms that the symbol/product has no net position. Strategy is not
-            // part of the broker identity because Kite does not return it.
-            for (Position local : ourPositions) {
-                boolean brokerStillHasPosition = allBrokerPositions.stream()
-                        .anyMatch(p -> p.getSymbol().equalsIgnoreCase(local.getSymbol())
-                                && p.getPositionType() == local.getPositionType());
-                if (!brokerStillHasPosition) {
-                    log.warn("[Reconciliation] Kite confirms no remaining {} inventory for {}; removing local strategy position {}.",
-                            local.getPositionType(), local.getSymbol(), local.getStrategy());
-                    positionRepository.removePosition(local.getSymbol(), local.getStrategy(), brokerOf(local));
+            // A missing symbol/product is not sufficient evidence to delete a
+            // position. First obtain a strict order-book snapshot; if it is
+            // unavailable, retain every missing local position.
+            List<Position> missingLocals = ourPositions.stream()
+                    .filter(local -> allBrokerPositions.stream().noneMatch(p ->
+                            p.getSymbol().equalsIgnoreCase(local.getSymbol())
+                                    && p.getPositionType() == local.getPositionType()))
+                    .collect(Collectors.toList());
+
+            List<Order> orderSnapshot = null;
+            if (!missingLocals.isEmpty()) {
+                orderSnapshot = orderServiceV2.fetchOrdersSnapshot();
+                if (orderSnapshot == null) {
+                    log.error("[Reconciliation] Missing positions detected but Kite order book is unavailable; retaining local positions.");
+                    return false; // do not let trailing/target logic run on an incomplete reconciliation cycle
                 }
             }
+
+            List<PendingOrder> unresolvedOrders = pendingOrderRepository.findOrdersRequiringReconciliation();
+            for (Position local : missingLocals) {
+                synchronized (SellLifecycleLockRegistry.lockFor(local)) {
+                if (local.isExitProcessed()) continue;
+                String key = missingKey(local);
+                int missingCount = consecutiveMissingSnapshots.merge(key, 1, Integer::sum);
+                if (missingCount < MISSING_SNAPSHOTS_BEFORE_REMOVAL) {
+                    log.warn("[Reconciliation] Retaining {} {} qty={} after missing broker snapshot {}/{}.",
+                            local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
+                            missingCount, MISSING_SNAPSHOTS_BEFORE_REMOVAL);
+                    continue;
+                }
+
+                boolean activeBrokerSell = orderSnapshot.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .filter(o -> local.getSymbol().equalsIgnoreCase(o.getTradingSymbol()))
+                        .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
+                        .filter(o -> (local.getPositionType() == Position.PositionType.INTRADAY
+                                ? "MIS" : "CNC").equalsIgnoreCase(o.getProduct()))
+                        .anyMatch(o -> isLiveOrderStatus(o.getStatus()));
+
+                boolean unresolvedSell = unresolvedOrders.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .filter(po -> po.getSymbol() != null && local.getSymbol().equalsIgnoreCase(po.getSymbol()))
+                        .filter(po -> "KITE".equalsIgnoreCase(po.getBroker() == null ? "KITE" : po.getBroker()))
+                        .filter(po -> po.getSide() == com.satyam.trading2.datamodel.TradeSide.SELL)
+                        .filter(po -> po.getPositionType() == local.getPositionType())
+                        .findAny().isPresent();
+
+                if (activeBrokerSell || unresolvedSell) {
+                    consecutiveMissingSnapshots.remove(key);
+                    log.warn("[Reconciliation] Retaining missing {} {} because SELL lifecycle is still active/unresolved (brokerActiveSell={}, pendingUnresolved={}).",
+                            local.getSymbol(), local.getPositionType(), activeBrokerSell, unresolvedSell);
+                    continue;
+                }
+
+                log.warn("[Reconciliation] Two consecutive valid Kite snapshots and no active/unresolved SELL confirm no remaining {} inventory for {}; removing local strategy position {}.",
+                        local.getPositionType(), local.getSymbol(), local.getStrategy());
+                positionRepository.removePosition(local.getSymbol(), local.getStrategy(), brokerOf(local));
+                consecutiveMissingSnapshots.remove(key);
+                }
+            }
+
+            return true;
         } catch (Exception e) {
-            System.out.println("❌ Error syncing broker positions: {}"+ e.getMessage()+ e);
+            log.error("[Reconciliation] Error syncing broker positions; retaining local positions where possible: {}", e.getMessage(), e);
+            return false;
         }
+    }
+
+    private static String missingKey(Position position) {
+        return position.getSymbol().toUpperCase() + "|" + position.getPositionType() + "|" + brokerOf(position);
+    }
+
+    private static boolean isLiveOrderStatus(String status) {
+        if (status == null || status.trim().isEmpty()) return true;
+        String normalized = status.trim().toUpperCase();
+        // Fail closed: only an explicitly terminal broker status is safe evidence
+        // that an order no longer reserves inventory.
+        return !("COMPLETE".equals(normalized)
+                || "FILLED".equals(normalized)
+                || "REJECTED".equals(normalized)
+                || "CANCELLED".equals(normalized)
+                || "CANCELED".equals(normalized)
+                || "EXPIRED".equals(normalized));
     }
 
     /**
