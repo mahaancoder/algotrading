@@ -415,72 +415,146 @@ public class OrderServiceV2 {
         }
     }
 
+    /**
+     * Fetch previous-close prices from Kite quote API in bounded batches.
+     *
+     * The returned map may be partial when Kite omits symbols or a batch fails.
+     * Callers must compare its keys with the requested symbols and retry missing
+     * symbols; invalid prices are never represented as zero.
+     */
     public Map<String, Double> getPreviousClosePrices(List<String> symbols) {
         Map<String, Double> result = new HashMap<>();
-        try {
-            if (symbols == null || symbols.isEmpty()) {
-                System.err.println("⚠️ getPreviousClosePrices called with empty symbols list");
-                return result;
-            }
-
-            // Build query string: i=NSE:INFY&i=NSE:TCS...
-            StringBuilder query = new StringBuilder();
-            for (int i = 0; i < symbols.size(); i++) {
-                if (i > 0) query.append("&");
-                query.append("i=").append(symbols.get(i));
-            }
-            String url = kiteConfig.getBaseUrl() + "/quote?" + query;
-
-            // Log URL length to check for potential issues
-            System.out.println("🔍 Fetching quotes for " + symbols.size() + " symbols, URL length: " + url.length());
-
-            HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).header("X-Kite-Version", "3").header("Authorization", kiteConfig.getAuthHeader()).GET().build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            JsonNode json = objectMapper.readTree(response.body());
-            String status = json.get("status").asText();
-
-            if (!"success".equals(status)) {
-                System.err.println("❌ API returned status: " + status);
-                if (json.has("message")) {
-                    System.err.println("   Message: " + json.get("message").asText());
-                }
-                return result;
-            }
-
-            JsonNode data = json.get("data");
-            if (data == null) {
-                System.err.println("❌ API response has no 'data' field");
-                return result;
-            }
-
-            int foundCount = 0;
-            int missingOhlc = 0;
-            int missingNode = 0;
-
-            for (String symbol : symbols) {
-                JsonNode sNode = data.get(symbol);
-                if (sNode == null) {
-                    missingNode++;
-                    continue;
-                }
-                JsonNode ohlc = sNode.get("ohlc");
-                if (ohlc == null) {
-                    missingOhlc++;
-                    continue;
-                }
-                double prevClose = ohlc.get("close").asDouble();
-                result.put(symbol, prevClose);
-                foundCount++;
-            }
-
-            System.out.println("✅ getPreviousClosePrices: " + foundCount + " found, " + missingNode + " missing node, " + missingOhlc + " missing OHLC");
-
-        } catch (Exception e) {
-            System.err.println("❌ Exception in getPreviousClosePrices: " + e.getMessage());
-            e.printStackTrace();
+        if (symbols == null || symbols.isEmpty()) {
+            System.err.println("⚠️ getPreviousClosePrices called with empty symbols list");
+            return result;
         }
+
+        final int batchSize = 100;
+        int invalidPriceCount = 0;
+        int missingSymbolCount = 0;
+        int failedBatchCount = 0;
+
+        for (int start = 0; start < symbols.size(); start += batchSize) {
+            int end = Math.min(start + batchSize, symbols.size());
+            List<String> batch = symbols.subList(start, end);
+
+            try {
+                StringBuilder query = new StringBuilder();
+                for (String symbol : batch) {
+                    if (symbol == null || symbol.trim().isEmpty()) {
+                        continue;
+                    }
+                    if (query.length() > 0) {
+                        query.append("&");
+                    }
+                    query.append("i=")
+                            .append(java.net.URLEncoder.encode(symbol, java.nio.charset.StandardCharsets.UTF_8));
+                }
+
+                if (query.length() == 0) {
+                    missingSymbolCount += batch.size();
+                    System.err.println("⚠️ Previous-close batch " + (start / batchSize + 1)
+                            + " contained no valid symbols");
+                    continue;
+                }
+
+                String url = kiteConfig.getBaseUrl() + "/quote?" + query;
+                rateLimiter.acquire("getPreviousClosePrices");
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("X-Kite-Version", "3")
+                        .header("Authorization", kiteConfig.getAuthHeader())
+                        .timeout(java.time.Duration.ofSeconds(10))
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(
+                        request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    failedBatchCount++;
+                    System.err.println("❌ Kite quote batch " + (start / batchSize + 1)
+                            + " failed with HTTP " + response.statusCode()
+                            + "; response=" + abbreviate(response.body(), 500));
+                    if (response.statusCode() == 429) {
+                        rateLimiter.tripCircuitBreaker();
+                    }
+                    missingSymbolCount += batch.size();
+                    continue;
+                }
+
+                JsonNode json = objectMapper.readTree(response.body());
+                if (json == null || !"success".equals(json.path("status").asText())) {
+                    failedBatchCount++;
+                    String message = json == null ? "empty JSON response"
+                            : json.path("message").asText("unknown Kite API error");
+                    System.err.println("❌ Kite quote batch " + (start / batchSize + 1)
+                            + " returned unsuccessful status: " + message);
+                    missingSymbolCount += batch.size();
+                    continue;
+                }
+
+                JsonNode data = json.get("data");
+                if (data == null || !data.isObject()) {
+                    failedBatchCount++;
+                    System.err.println("❌ Kite quote batch " + (start / batchSize + 1)
+                            + " has no valid data object");
+                    missingSymbolCount += batch.size();
+                    continue;
+                }
+
+                for (String symbol : batch) {
+                    if (symbol == null || symbol.trim().isEmpty()) {
+                        missingSymbolCount++;
+                        continue;
+                    }
+
+                    JsonNode quote = data.get(symbol);
+                    JsonNode closeNode = quote == null ? null : quote.path("ohlc").get("close");
+                    if (closeNode == null || !closeNode.isNumber()) {
+                        missingSymbolCount++;
+                        continue;
+                    }
+
+                    double previousClose = closeNode.asDouble();
+                    if (!Double.isFinite(previousClose) || previousClose <= 0) {
+                        invalidPriceCount++;
+                        continue;
+                    }
+                    result.put(symbol, previousClose);
+                }
+
+                System.out.println("📊 Previous-close batch " + (start / batchSize + 1)
+                        + ": requested=" + batch.size()
+                        + ", valid=" + result.size()
+                        + ", accumulatedValid=" + result.size());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                failedBatchCount++;
+                missingSymbolCount += batch.size();
+                System.err.println("❌ Interrupted while fetching previous-close batch "
+                        + (start / batchSize + 1));
+                break;
+            } catch (Exception e) {
+                failedBatchCount++;
+                missingSymbolCount += batch.size();
+                System.err.println("❌ Exception fetching previous-close batch "
+                        + (start / batchSize + 1) + ": " + e.getMessage());
+            }
+        }
+
+        System.out.println("📊 getPreviousClosePrices summary: requested=" + symbols.size()
+                + ", valid=" + result.size()
+                + ", missingOrUnavailable=" + missingSymbolCount
+                + ", invalidPrices=" + invalidPriceCount
+                + ", failedBatches=" + failedBatchCount);
         return result;
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (value == null) return "null";
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 
     /**
