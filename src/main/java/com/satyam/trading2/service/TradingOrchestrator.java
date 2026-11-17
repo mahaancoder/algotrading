@@ -75,6 +75,15 @@ public class TradingOrchestrator {
     public void loadHoldingsAtStartup() {
         System.out.println("Loading holdings at startup");
         List<Position> holdings = orderServiceV2.getHoldings();
+        if (holdings == null) {
+            // A failed/incomplete broker snapshot is not an empty portfolio.
+            // Keep startup moving so market data and BUY signal processing can start;
+            // reconciliation will retry the authoritative snapshot on its next cycle.
+            System.err.println("⚠️ [TradingOrchestrator] Kite holdings snapshot unavailable/incomplete; "
+                    + "skipping startup holdings import and continuing startup. Existing local holdings are retained.");
+            return;
+        }
+
         for (Position h : holdings) {
             positionManager.addPosition(h.getSymbol(), h.getStrategy(), h);
         }
