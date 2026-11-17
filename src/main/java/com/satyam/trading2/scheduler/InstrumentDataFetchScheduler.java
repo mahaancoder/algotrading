@@ -83,17 +83,17 @@ public class InstrumentDataFetchScheduler {
 
             System.out.println("🔍 First 5 NSE symbols to fetch: " + nseSymbols.stream().limit(5).collect(Collectors.toList()));
 
-            Map<String, Double> quotes = extracted(nseSymbols);
-            Map<String, Double> yesterdayHighPrices = extractedYesterdayHigh(nseSymbols);
+            // Map<String, Double> quotes = extracted(nseSymbols);
+            // Map<String, Double> yesterdayHighPrices = extractedYesterdayHigh(nseSymbols);
 
-            if (quotes.isEmpty()) {
-                System.err.println("❌ Failed to fetch previous close data - quotes map is empty!");
-                return;
-            }
+            // if (quotes.isEmpty()) {
+            //     System.err.println("❌ Failed to fetch previous close data - quotes map is empty!");
+            //     return;
+            // }
 
-            System.out.println("✅ Received " + quotes.size() + " quotes from API");
-            System.out.println("✅ Received " + yesterdayHighPrices.size() + " yesterday's high prices");
-            System.out.println("🔍 First 5 quotes keys: " + quotes.keySet().stream().limit(5).collect(Collectors.toList()));
+            // System.out.println("✅ Received " + quotes.size() + " quotes from API");
+            // System.out.println("✅ Received " + yesterdayHighPrices.size() + " yesterday's high prices");
+            // System.out.println("🔍 First 5 quotes keys: " + quotes.keySet().stream().limit(5).collect(Collectors.toList()));
 
             int loadedCount = 0;
             int yesterdayHighLoadedCount = 0;
@@ -103,27 +103,27 @@ public class InstrumentDataFetchScheduler {
             for (Long instrument : symbols) {
                 String symbol = Nifty500Stocks.getSymbolFromToken(instrument);
                 String nseSymbol = "NSE:" + symbol;
-                Double prevClose = quotes.get(nseSymbol);
-                Double yesterdayHigh = yesterdayHighPrices.get(nseSymbol);
+                Double prevClose = 0.0d;
+                // Double yesterdayHigh = yesterdayHighPrices.get(nseSymbol);
 
-                if (prevClose == null) {
-                    failedCount++;
-                    if (failedSymbols.size() < 10) {
-                        failedSymbols.add(symbol);
-                    }
-                    continue;
-                }
-
+                // if (prevClose == null) {
+                //     failedCount++;
+                //     if (failedSymbols.size() < 10) {
+                //         failedSymbols.add(symbol);
+                //     }
+                //     continue;
+                // }
+                
                 // Set previous close for both MarketContextBuilder (strategies) and StockSelectionService
                 marketContextBuilder.setPreviousClose(symbol, prevClose);
                 stockSelectionService.setPreviousClose(symbol, prevClose);
                 loadedCount++;
 
                 // Set yesterday's high if available
-                if (yesterdayHigh != null && yesterdayHigh > 0) {
-                    marketContextBuilder.setYesterdayHigh(symbol, yesterdayHigh);
-                    yesterdayHighLoadedCount++;
-                }
+                // if (yesterdayHigh != null && yesterdayHigh > 0) {
+                //     marketContextBuilder.setYesterdayHigh(symbol, yesterdayHigh);
+                //     yesterdayHighLoadedCount++;
+                // }
             }
 
             System.out.println("✅ Loaded prevClose for " + loadedCount + " symbols (out of " + symbols.size() + ")");
