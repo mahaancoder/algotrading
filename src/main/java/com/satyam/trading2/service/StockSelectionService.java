@@ -91,7 +91,7 @@ public class StockSelectionService {
         Set<String> newGainers = ConcurrentHashMap.newKeySet();
         List<StockChange> topGainers = new ArrayList<>();
         int count = 0;
-        for (int i = list.size() - 1; i >= 0 && count < 50; i--) {
+        for (int i = list.size() - 1; i >= 0 && count < 300; i--) {
             StockChange stock = list.get(i);
             if (stock.getChange() < 0.25) {
                 break;
