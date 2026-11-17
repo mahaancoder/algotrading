@@ -99,11 +99,11 @@ public class StockSelectionService {
             if (stock.getChange() >= 0.25) {
                 if (!Exits.isSymbolExitedToday(stock.getSymbol())) {
                     double ltp = ltpMap.getOrDefault(stock.getSymbol(), 0.0);
-                    if (stockFilterService.passesGainerFilter(stock.getSymbol(), ltp, stock.getChange())) {
+                    // if (stockFilterService.passesGainerFilter(stock.getSymbol(), ltp, stock.getChange())) {
                         newGainers.add(stock.getSymbol());
                         topGainers.add(stock);
                         count++;
-                    }
+                    // }
                 }
             }
         }
