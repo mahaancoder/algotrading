@@ -504,6 +504,7 @@ public class OrderServiceV2 {
                     continue;
                 }
 
+                int validInBatch = 0;
                 for (String symbol : batch) {
                     if (symbol == null || symbol.trim().isEmpty()) {
                         missingSymbolCount++;
@@ -523,11 +524,12 @@ public class OrderServiceV2 {
                         continue;
                     }
                     result.put(symbol, previousClose);
+                    validInBatch++;
                 }
 
                 System.out.println("📊 Previous-close batch " + (start / batchSize + 1)
                         + ": requested=" + batch.size()
-                        + ", valid=" + result.size()
+                        + ", validInBatch=" + validInBatch
                         + ", accumulatedValid=" + result.size());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
