@@ -71,94 +71,119 @@ public class InstrumentDataFetchScheduler {
     }
 
     public void loadPreviousCloseForNIfty500(Set<Long> symbols) {
-        System.out.println("📊 [09:10] Loading previous close and yesterday's high for " + symbols.size() + " symbols...");
-        try {
-            // Convert tokens to NSE:SYMBOL format
-            List<String> nseSymbols = symbols.stream()
-                    .map(token -> {
-                        String symbol = Nifty500Stocks.getSymbolFromToken(token);
-                        return "NSE:" + symbol;
-                    })
-                    .collect(Collectors.toList());
-
-            System.out.println("🔍 First 5 NSE symbols to fetch: " + nseSymbols.stream().limit(5).collect(Collectors.toList()));
-
-            Map<String, Double> quotes = extracted(nseSymbols);
-            Map<String, Double> yesterdayHighPrices = extractedYesterdayHigh(nseSymbols);
-
-            if (quotes.isEmpty()) {
-                System.err.println("❌ Failed to fetch previous close data - quotes map is empty!");
-                return;
-            }
-
-            System.out.println("✅ Received " + quotes.size() + " quotes from API");
-            System.out.println("✅ Received " + yesterdayHighPrices.size() + " yesterday's high prices");
-            System.out.println("🔍 First 5 quotes keys: " + quotes.keySet().stream().limit(5).collect(Collectors.toList()));
-
-            int loadedCount = 0;
-            int yesterdayHighLoadedCount = 0;
-            int failedCount = 0;
-            List<String> failedSymbols = new ArrayList<>();
-
-            for (Long instrument : symbols) {
-                String symbol = Nifty500Stocks.getSymbolFromToken(instrument);
-                String nseSymbol = "NSE:" + symbol;
-                Double prevClose = quotes.get(nseSymbol);
-                Double yesterdayHigh = yesterdayHighPrices.get(nseSymbol);
-
-                if (prevClose == null) {
-                    failedCount++;
-                    if (failedSymbols.size() < 10) {
-                        failedSymbols.add(symbol);
-                    }
-                    continue;
-                }
-                
-                // Set previous close for both MarketContextBuilder (strategies) and StockSelectionService
-                marketContextBuilder.setPreviousClose(symbol, prevClose);
-                stockSelectionService.setPreviousClose(symbol, prevClose);
-                loadedCount++;
-
-                Set yesterday's high if available
-                if (yesterdayHigh != null && yesterdayHigh > 0) {
-                    marketContextBuilder.setYesterdayHigh(symbol, yesterdayHigh);
-                    yesterdayHighLoadedCount++;
-                }
-            }
-
-            System.out.println("✅ Loaded prevClose for " + loadedCount + " symbols (out of " + symbols.size() + ")");
-            System.out.println("✅ Loaded yesterday's high for " + yesterdayHighLoadedCount + " symbols");
-            if (failedCount > 0) {
-                System.out.println("⚠️ Failed to load " + failedCount + " symbols");
-                System.out.println("   First 10 failed symbols: " + failedSymbols);
-            }
-        } catch (Exception e) {
-            System.err.println("❌ Error loading previous close: " + e.getMessage());
-            e.printStackTrace();
+        if (symbols == null || symbols.isEmpty()) {
+            System.err.println("❌ Cannot load previous close: instrument token set is empty. "
+                    + "Verify the 09:03 instrument-loading job completed successfully.");
+            return;
         }
+
+        System.out.println("📊 Loading previous close for " + symbols.size() + " Nifty 500 symbols...");
+
+        List<String> nseSymbols = new ArrayList<>();
+        Map<String, String> symbolByQuoteKey = new HashMap<>();
+        for (Long token : symbols) {
+            String symbol = Nifty500Stocks.getSymbolFromToken(token);
+            if (symbol == null || symbol.trim().isEmpty()) {
+                continue;
+            }
+            String quoteKey = "NSE:" + symbol;
+            nseSymbols.add(quoteKey);
+            symbolByQuoteKey.put(quoteKey, symbol);
+        }
+
+        if (nseSymbols.isEmpty()) {
+            System.err.println("❌ No valid NSE symbols could be resolved from instrument tokens.");
+            return;
+        }
+
+        System.out.println("🔍 First 5 NSE symbols: "
+                + nseSymbols.stream().limit(5).collect(Collectors.toList()));
+
+        Map<String, Double> quotes = extracted(nseSymbols);
+        int loadedCount = 0;
+        List<String> failedSymbols = new ArrayList<>();
+
+        for (String quoteKey : nseSymbols) {
+            Double previousClose = quotes.get(quoteKey);
+            String symbol = symbolByQuoteKey.get(quoteKey);
+
+            if (previousClose == null || !Double.isFinite(previousClose) || previousClose <= 0) {
+                if (failedSymbols.size() < 20) {
+                    failedSymbols.add(quoteKey);
+                }
+                continue;
+            }
+
+            marketContextBuilder.setPreviousClose(symbol, previousClose);
+            stockSelectionService.setPreviousClose(symbol, previousClose);
+            loadedCount++;
+        }
+
+        int failedCount = nseSymbols.size() - loadedCount;
+        System.out.println("========================================");
+        System.out.println("📊 Previous-close loading completed:");
+        System.out.println("   Requested: " + nseSymbols.size());
+        System.out.println("   ✅ Valid prices loaded: " + loadedCount);
+        System.out.println("   ❌ Missing/invalid prices: " + failedCount);
+        if (!failedSymbols.isEmpty()) {
+            System.out.println("   First missing symbols: " + failedSymbols);
+        }
+        if (failedCount > 0) {
+            System.err.println("⚠️ Previous-close data is incomplete. Symbols without valid prices "
+                    + "will remain ineligible for percentage-based stock selection.");
+        }
+        System.out.println("========================================");
     }
 
-
-    private Map<String, Double> extracted(List<String> newSymbols) throws InterruptedException {
-        Map<String, Double> quotes = new HashMap<>();
-
-        System.out.println("🔍 Attempting to fetch previous close for " + newSymbols.size() + " symbols...");
-
-        for(int i=0;i<3;i++) {
-            System.out.println("   Attempt " + (i+1) + " of 3...");
-            quotes = orderServiceV2.getPreviousClosePrices(newSymbols);
-
-            if(!quotes.isEmpty()) {
-                System.out.println("   ✅ Got " + quotes.size() + " quotes on attempt " + (i+1));
-                return quotes;
-            }
-
-            System.out.println("   ⚠️ Attempt " + (i+1) + " returned empty, retrying...");
-            Thread.sleep(2000);
+    /**
+     * Retry only symbols whose previous-close quote is still missing.
+     * getPreviousClosePrices performs bounded API batching on every attempt.
+     */
+    private Map<String, Double> extracted(List<String> requestedSymbols) {
+        Map<String, Double> resolved = new HashMap<>();
+        if (requestedSymbols == null || requestedSymbols.isEmpty()) {
+            return resolved;
         }
 
-        System.err.println("   ❌ All 3 attempts failed - returning empty map");
-        return quotes;
+        Set<String> unresolved = new LinkedHashSet<>(requestedSymbols);
+        final int maxAttempts = 3;
+
+        for (int attempt = 1; attempt <= maxAttempts && !unresolved.isEmpty(); attempt++) {
+            List<String> attemptSymbols = new ArrayList<>(unresolved);
+            System.out.println("🔍 Previous-close attempt " + attempt + "/" + maxAttempts
+                    + " for " + attemptSymbols.size() + " unresolved symbols");
+
+            Map<String, Double> fetched = orderServiceV2.getPreviousClosePrices(attemptSymbols);
+            if (fetched != null && !fetched.isEmpty()) {
+                for (Map.Entry<String, Double> entry : fetched.entrySet()) {
+                    Double value = entry.getValue();
+                    if (entry.getKey() != null && value != null
+                            && Double.isFinite(value) && value > 0) {
+                        resolved.put(entry.getKey(), value);
+                        unresolved.remove(entry.getKey());
+                    }
+                }
+            }
+
+            if (!unresolved.isEmpty() && attempt < maxAttempts) {
+                System.err.println("⚠️ Still missing " + unresolved.size()
+                        + " previous-close prices; retrying only unresolved symbols.");
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("❌ Interrupted during previous-close retry; stopping retries.");
+                    break;
+                }
+            }
+        }
+
+        if (!unresolved.isEmpty()) {
+            System.err.println("❌ Previous-close fetch exhausted retries. Unresolved count="
+                    + unresolved.size() + ", first symbols="
+                    + unresolved.stream().limit(20).collect(Collectors.toList()));
+        }
+        return resolved;
     }
 
     private Map<String, Double> extractedYesterdayHigh(List<String> newSymbols) throws InterruptedException {
