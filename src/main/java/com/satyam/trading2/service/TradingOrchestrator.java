@@ -106,15 +106,15 @@ public class TradingOrchestrator {
             System.out.println("✅ Loaded " + Nifty500Stocks.Nifty500tokenToInstrument.size() + " instruments");
 
             // Step 2: Load previous close data (normally runs at 09:10 AM)
-            instrumentDataFetchScheduler.fetchPreviousCloseData();
+            // instrumentDataFetchScheduler.fetchPreviousCloseData();
 
             // Step 3: Opening range data (normally runs at 09:20 AM) - skip if before 09:20
-            java.time.LocalTime now = java.time.LocalTime.now();
-            java.time.LocalTime openingRangeTime = java.time.LocalTime.of(9, 20);
-            if (now.isAfter(openingRangeTime)) {
-                System.out.println("⚠️ After 09:20 AM - loading opening range data...");
-                instrumentDataFetchScheduler.fetchOpeningRangeAndVwap();
-            }
+            // java.time.LocalTime now = java.time.LocalTime.now();
+            // java.time.LocalTime openingRangeTime = java.time.LocalTime.of(9, 20);
+            // if (now.isAfter(openingRangeTime)) {
+            //     System.out.println("⚠️ After 09:20 AM - loading opening range data...");
+            //     instrumentDataFetchScheduler.fetchOpeningRangeAndVwap();
+            // }
         } else {
             System.out.println("✅ Instrument data already loaded (" + Nifty500Stocks.Nifty500tokenToInstrument.size() + " instruments)");
         }
