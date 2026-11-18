@@ -19,6 +19,7 @@ public class OrderLifecycleManager {
     private final PendingOrderRepository pendingOrderRepository;
     private final RiskManager riskManager;
     private final DipAccumulatorService dipAccumulatorService;
+    private final com.satyam.trading2.service.MomentumTradingStateService momentumTradingStateService;
 
     public void handle(BrokerWebhookEvent event) throws IOException {
 //        System.out.println("orderliefcycle called : "+ event.getSymbol() + "  " + event.getSide() );
@@ -166,6 +167,7 @@ public class OrderLifecycleManager {
             }
 
             if (side == TradeSide.BUY) {
+                momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
                 double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
                 riskManager.releaseCapital(strategy, reservedCapital);
                 riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
