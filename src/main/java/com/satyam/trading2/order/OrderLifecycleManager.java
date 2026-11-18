@@ -209,6 +209,7 @@ public class OrderLifecycleManager {
             }
 
             if (side == TradeSide.BUY) {
+                momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
                 double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
                 riskManager.releaseCapital(strategy, reservedCapital);
                 riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
