@@ -142,7 +142,12 @@ public class OrderCompletionProcessor {
             }
 
             // Persist daily blacklist only after a fully broker-confirmed BUY completion.
-            momentumTradingStateService.onBuyCompleted(pendingOrder);
+            try {
+                momentumTradingStateService.onBuyCompleted(pendingOrder);
+            } catch (RuntimeException stateError) {
+                // Do not let a state-file I/O problem prevent protective target SELL placement.
+                System.err.println("[MomentumState] Could not persist completed BUY state: " + stateError.getMessage());
+            }
 
 //        1. FIND POSITION
             // For holdings, find by symbol only (can only have 1 holding per symbol)
