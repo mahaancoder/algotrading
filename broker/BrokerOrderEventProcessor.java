@@ -143,6 +143,9 @@ public class BrokerOrderEventProcessor {
         }
         pendingOrderRepository.save(pendingOrder);
 
+        if (pendingOrder.getSide() == TradeSide.BUY) {
+            momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
+        }
         releaseCapitalAndCleanup(pendingOrder, event);
     }
 
