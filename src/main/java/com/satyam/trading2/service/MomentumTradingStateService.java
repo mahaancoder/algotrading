@@ -120,7 +120,7 @@ public class MomentumTradingStateService {
     public void releaseReservationAfterNoOrder(String raw) {
         String s = normalizeSymbol(raw);
         if (s == null) return;
-        synchronized (lock) { state.reserved.remove(s); persist(); }
+        synchronized (lock) { state.reserved.remove(s); state.selectedToday.remove(s); persist(); }
     }
 
     public void onBuyCompleted(PendingOrder po) {
