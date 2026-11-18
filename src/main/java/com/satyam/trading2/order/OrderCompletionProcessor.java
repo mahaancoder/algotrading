@@ -31,6 +31,7 @@ public class OrderCompletionProcessor {
 
     private final PositionManager positionManager;
     private final PendingOrderRepository pendingOrderRepository;
+    private final com.satyam.trading2.service.MomentumTradingStateService momentumTradingStateService;
     private final OrderServiceV2 orderServiceV2;
     private final DipAccumulatorService dipAccumulatorService;
     private final ExecutionEngine executionEngine;
@@ -139,6 +140,9 @@ public class OrderCompletionProcessor {
                 System.out.println("⚠️ [OrderCompletionProcessor] Order not completed, exiting onBuyCompleted: " + orderId);
                 return;
             }
+
+            // Persist daily blacklist only after a fully broker-confirmed BUY completion.
+            momentumTradingStateService.onBuyCompleted(pendingOrder);
 
 //        1. FIND POSITION
             // For holdings, find by symbol only (can only have 1 holding per symbol)
