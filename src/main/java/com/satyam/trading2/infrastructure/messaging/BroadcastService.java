@@ -210,6 +210,17 @@ public class BroadcastService {
         log.debug("Broadcast holding removed: {} - {}", symbol, strategy);
     }
 
+    /** Broadcast scheduled momentum selection/state to the dashboard. */
+    public void broadcastMomentumState(Map<String, Object> state) {
+        try {
+            Map<String, Object> payload = new java.util.LinkedHashMap<>(state);
+            payload.put("type", "MOMENTUM_STATE");
+            broadcaster.broadcast(objectMapper.writeValueAsString(payload));
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize momentum state", e);
+        }
+    }
+
     /**
      * Broadcast kill switch status change
      */
