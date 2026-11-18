@@ -2,161 +2,84 @@ package com.satyam.trading2.service;
 
 import com.satyam.trading2.datamodel.StockChange;
 import com.satyam.trading2.risk.Exits;
-import kotlin.NoWhenBranchMatchedException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class StockSelectionService {
-
-    private final EMAService emaService;
-    private final CandleAggregator candleAggregator;
-    private final RelativeStrengthService relativeStrengthService;
-    private final StockFilterService stockFilterService;
-
-    private final Map<String, Double> prevCloseMap = new ConcurrentHashMap<>();; // already you have
-    private static final Map<String, Double> ltpMap = new ConcurrentHashMap<>();       // live prices
-
+    private static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
+    private final MomentumTradingStateService stateService;
+    private final Map<String,Double> prevCloseMap = new ConcurrentHashMap<>();
+    private static final Map<String,Double> ltpMap = new ConcurrentHashMap<>();
     private final Set<String> selectedGainers = ConcurrentHashMap.newKeySet();
     private final Set<String> selectedLosers = ConcurrentHashMap.newKeySet();
+    private volatile List<StockChange> currentGainers = Collections.emptyList();
+    private volatile List<StockChange> currentLosers = Collections.emptyList();
 
-    @Scheduled(fixedDelay = 30000)
+    @Scheduled(fixedDelay=30000)
     public void refreshSelection() {
-        // Check if today is a weekday (Monday to Friday)
-        DayOfWeek today = LocalDate.now().getDayOfWeek();
-        if (today == DayOfWeek.SATURDAY || today == DayOfWeek.SUNDAY) {
-            return;
-        }
-
-        LocalTime now = LocalTime.now();
-        LocalTime startTime = LocalTime.of(9, 5);
-        LocalTime endTime = LocalTime.of(15, 0);
-
-        if (now.isBefore(startTime) || now.isAfter(endTime)) {
-            return;
-        }
+        DayOfWeek day=LocalDate.now(ZONE).getDayOfWeek();
+        if(day==DayOfWeek.SATURDAY||day==DayOfWeek.SUNDAY)return;
+        LocalTime now=LocalTime.now(ZONE);
+        if(now.isBefore(LocalTime.of(9,5))||now.isAfter(LocalTime.of(15,0)))return;
         updateSelection();
     }
 
-    public void updateSelection() {
-        LocalTime now = LocalTime.now();
-        List<StockChange> list = new ArrayList<>();
-
-        for (String symbol : prevCloseMap.keySet()) {
-            double prev = prevCloseMap.get(symbol);
-            double ltp = ltpMap.getOrDefault(symbol, 0.0);
-
-            if (prev <= 0) {
-                continue;
-            }
-            if (ltp <= 0) {
-                continue;
-            }
-            double change = ((ltp - prev) / prev) * 100;
-            list.add(new StockChange(symbol, change));
+    public synchronized void updateSelection() {
+        Map<String,StockChange> all=new LinkedHashMap<>();
+        for(Map.Entry<String,Double> e:prevCloseMap.entrySet()) {
+            double prev=e.getValue()==null?0:e.getValue();
+            double ltp=ltpMap.getOrDefault(e.getKey(),0.0);
+            if(!Double.isFinite(prev)||prev<=0||!Double.isFinite(ltp)||ltp<=0)continue;
+            all.put(e.getKey(),new StockChange(e.getKey(),((ltp-prev)/prev)*100.0));
         }
+        Set<String> excluded=new HashSet<>(stateService.getBlacklist());
+        excluded.addAll(stateService.getReserved());
+        excluded.addAll(stateService.getSelectedToday());
 
-        // ===== SORT ONCE: ASCENDING (losers first, gainers last) =====
-        list.sort(Comparator.comparingDouble(StockChange::getChange));
-
-        // ===== TOP 20 LOSERS (biggest negative changes) =====
-        Set<String> newLosers = ConcurrentHashMap.newKeySet();
-        List<StockChange> topLosers = new ArrayList<>();
-        // removing losers for now will only trade with GAINERS. This is my Logic -> If a stock is part of gainer->
-        // It means that stock has touched that stock price and after that it might hve went down (in case of stuck due to Holdings), 
-        // so it's high chance that this stock will again reach that stock price in near future (in next few days). but in case of Losers
-        // that stock might keep on going down and remained down for so long.  -> this automatically avoids negative news or neagtive earnings stock.
-        // list.stream()
-        //         .filter(s -> s.getChange() <= -0.25)           // Only stocks down 2% or more
-        //         .filter(s -> !Exits.isSymbolExitedToday(s.getSymbol()))  // Skip symbols exited today
-        //         .filter(s -> {
-        //             double ltp = ltpMap.getOrDefault(s.getSymbol(), 0.0);
-        //             return stockFilterService.passesLoserFilter(s.getSymbol(), ltp, s.getChange());
-        //         })
-        //         .limit(50)                                   // Top 20 biggest losers
-        //         .forEach(s -> {
-        //             newLosers.add(s.getSymbol());
-        //             topLosers.add(s);
-        //         });
-
-        // ===== TOP 20 GAINERS (biggest positive changes) =====
-        Set<String> newGainers = ConcurrentHashMap.newKeySet();
-        List<StockChange> topGainers = new ArrayList<>();
-        int count = 0;
-        for (int i = list.size() - 1; i >= 0 && count < 300; i--) {
-            StockChange stock = list.get(i);
-            if (stock.getChange() < 0.25) {
-                break;
-            }
-            if (stock.getChange() >= 0.25) {
-                if (!Exits.isSymbolExitedToday(stock.getSymbol())) {
-                    double ltp = ltpMap.getOrDefault(stock.getSymbol(), 0.0);
-                    // if (stockFilterService.passesGainerFilter(stock.getSymbol(), ltp, stock.getChange())) {
-                        newGainers.add(stock.getSymbol());
-                        topGainers.add(stock);
-                        count++;
-                    // }
+        List<StockChange> gainers=new ArrayList<>(),losers=new ArrayList<>();
+        if(stateService.isGainersEnabled()) {
+            gainers=all.values().stream().filter(s->s.getChange()>=0.25)
+                .filter(s->!excluded.contains(s.getSymbol()))
+                .filter(s->!Exits.isSymbolExitedToday(s.getSymbol()))
+                .sorted(Comparator.comparingDouble(StockChange::getChange).reversed())
+                .limit(10).collect(Collectors.toList());
+            for(String symbol:stateService.getWhitelist()) {
+                if(excluded.contains(symbol)||Exits.isSymbolExitedToday(symbol))continue;
+                if(gainers.stream().noneMatch(s->s.getSymbol().equals(symbol))
+                        && ltpMap.getOrDefault(symbol,0.0)>0) {
+                    gainers.add(all.getOrDefault(symbol,new StockChange(symbol,0.0)));
                 }
             }
         }
-
-        // ===== ATOMIC SWAP: Replace old sets with new ones =====
-        // selectedLosers.clear();
-        // selectedLosers.addAll(newLosers);
-        selectedGainers.clear();
-        selectedGainers.addAll(newGainers);
-
-        // ===== DETAILED LOGGING =====
-        if (!selectedLosers.isEmpty() || !selectedGainers.isEmpty()) {
-//            System.out.println("📊 STOCK SELECTION UPDATE - " + new java.util.Date());
-
-            if (!topLosers.isEmpty()) {
-                System.out.println("\n🔻 TOP " + topLosers.size() + " LOSERS (sorted by biggest loss):");
-                System.out.println("-".repeat(100));
-                for (int i = 0; i < topLosers.size(); i++) {
-                    StockChange stock = topLosers.get(i);
-                    System.out.printf("  %2d. %-15s %6.2f%%", (i + 1), stock.getSymbol(), stock.getChange());
-                    System.out.println();
-                }
-            } else {
-                System.out.println("\n🔻 TOP LOSERS: None");
-            }
-
-            if (!topGainers.isEmpty()) {
-                System.out.println("\n🔺 TOP " + topGainers.size() + " GAINERS (sorted by biggest gain):");
-                System.out.println("-".repeat(100));
-                for (int i = 0; i < topGainers.size(); i++) {
-                    StockChange stock = topGainers.get(i);
-                    System.out.printf("  %2d. %-15s %6.2f%%", (i + 1), stock.getSymbol(), stock.getChange());
-                    System.out.println();
-                }
-            } else {
-                System.out.println("\n🔺 TOP GAINERS: None");
-            }
+        if(stateService.isLosersEnabled()) {
+            losers=all.values().stream().filter(s->s.getChange()<=-0.25)
+                .filter(s->!excluded.contains(s.getSymbol()))
+                .filter(s->!Exits.isSymbolExitedToday(s.getSymbol()))
+                .sorted(Comparator.comparingDouble(StockChange::getChange))
+                .limit(10).collect(Collectors.toList());
         }
+        currentGainers=Collections.unmodifiableList(new ArrayList<>(gainers));
+        currentLosers=Collections.unmodifiableList(new ArrayList<>(losers));
+        selectedGainers.clear(); selectedLosers.clear();
+        currentGainers.forEach(s->selectedGainers.add(s.getSymbol()));
+        currentLosers.forEach(s->selectedLosers.add(s.getSymbol()));
     }
 
-    public boolean isTopLoser(String symbol) {
-        return selectedLosers.contains(symbol);
-    }
-
-    public boolean isTopGainer(String symbol) {
-        return selectedGainers.contains(symbol);
-    }
-
-    public void setPreviousClose(String symbol, double price) {
-        prevCloseMap.put(symbol, price);
-    }
-
-    public static void updateLtp(String symbol, double ltp) {
-        ltpMap.put(symbol, ltp);
-    }
+    public boolean isTopLoser(String symbol){return selectedLosers.contains(symbol);}
+    public boolean isTopGainer(String symbol){return selectedGainers.contains(symbol);}
+    public List<StockChange> getCurrentGainers(){return currentGainers;}
+    public List<StockChange> getCurrentLosers(){return currentLosers;}
+    public void setPreviousClose(String symbol,double price){if(symbol!=null&&Double.isFinite(price)&&price>0)prevCloseMap.put(symbol,price);}
+    public static void updateLtp(String symbol,double ltp){if(symbol!=null&&Double.isFinite(ltp)&&ltp>0)ltpMap.put(symbol,ltp);}
+    public double getLatestPrice(String symbol){return ltpMap.getOrDefault(symbol,0.0);}
 }
