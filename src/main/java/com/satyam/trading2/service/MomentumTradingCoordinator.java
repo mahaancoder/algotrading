@@ -43,11 +43,13 @@ public class MomentumTradingCoordinator {
     }
 
     public Map<String,Object> executeScheduled(String slot, double budget) {
-        LocalTime at=LocalTime.parse(slot), now=LocalTime.now(ZONE);
-        if (now.isAfter(at.plusSeconds(45))) return result("SKIPPED_LATE",0,0);
-        if (!state.markScheduleExecuted(state.getTradingDate()+"@"+slot)) return result("ALREADY_EXECUTED",0,0);
-        selection.updateSelection();
-        return executeBatch(currentCandidates(),budget,false);
+        synchronized (batchLock) {
+            LocalTime at=LocalTime.parse(slot), now=LocalTime.now(ZONE);
+            if (now.isAfter(at.plusSeconds(45))) return result("SKIPPED_LATE",0,0);
+            if (!state.markScheduleExecuted(state.getTradingDate()+"@"+slot)) return result("ALREADY_EXECUTED",0,0);
+            selection.updateSelection();
+            return executeBatch(currentCandidates(),budget,false);
+        }
     }
     public Map<String,Object> executeNewCandidates() {
         selection.updateSelection();
