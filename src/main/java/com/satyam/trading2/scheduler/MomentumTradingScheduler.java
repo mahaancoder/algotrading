@@ -20,5 +20,5 @@ public class MomentumTradingScheduler {
     @Scheduled(cron="0 0 12 * * MON-FRI",zone="Asia/Kolkata") public void batch1200(){run("12:00",10000);}
     @Scheduled(cron="0 0 13 * * MON-FRI",zone="Asia/Kolkata") public void batch1300(){run("13:00",10000);}
     @Scheduled(cron="0 0 14 * * MON-FRI",zone="Asia/Kolkata") public void batch1400(){run("14:00",10000);}
-    private void run(String slot,double budget){coordinator.executeScheduled(slot,budget);}
+    private void run(String slot,double budget){java.util.concurrent.CompletableFuture.runAsync(() -> coordinator.executeScheduled(slot,budget));}
 }
