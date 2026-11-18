@@ -31,6 +31,7 @@ public class OrderCompletionProcessor {
 
     private final PositionManager positionManager;
     private final PendingOrderRepository pendingOrderRepository;
+    private final com.satyam.trading2.service.MomentumTradingStateService momentumTradingStateService;
     private final OrderServiceV2 orderServiceV2;
     private final DipAccumulatorService dipAccumulatorService;
     private final ExecutionEngine executionEngine;
@@ -138,6 +139,14 @@ public class OrderCompletionProcessor {
             if(!pendingOrder.isCompleted()) {
                 System.out.println("⚠️ [OrderCompletionProcessor] Order not completed, exiting onBuyCompleted: " + orderId);
                 return;
+            }
+
+            // Persist daily blacklist only after a fully broker-confirmed BUY completion.
+            try {
+                momentumTradingStateService.onBuyCompleted(pendingOrder);
+            } catch (RuntimeException stateError) {
+                // Do not let a state-file I/O problem prevent protective target SELL placement.
+                System.err.println("[MomentumState] Could not persist completed BUY state: " + stateError.getMessage());
             }
 
 //        1. FIND POSITION

@@ -121,12 +121,12 @@ public class OrderExecutionService {
                 : productToggleService.isMisEnabled();
     }
 
-    public void execute(TradeSignal signal, MarketContext ctx) throws Exception {
+    public String execute(TradeSignal signal, MarketContext ctx) throws Exception {
         String symbol = signal.getSymbol();
         String strategy = signal.getStrategyName();
 
         synchronized (getSymbolStrategyLock(symbol, strategy)) {
-            executeBuy(signal, ctx);
+            return executeBuy(signal, ctx);
         }
     }
 
@@ -134,7 +134,7 @@ public class OrderExecutionService {
     // any existing holding stored under the same strategy key. See MIS-only mode.
     private static final String MIS_ONLY_SUFFIX = "#MIS";
 
-    private void executeBuy(TradeSignal signal, MarketContext ctx) throws IOException {
+    private String executeBuy(TradeSignal signal, MarketContext ctx) throws IOException {
         String symbol = signal.getSymbol();
         String strategy = signal.getStrategyName();
         double entry = signal.getEntryPrice();
@@ -155,13 +155,13 @@ public class OrderExecutionService {
         // ===== GATE 1: KILL SWITCH =====
         if (killSwitchService.isActive()) {
             signalAnalyticsService.recordSignal(signal, false, "Kill switch active - all trading stopped", actualCapital);
-            return;
+            return null;
         }
 
         // ===== GATE 2: TRADING HOURS =====
         if (!isBuyAllowed()) {
             signalAnalyticsService.recordSignal(signal, false, "Outside buy hours (9:15 AM - 3:00 PM)", actualCapital);
-            return;
+            return null;
         }
 
         // ===== GATE 3: EXITED TODAY (price-aware per Decision #1) =====
@@ -169,7 +169,7 @@ public class OrderExecutionService {
             // Re-entry allowed only when new buy price is lower than earlier buy price
             if (!Exits.isReEntryAllowed(symbol, positionStrategy, entry)) {
                 signalAnalyticsService.recordSignal(signal, false, "Symbol+Strategy exited today - re-entry price not lower", actualCapital);
-                return;
+                return null;
             }
         }
 
@@ -182,7 +182,7 @@ public class OrderExecutionService {
         Position existingPosition = findExistingPositionAcrossBrokers(symbol, positionStrategy);
         if (!isAccumulationAllowed(existingPosition, entry)) {
             signalAnalyticsService.recordSignal(signal, false, "Accumulation not allowed (price condition)", actualCapital);
-            return;
+            return null;
         }
 
         // ===== STEP 1: Determine MIS or CNC =====
@@ -194,17 +194,17 @@ public class OrderExecutionService {
         // ===== STEP 1.5: Circuit Limit Check =====
         if (!com.satyam.trading2.helpers.CircuitLimitChecker.isTargetPriceWithinCircuitLimits(symbol, entry, isHolding)) {
             signalAnalyticsService.recordSignal(signal, false, "Circuit limit breach - target would hit upper circuit", actualCapital);
-            return;
+            return null;
         }
 
         // ===== STEP 1.6: Product Toggle Check =====
         if (isHolding && !productToggleService.isCncEnabled()) {
             signalAnalyticsService.recordSignal(signal, false, "CNC buy orders disabled - toggle to enable", actualCapital);
-            return;
+            return null;
         }
         if (!isHolding && !productToggleService.isMisEnabled()) {
             signalAnalyticsService.recordSignal(signal, false, "MIS buy orders disabled - toggle to enable", actualCapital);
-            return;
+            return null;
         }
 
         // ===== STEP 1.7: NO-TRADE VETO FILTER =====
@@ -214,7 +214,7 @@ public class OrderExecutionService {
         if (noTradeReason != null) {
 //            System.out.println("🚫 [NoTradeFilter] " + symbol + " rejected - " + noTradeReason);
             signalAnalyticsService.recordSignal(signal, false, noTradeReason, actualCapital);
-            return;
+            return null;
         }
 
         // ===== STEP 2: DETERMINE BROKER FIRST (needed for broker-aware risk check) =====
@@ -224,7 +224,7 @@ public class OrderExecutionService {
         if (route == null) {
             // Broker toggle rejection — existing position at a disabled broker, can't average
             signalAnalyticsService.recordSignal(signal, false, "Broker disabled — cannot average existing position", actualCapital);
-            return;
+            return null;
         }
         Broker broker = brokerRouter.getBrokerWithFallback(route);
         String brokerName = broker.getBrokerName();
@@ -239,7 +239,7 @@ public class OrderExecutionService {
         if (pendingBuyExists) {
             signalAnalyticsService.recordSignal(signal, false,
                     "Pending BUY already exists for this broker and symbol", actualCapital);
-            return;
+            return null;
         }
 
         // Visibility into every routing decision: which broker a BUY was sent to
@@ -259,14 +259,14 @@ public class OrderExecutionService {
             } else {
                 System.out.println(riskCheck.getRejectionReason());
             }
-            return;
+            return null;
         }
 
         // ===== STEP 2.6: RESERVE CAPITAL (strategy level — broker-aware) =====
         if (!riskManager.reserveCapital(strategy, actualCapital, brokerName)) {
             signalAnalyticsService.recordSignal(signal, false, "Insufficient " + brokerName + " broker capital - budget exceeded", actualCapital);
             System.out.println("less funds1");
-            return;
+            return null;
         }
 
         // ===== STEP 2.7: RESERVE CAPITAL (symbol level) =====
@@ -274,7 +274,7 @@ public class OrderExecutionService {
             riskManager.releaseCapital(strategy, actualCapital, brokerName);
             signalAnalyticsService.recordSignal(signal, false, "Symbol capital limit - exceeds 50K per symbol", actualCapital);
             System.out.println("less funds2");
-            return;
+            return null;
         }
 
         try {
@@ -306,7 +306,7 @@ public class OrderExecutionService {
                 log.warn("❌ [OrderExecution] {} {} order REJECTED by {} → {}",
                         strategy, symbol, brokerName, reason);
                 signalAnalyticsService.recordSignal(signal, false, "Order placement failed - " + reason, actualCapital);
-                return;
+                return null;
             }
 
             String brokerOrderId = response.getBrokerOrderId();
@@ -344,6 +344,7 @@ public class OrderExecutionService {
             state.setLastObservedPrice(entry);
             state.setLastBuyTime(System.currentTimeMillis());
             dipAccumulatorService.save(state);
+            return brokerOrderId;
 
         } catch (Exception e) {
             riskManager.releaseCapital(strategy, actualCapital, brokerName);
@@ -539,11 +540,12 @@ public class OrderExecutionService {
     private boolean isBuyAllowed() {
         // No buy orders before 9:14:59 — placing them earlier (e.g. from 9:10)
         // just gets them rejected by the broker since the market opens at 9:15.
-        LocalTime now = LocalTime.now();
+        LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         return !now.isBefore(LocalTime.of(9, 14, 59)) && now.isBefore(LocalTime.of(15, 0));
     }
 
     private static int calculateQty(TradeSignal signal) {
+        if (signal.getQuantity() > 0) return signal.getQuantity();
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 16))) {
             return Math.max(1, (int) (50000 / signal.getEntryPrice()));

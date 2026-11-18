@@ -187,6 +187,38 @@
 </div>
 
 <h1>🤖 Kite Pro Trader (Paper Trading Live)</h1>
+
+<div class="card" id="momentumTradingPanel">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+    <h3 style="margin:0;">Scheduled Momentum Trading</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="reserved-btn secondary" onclick="executeMomentum('new')">Take New Gainers / Losers</button>
+      <button class="reserved-btn secondary" onclick="executeMomentum('current')">Buy Current Eligible Selection</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0;">
+    <button id="momentumGainersToggle" class="product-toggle-btn enabled" onclick="toggleMomentumCategory('gainers')">GAINERS ON</button>
+    <button id="momentumLosersToggle" class="product-toggle-btn enabled" onclick="toggleMomentumCategory('losers')">LOSERS ON</button>
+    <input id="momentumSymbolInput" placeholder="NSE symbol (e.g. RELIANCE)" style="background:#0d0d0d;color:#ddd;border:1px solid #444;border-radius:5px;padding:9px;min-width:190px;">
+    <button class="reserved-btn secondary" onclick="addMomentumSymbol('whitelist')">Add to Whitelist</button>
+    <button class="reserved-btn danger" onclick="addMomentumSymbol('blacklist')">Add to Blacklist</button>
+    <span id="momentumActionStatus" class="small"></span>
+  </div>
+  <div class="grid-4" style="grid-template-columns:repeat(3,1fr);">
+    <div class="kpi"><div class="label">Blacklisted Today</div><div class="value" id="momentumBlacklistCount">0</div></div>
+    <div class="kpi"><div class="label">Pending / Reserved</div><div class="value" id="momentumReservedCount">0</div></div>
+    <div class="kpi"><div class="label">Whitelisted</div><div class="value" id="momentumWhitelistCount">0</div></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+    <div><h3>Top 10 Gainers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumGainersBody"></tbody></table></div></div>
+    <div><h3>Top 10 Losers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumLosersBody"></tbody></table></div></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;">
+    <div><h3>Today's Blacklist</h3><div id="momentumBlacklist" class="small">None</div></div>
+    <div><h3>Today's Whitelist</h3><div id="momentumWhitelist" class="small">None</div></div>
+  </div>
+</div>
+
 <a href="/auth/login" style="display:inline-block;margin-bottom:16px;font-size:13px;color:#00d4aa;text-decoration:none;">🔐 Manage Broker Logins</a>
 
 <!-- Tab Navigation -->
@@ -690,6 +722,7 @@
             const data = await res.json();
             alert('✅ ' + (data.message || 'Released'));
             fetchReservedCapital();
+        loadMomentumState();
         } catch (e) {
             console.error('Failed to release reserved capital', e);
             alert('❌ Failed to release reserved capital');
@@ -721,6 +754,7 @@
 
     ws.onmessage=function(event){
         let msg=JSON.parse(event.data);
+        if(msg.type==='MOMENTUM_STATE'){ renderMomentumState(msg); return; }
 
         if(msg.type==='POSITIONS_SNAPSHOT'){
             msg.positions.forEach(function(position) {
@@ -1118,7 +1152,51 @@
             console.error('Error setting default broker ' + brokerName + ':', error);
             if (sel) sel.disabled = false;
             alert('Failed to set default broker. Please try again.');
-            fetchDefaultBroker();
+        
+    function momentumRequest(url, method, body) {
+        const options={method:method,headers:{}};
+        if(body){options.headers['Content-Type']='application/x-www-form-urlencoded';options.body=new URLSearchParams(body).toString();}
+        return fetch(url,options).then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.message||'Request failed');return data;});
+    }
+    function loadMomentumState(){fetch('/api/momentum/state').then(r=>r.json()).then(renderMomentumState).catch(e=>console.error('Momentum state load failed',e));}
+    function momentumStatus(row){if(row.traded)return 'FILLED';if(row.pending)return 'PENDING';if(row.selectedToday)return 'SELECTED';if(row.whitelisted)return 'WHITELIST';return 'ELIGIBLE';}
+    function renderMomentumRows(id,rows){
+        const body=document.getElementById(id);if(!body)return;
+        body.innerHTML=(rows||[]).map(row=>{const change=Number(row.changePercent||0);const cls=change>=0?'green':'red';
+            return '<tr><td>'+row.symbol+'</td><td class="'+cls+'">'+change.toFixed(2)+'%</td><td>₹'+Number(row.ltp||0).toFixed(2)+'</td><td>'+momentumStatus(row)+'</td></tr>';
+        }).join('')||'<tr><td colspan="4" class="small">No eligible symbols</td></tr>';
+    }
+    function renderMomentumState(state){
+        if(!state)return;renderMomentumRows('momentumGainersBody',state.gainers);renderMomentumRows('momentumLosersBody',state.losers);
+        const bl=state.blacklist||[],wl=state.whitelist||[],rs=state.reserved||[];
+        document.getElementById('momentumBlacklistCount').textContent=bl.length;
+        document.getElementById('momentumReservedCount').textContent=rs.length;
+        document.getElementById('momentumWhitelistCount').textContent=wl.length;
+        document.getElementById('momentumBlacklist').textContent=bl.join(', ')||'None';
+        document.getElementById('momentumWhitelist').textContent=wl.join(', ')||'None';
+        const g=document.getElementById('momentumGainersToggle'),l=document.getElementById('momentumLosersToggle');
+        g.textContent=state.gainersEnabled?'GAINERS ON':'GAINERS OFF';g.className='product-toggle-btn '+(state.gainersEnabled?'enabled':'disabled');
+        l.textContent=state.losersEnabled?'LOSERS ON':'LOSERS OFF';l.className='product-toggle-btn '+(state.losersEnabled?'enabled':'disabled');
+    }
+    function executeMomentum(kind){
+        const url=kind==='new'?'/api/momentum/execute/new':'/api/momentum/execute/current';
+        momentumRequest(url,'POST').then(d=>{document.getElementById('momentumActionStatus').textContent=d.status+' — submitted: '+d.submitted+', skipped: '+d.skipped;loadMomentumState();})
+        .catch(e=>document.getElementById('momentumActionStatus').textContent=e.message);
+    }
+    function toggleMomentumCategory(category){
+        const b=document.getElementById(category==='gainers'?'momentumGainersToggle':'momentumLosersToggle');
+        const enabled=b.textContent.endsWith('OFF');
+        momentumRequest('/api/momentum/'+category,'POST',{enabled:enabled}).then(loadMomentumState)
+        .catch(e=>document.getElementById('momentumActionStatus').textContent=e.message);
+    }
+    function addMomentumSymbol(kind){
+        const input=document.getElementById('momentumSymbolInput'),symbol=input.value.trim().toUpperCase();if(!symbol)return;
+        const url=kind==='whitelist'?'/api/momentum/whitelist':'/api/momentum/blacklist';
+        momentumRequest(url,'POST',{symbol:symbol}).then(d=>{document.getElementById('momentumActionStatus').textContent=d.message;input.value='';loadMomentumState();})
+        .catch(e=>document.getElementById('momentumActionStatus').textContent=e.message);
+    }
+
+    fetchDefaultBroker();
         });
     }
 
@@ -1139,6 +1217,7 @@
     }
 
     fetchDefaultBroker();
+    loadMomentumState();
 </script>
 
 </body>

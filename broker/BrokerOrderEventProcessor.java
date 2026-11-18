@@ -41,6 +41,7 @@ public class BrokerOrderEventProcessor {
     private final PendingOrderRepository pendingOrderRepository;
     private final RiskManager riskManager;
     private final DipAccumulatorService dipAccumulatorService;
+    private final com.satyam.trading2.service.MomentumTradingStateService momentumTradingStateService;
 
     public void process(BrokerOrderEvent event) throws IOException {
         if (event == null || event.getBrokerOrderId() == null) {
@@ -125,6 +126,10 @@ public class BrokerOrderEventProcessor {
         pendingOrder.markCancelled();
         pendingOrderRepository.save(pendingOrder);
 
+        if (pendingOrder.getSide() == TradeSide.BUY) {
+            try { momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity()); }
+            catch (RuntimeException stateError) { log.error("Could not persist momentum BUY terminal state", stateError); }
+        }
         releaseCapitalAndCleanup(pendingOrder, event);
     }
 
@@ -139,6 +144,10 @@ public class BrokerOrderEventProcessor {
         }
         pendingOrderRepository.save(pendingOrder);
 
+        if (pendingOrder.getSide() == TradeSide.BUY) {
+            try { momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity()); }
+            catch (RuntimeException stateError) { log.error("Could not persist momentum BUY terminal state", stateError); }
+        }
         releaseCapitalAndCleanup(pendingOrder, event);
     }
 
