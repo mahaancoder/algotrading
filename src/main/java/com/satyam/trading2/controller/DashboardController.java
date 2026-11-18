@@ -22,6 +22,9 @@ import java.util.*;
 
 @Controller
 public class DashboardController {
+    @Autowired
+    private MomentumTradingCoordinator momentumTradingCoordinator;
+
 
 
     @Autowired
@@ -357,6 +360,75 @@ public class DashboardController {
         stats.put("sampleStocksWithoutData", samplesWithoutData);
 
         return ResponseEntity.ok(stats);
+    }
+
+
+    @GetMapping("/api/momentum/state")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> getMomentumState() {
+        return ResponseEntity.ok(momentumTradingCoordinator.getDashboardSnapshot());
+    }
+
+    @PostMapping("/api/momentum/execute/new")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> executeNewMomentumCandidates() {
+        return ResponseEntity.ok(momentumTradingCoordinator.executeNewCandidates());
+    }
+
+    @PostMapping("/api/momentum/execute/current")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> executeCurrentMomentumSelection() {
+        return ResponseEntity.ok(momentumTradingCoordinator.executeCurrentSelection());
+    }
+
+    @PostMapping("/api/momentum/blacklist")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> addMomentumBlacklist(@RequestParam String symbol) {
+        try {
+            momentumTradingCoordinator.addBlacklist(symbol);
+            return ResponseEntity.ok(momentumActionResult("Blacklisted " + symbol));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(momentumActionResult(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/api/momentum/whitelist")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> addMomentumWhitelist(@RequestParam String symbol) {
+        try {
+            momentumTradingCoordinator.addWhitelist(symbol);
+            return ResponseEntity.ok(momentumActionResult("Whitelisted " + symbol));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(momentumActionResult(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/api/momentum/whitelist")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> removeMomentumWhitelist(@RequestParam String symbol) {
+        momentumTradingCoordinator.removeWhitelist(symbol);
+        return ResponseEntity.ok(momentumActionResult("Removed " + symbol + " from whitelist"));
+    }
+
+    @PostMapping("/api/momentum/gainers")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> setMomentumGainers(@RequestParam boolean enabled) {
+        momentumTradingCoordinator.setGainersEnabled(enabled);
+        return ResponseEntity.ok(momentumActionResult("Gainers " + (enabled ? "enabled" : "disabled")));
+    }
+
+    @PostMapping("/api/momentum/losers")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> setMomentumLosers(@RequestParam boolean enabled) {
+        momentumTradingCoordinator.setLosersEnabled(enabled);
+        return ResponseEntity.ok(momentumActionResult("Losers " + (enabled ? "enabled" : "disabled")));
+    }
+
+    private Map<String, Object> momentumActionResult(String message) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("message", message);
+        return response;
     }
 
 }
