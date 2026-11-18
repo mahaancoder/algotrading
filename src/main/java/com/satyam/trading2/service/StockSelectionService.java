@@ -24,6 +24,7 @@ public class StockSelectionService {
     private final Set<String> selectedLosers = ConcurrentHashMap.newKeySet();
     private volatile List<StockChange> currentGainers = Collections.emptyList();
     private volatile List<StockChange> currentLosers = Collections.emptyList();
+    private volatile LocalDate selectionDate = LocalDate.now(ZONE);
 
     @Scheduled(fixedDelay=30000)
     public void refreshSelection() {
@@ -35,6 +36,16 @@ public class StockSelectionService {
     }
 
     public synchronized void updateSelection() {
+        LocalDate today = LocalDate.now(ZONE);
+        if (!today.equals(selectionDate)) {
+            prevCloseMap.clear();
+            ltpMap.clear();
+            selectedGainers.clear();
+            selectedLosers.clear();
+            currentGainers = Collections.emptyList();
+            currentLosers = Collections.emptyList();
+            selectionDate = today;
+        }
         Map<String,StockChange> all=new LinkedHashMap<>();
         for(Map.Entry<String,Double> e:prevCloseMap.entrySet()) {
             double prev=e.getValue()==null?0:e.getValue();
