@@ -145,7 +145,10 @@ public class MomentumTradingStateService {
         synchronized (lock) {
             if (Integer.valueOf(0).equals(confirmedFilled) && po.getFilledQty() == 0
                     && (po.getState() == PendingOrderState.CANCELLED
-                    || po.getState() == PendingOrderState.REJECTED)) state.reserved.remove(s);
+                    || po.getState() == PendingOrderState.REJECTED)) {
+                state.reserved.remove(s);
+                state.selectedToday.remove(s);
+            }
             else { state.reserved.add(s); state.selectedToday.add(s); }
             persist();
         }
