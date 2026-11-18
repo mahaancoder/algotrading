@@ -127,7 +127,8 @@ public class BrokerOrderEventProcessor {
         pendingOrderRepository.save(pendingOrder);
 
         if (pendingOrder.getSide() == TradeSide.BUY) {
-            momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
+            try { momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity()); }
+            catch (RuntimeException stateError) { log.error("Could not persist momentum BUY terminal state", stateError); }
         }
         releaseCapitalAndCleanup(pendingOrder, event);
     }
