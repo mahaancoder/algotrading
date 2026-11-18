@@ -109,6 +109,11 @@ public class PendingOrderRepository {
         }
     }
 
+    /** Durable ledger snapshot for restart recovery of daily BUY guards. */
+    public List<PendingOrder> findAll() {
+        synchronized (lock) { return new ArrayList<>(ordersByInternalId.values()); }
+    }
+
     public List<PendingOrder> findOpenOrders(){
         return ordersByInternalId.values().stream()
                 .filter(po -> po != null && po.getState() != null)
