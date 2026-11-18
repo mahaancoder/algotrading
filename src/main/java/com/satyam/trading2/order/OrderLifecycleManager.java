@@ -210,7 +210,8 @@ public class OrderLifecycleManager {
             }
 
             if (side == TradeSide.BUY) {
-                momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
+                try { momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity()); }
+                catch (RuntimeException stateError) { System.err.println("[MomentumState] Terminal-state persistence failed: " + stateError.getMessage()); }
                 double reservedCapital = pendingOrder.getAvgPrice() * pendingOrder.getRequestQty();
                 riskManager.releaseCapital(strategy, reservedCapital);
                 riskManager.releaseCapitalForSymbol(symbol, reservedCapital);
