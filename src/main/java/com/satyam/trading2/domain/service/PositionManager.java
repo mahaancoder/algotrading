@@ -112,7 +112,11 @@ public class PositionManager {
     }
 
     public void updatePosition(Position position) {
-        addPosition(position); // Same as add since we use maps
+        if (position == null || position.getSymbol() == null || position.getStrategy() == null) return;
+        String broker = position.getBroker() != null ? position.getBroker() : "KITE";
+        position.setBroker(broker);
+        positionMap.computeIfAbsent(position.getSymbol(), k -> new ConcurrentHashMap<>())
+                .put(makeKey(broker, position.getStrategy()), position);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -145,10 +149,13 @@ public class PositionManager {
     
 
     public List<Position> getAllOpenPositions() {
-        return positionMap.values().stream()
-            .flatMap(strategyMap -> strategyMap.values().stream())
-            .filter(p -> p != null && !p.isExitProcessed())
-            .collect(Collectors.toList());
+        return getAllPositions().stream().filter(p -> !p.isExitProcessed()).collect(Collectors.toList());
+    }
+
+    /** Includes exit-processed tombstones until broker reconciliation proves they are safe to remove. */
+    public List<Position> getAllPositions() {
+        return positionMap.values().stream().flatMap(m -> m.values().stream())
+                .filter(java.util.Objects::nonNull).collect(Collectors.toList());
     }
     
 

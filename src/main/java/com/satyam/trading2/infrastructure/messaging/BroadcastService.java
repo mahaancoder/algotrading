@@ -11,6 +11,7 @@ import com.satyam.trading2.websocket.WebSocketBroadcaster;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import java.security.interfaces.DSAPublicKey;
 import java.util.Map;
@@ -259,6 +260,23 @@ public class BroadcastService {
             // Use type-safe DTO
             PositionDto dto = PositionDto.fromIntradayPosition(p, price);
             broadcastPosition(dto);
+        }
+    }
+
+    /**
+     * Re-publish cached market prices once per minute so dashboard rows do not
+     * depend on every symbol receiving a fresh tick. DTO timestamp remains the
+     * time of the actual market tick, making stale prices visible to the user.
+     */
+    @Scheduled(fixedDelay = 60_000L, initialDelay = 60_000L)
+    public void refreshDashboardPositionPrices() {
+        for (Position p : positionManager.getAllPositions()) {
+            if (p == null || !p.isOpen() || p.isExitProcessed() || p.getTotalQuantity() <= 0) continue;
+            double last = getLatestPrice(p.getSymbol());
+            if (last <= 0) continue;
+            if (p.getPositionType() == HOLDING) broadcastPosition(PositionDto.fromHolding(p, last));
+            else if (p.getPositionType() == Position.PositionType.INTRADAY)
+                broadcastPosition(PositionDto.fromIntradayPosition(p, last));
         }
     }
 

@@ -7,6 +7,7 @@ import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.risk.RiskManager;
+import com.satyam.trading2.repository.HoldingMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,6 +33,7 @@ public class ReconciliationService {
     private final RiskManager riskManager;
     private final DipAccumulatorService dipAccumulatorService;
     private final MarketContextBuilder marketContextBuilder;
+    private final HoldingMetadataRepository holdingMetadataRepository;
 
     // A single transient broker snapshot must never erase a live local position.
     // Counts are reset as soon as the broker reports the position again.
@@ -113,7 +115,9 @@ public class ReconciliationService {
                     .collect(Collectors.toList()));
             allBrokerPositions.addAll(brokerHoldings);
 
-            List<Position> ourPositions = positionRepository.getAllOpenPositions().stream()
+            // Include tombstones: broker-confirmed inventory must be able to restore
+            // rows hidden from ordinary open-position views after a local completion.
+            List<Position> ourPositions = positionRepository.getAllPositions().stream()
                     .filter(java.util.Objects::nonNull)
                     .filter(ReconciliationService::isKite)
                     .collect(Collectors.toList());
@@ -129,7 +133,14 @@ public class ReconciliationService {
                     String key = missingKey(local);
                     consecutiveMissingSnapshots.remove(key);
                     synchronized (SellLifecycleLockRegistry.lockFor(local)) {
-                        if (local.isExitProcessed()) continue;
+                        if (local.isExitProcessed()) {
+                            // Re-open only because the validated broker snapshot positively
+                            // confirms remaining long inventory. Keep recorded SELL IDs.
+                            local.setOpen(true);
+                            local.setExitProcessed(false);
+                            log.warn("[Reconciliation] Restoring tombstoned {} {} with broker-confirmed qty={}.",
+                                    local.getSymbol(), local.getPositionType(), brokerPos.getTotalQuantity());
+                        }
                         if (local.getTotalQuantity() != brokerPos.getTotalQuantity()
                                 || Math.abs(local.getAveragePrice() - brokerPos.getAveragePrice()) > 0.01) {
                             log.warn("[Reconciliation] Updating aggregate Kite inventory for {} {}: local qty={} avg={}, broker qty={} avg={}",
@@ -210,6 +221,9 @@ public class ReconciliationService {
                 log.warn("[Reconciliation] Two consecutive valid Kite snapshots and no active/unresolved SELL confirm no remaining {} inventory for {}; removing local strategy position {}.",
                         local.getPositionType(), local.getSymbol(), local.getStrategy());
                 positionRepository.removePosition(local.getSymbol(), local.getStrategy(), brokerOf(local));
+                if (local.getPositionType() == Position.PositionType.HOLDING) {
+                    holdingMetadataRepository.remove(local.getSymbol(), local.getStrategy());
+                }
                 consecutiveMissingSnapshots.remove(key);
                 }
             }

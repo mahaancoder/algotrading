@@ -50,6 +50,8 @@ public class PositionDto {
 
     // Broker that owns this position (e.g. "KITE", "INDSTOCKS", "SHOONYA")
     private String broker;
+    // Timestamp of the latest underlying market tick, not the dashboard refresh time.
+    private Long priceTimestamp;
 
     /**
      * Create from Position entity for INTRADAY
@@ -68,8 +70,9 @@ public class PositionDto {
                 .unrealized(unrealizedPnL)
                 .strategy(position.getStrategy())
                 .target(position.getTarget())
-                .entryType(position.getEntryType() != null ? position.getEntryType().name() : null)
+                .entryType(position.getEntryType() != null ? position.getEntryType().name() : "UNKNOWN")
                 .broker(position.getBroker() != null ? position.getBroker() : "KITE")
+                .priceTimestamp(com.satyam.trading2.helpers.LatestPriceHelper.getLastPriceUpdateTime(position.getSymbol()))
                 .build();
     }
 
