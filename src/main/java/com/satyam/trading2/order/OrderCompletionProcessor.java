@@ -182,6 +182,12 @@ public class OrderCompletionProcessor {
                 }
             }
 
+            // Fill missing attribution on an existing row, but never overwrite a known entry type.
+            if ((position.getEntryType() == null || position.getEntryType() == EntryType.UNKNOWN)
+                    && pendingOrder.getEntryType() != null && pendingOrder.getEntryType() != EntryType.UNKNOWN) {
+                position.setEntryType(pendingOrder.getEntryType());
+            }
+
 // Serialize BUY-fill position updates with the same lock used by all SELL lifecycle paths.
             synchronized (SellLifecycleLockRegistry.lockFor(position)) {
             //        2. IDEMPOTENCY
@@ -500,6 +506,10 @@ public class OrderCompletionProcessor {
                     // Broker-aware removal: use the position's broker dimension.
                     String posBroker = position.getBroker() != null ? position.getBroker() : "KITE";
                     positionManager.removePosition(symbol, strategy, posBroker);
+                    if (position.getPositionType() == Position.PositionType.HOLDING) {
+                        // Full broker-confirmed exit and all sibling SELLs are terminal.
+                        holdingMetadataRepository.remove(symbol, strategy);
+                    }
                 } else {
                     // Keep a tombstone with the unresolved order IDs so a later broker
                     // event/reconciliation can still find it. Never place a replacement.
