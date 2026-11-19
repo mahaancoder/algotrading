@@ -12,17 +12,20 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class StockSelectionService {
     private static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
+    private static final int TOP_K = 10;
+
     private final MomentumTradingStateService stateService;
     private final Map<String, Double> prevCloseMap = new ConcurrentHashMap<>();
     private static final Map<String, Double> ltpMap = new ConcurrentHashMap<>();
-    private final Set<String> selectedGainers = ConcurrentHashMap.newKeySet();
-    private final Set<String> selectedLosers = ConcurrentHashMap.newKeySet();
+
+    // Immutable snapshots are replaced atomically after each calculation.
+    private volatile Set<String> selectedGainers = Collections.emptySet();
+    private volatile Set<String> selectedLosers = Collections.emptySet();
     private volatile List<StockChange> currentGainers = Collections.emptyList();
     private volatile List<StockChange> currentLosers = Collections.emptyList();
     private volatile LocalDate selectionDate = LocalDate.now(ZONE);
@@ -32,85 +35,145 @@ public class StockSelectionService {
     public void refreshSelection() {
         DayOfWeek day = LocalDate.now(ZONE).getDayOfWeek();
         if (day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY) return;
+
         LocalTime now = LocalTime.now(ZONE);
         if (now.isBefore(LocalTime.of(9, 5)) || now.isAfter(LocalTime.of(15, 0))) return;
         updateSelection();
     }
 
+    /**
+     * One pass over the market universe with bounded Top-K heaps.
+     *
+     * Ranking is intentionally performed before exclusions: this preserves the
+     * existing strategy behavior where an excluded raw top-10 symbol is not
+     * replaced by the next eligible rank.
+     */
     public synchronized void updateSelection() {
         LocalDate today = LocalDate.now(ZONE);
         if (!today.equals(selectionDate)) {
             prevCloseMap.clear();
             ltpMap.clear();
-            selectedGainers.clear();
-            selectedLosers.clear();
+            selectedGainers = Collections.emptySet();
+            selectedLosers = Collections.emptySet();
             currentGainers = Collections.emptyList();
             currentLosers = Collections.emptyList();
             selectionDate = today;
         }
 
-        Map<String, StockChange> all = new LinkedHashMap<>();
+        boolean gainersEnabled = stateService.isGainersEnabled();
+        boolean losersEnabled = stateService.isLosersEnabled();
+
+        Comparator<RankedStock> gainerBestFirst = (left, right) -> {
+            int byChange = Double.compare(right.stock.getChange(), left.stock.getChange());
+            return byChange != 0 ? byChange : Integer.compare(left.index, right.index);
+        };
+        Comparator<RankedStock> loserBestFirst = (left, right) -> {
+            int byChange = Double.compare(left.stock.getChange(), right.stock.getChange());
+            return byChange != 0 ? byChange : Integer.compare(left.index, right.index);
+        };
+
+        PriorityQueue<RankedStock> topGainers =
+                new PriorityQueue<>(TOP_K + 1, gainerBestFirst.reversed());
+        PriorityQueue<RankedStock> topLosers =
+                new PriorityQueue<>(TOP_K + 1, loserBestFirst.reversed());
+
+        int index = 0;
         for (Map.Entry<String, Double> entry : prevCloseMap.entrySet()) {
-            double previousClose = entry.getValue() == null ? 0 : entry.getValue();
-            double ltp = ltpMap.getOrDefault(entry.getKey(), 0.0);
-            if (!Double.isFinite(previousClose) || previousClose <= 0
-                    || !Double.isFinite(ltp) || ltp <= 0) {
+            String symbol = entry.getKey();
+            Double previousCloseValue = entry.getValue();
+            double previousClose = previousCloseValue == null ? 0.0 : previousCloseValue;
+            double ltp = ltpMap.getOrDefault(symbol, 0.0);
+
+            if (!Double.isFinite(previousClose) || previousClose <= 0.0
+                    || !Double.isFinite(ltp) || ltp <= 0.0) {
+                index++;
                 continue;
             }
-            all.put(entry.getKey(),
-                    new StockChange(entry.getKey(), ((ltp - previousClose) / previousClose) * 100.0));
+
+            double change = ((ltp - previousClose) / previousClose) * 100.0;
+            if (!Double.isFinite(change)) {
+                index++;
+                continue;
+            }
+
+            StockChange stock = new StockChange(symbol, change);
+            RankedStock ranked = new RankedStock(stock, index);
+
+            if (gainersEnabled && change > 2.0) {
+                offerTop(topGainers, ranked, gainerBestFirst);
+            }
+            if (losersEnabled && change < -2.0) {
+                offerTop(topLosers, ranked, loserBestFirst);
+            }
+            index++;
         }
 
-        // Rank the complete market universe first. Exclusions are applied only
-        // after taking the raw top 10, so blacklisted/reserved/previously-selected
-        // symbols reduce the published list instead of being replaced by lower ranks.
+        // Snapshot mutable state once, rather than asking the state service for
+        // a fresh defensive copy for every candidate.
         Set<String> excluded = new HashSet<>(stateService.getBlacklist());
         excluded.addAll(stateService.getReserved());
         excluded.addAll(stateService.getSelectedToday());
 
-        List<StockChange> gainers = Collections.emptyList();
-        if (stateService.isGainersEnabled()) {
-            List<StockChange> rawTopGainers = all.values().stream()
-                    .filter(stock -> stock.getChange() > 2.0)
-                    .sorted(Comparator.comparingDouble(StockChange::getChange).reversed())
-                    .limit(10)
-                    .collect(Collectors.toList());
+        List<StockChange> gainers = gainersEnabled
+                ? publishEligible(topGainers, gainerBestFirst, excluded)
+                : Collections.emptyList();
+        List<StockChange> losers = losersEnabled
+                ? publishEligible(topLosers, loserBestFirst, excluded)
+                : Collections.emptyList();
 
-            gainers = rawTopGainers.stream()
-                    .filter(stock -> !excluded.contains(stock.getSymbol()))
-                    .filter(stock -> !Exits.isSymbolExitedToday(stock.getSymbol()))
-                    .collect(Collectors.toList());
-        }
-
-        List<StockChange> losers = Collections.emptyList();
-        if (stateService.isLosersEnabled()) {
-            List<StockChange> rawTopLosers = all.values().stream()
-                    .filter(stock -> stock.getChange() < -2.0)
-                    .sorted(Comparator.comparingDouble(StockChange::getChange))
-                    .limit(10)
-                    .collect(Collectors.toList());
-
-            losers = rawTopLosers.stream()
-                    .filter(stock -> !excluded.contains(stock.getSymbol()))
-                    .filter(stock -> !Exits.isSymbolExitedToday(stock.getSymbol()))
-                    .collect(Collectors.toList());
-        }
-
-        lastSelectionRefreshEpochMs = System.currentTimeMillis();
+        // Publish complete immutable snapshots; readers never observe a set
+        // being cleared and repopulated while a trading decision is in flight.
         currentGainers = Collections.unmodifiableList(new ArrayList<>(gainers));
         currentLosers = Collections.unmodifiableList(new ArrayList<>(losers));
-        selectedGainers.clear();
-        selectedLosers.clear();
-        currentGainers.forEach(stock -> selectedGainers.add(stock.getSymbol()));
-        currentLosers.forEach(stock -> selectedLosers.add(stock.getSymbol()));
+        selectedGainers = immutableSymbols(gainers);
+        selectedLosers = immutableSymbols(losers);
+        lastSelectionRefreshEpochMs = System.currentTimeMillis();
+    }
+
+    private void offerTop(PriorityQueue<RankedStock> queue, RankedStock candidate,
+            Comparator<RankedStock> bestFirst) {
+        if (queue.size() < TOP_K) {
+            queue.offer(candidate);
+            return;
+        }
+
+        RankedStock currentWorst = queue.peek();
+        if (bestFirst.compare(candidate, currentWorst) < 0) {
+            queue.poll();
+            queue.offer(candidate);
+        }
+    }
+
+    private List<StockChange> publishEligible(PriorityQueue<RankedStock> queue,
+            Comparator<RankedStock> bestFirst, Set<String> excluded) {
+        List<RankedStock> ranked = new ArrayList<>(queue);
+        ranked.sort(bestFirst);
+
+        List<StockChange> result = new ArrayList<>(ranked.size());
+        for (RankedStock item : ranked) {
+            StockChange stock = item.stock;
+            String symbol = stock.getSymbol();
+            if (!excluded.contains(symbol) && !Exits.isSymbolExitedToday(symbol)) {
+                result.add(stock);
+            }
+        }
+        return result;
+    }
+
+    private Set<String> immutableSymbols(List<StockChange> stocks) {
+        Set<String> symbols = new HashSet<>(Math.max(16, stocks.size() * 2));
+        for (StockChange stock : stocks) {
+            symbols.add(stock.getSymbol());
+        }
+        return Collections.unmodifiableSet(symbols);
     }
 
     public boolean isTopLoser(String symbol) {
-        return selectedLosers.contains(symbol);
+        return symbol != null && selectedLosers.contains(symbol);
     }
 
     public boolean isTopGainer(String symbol) {
-        return selectedGainers.contains(symbol);
+        return symbol != null && selectedGainers.contains(symbol);
     }
 
     public List<StockChange> getCurrentGainers() {
@@ -147,5 +210,15 @@ public class StockSelectionService {
 
     public long getLastSelectionRefreshEpochMs() {
         return lastSelectionRefreshEpochMs;
+    }
+
+    private static final class RankedStock {
+        private final StockChange stock;
+        private final int index;
+
+        private RankedStock(StockChange stock, int index) {
+            this.stock = stock;
+            this.index = index;
+        }
     }
 }
