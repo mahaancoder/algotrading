@@ -1152,7 +1152,9 @@
             console.error('Error setting default broker ' + brokerName + ':', error);
             if (sel) sel.disabled = false;
             alert('Failed to set default broker. Please try again.');
-        
+        });
+    }
+
     function momentumRequest(url, method, body) {
         const options={method:method,headers:{}};
         if(body){options.headers['Content-Type']='application/x-www-form-urlencoded';options.body=new URLSearchParams(body).toString();}
@@ -1194,10 +1196,6 @@
         const url=kind==='whitelist'?'/api/momentum/whitelist':'/api/momentum/blacklist';
         momentumRequest(url,'POST',{symbol:symbol}).then(d=>{document.getElementById('momentumActionStatus').textContent=d.message;input.value='';loadMomentumState();})
         .catch(e=>document.getElementById('momentumActionStatus').textContent=e.message);
-    }
-
-    fetchDefaultBroker();
-        });
     }
 
     function updateDefaultBrokerUI(broker) {
