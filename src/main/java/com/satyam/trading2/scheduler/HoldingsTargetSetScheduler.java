@@ -80,11 +80,17 @@ public class HoldingsTargetSetScheduler {
             holding.setAveragePrice(brokerHolding.getAveragePrice());
 
             // ===== PRESERVE METADATA: If using broker holding, preserve entryType that was enriched in OrderServiceV2 =====
-            if (existingPosition == null && brokerHolding.getEntryType() != null) {
-                // brokerHolding was already enriched with metadata in OrderServiceV2.getHoldings()
+            if ((holding.getEntryType() == null
+                    || holding.getEntryType() == com.satyam.trading2.datamodel.EntryType.UNKNOWN)
+                    && brokerHolding.getEntryType() != null
+                    && brokerHolding.getEntryType() != com.satyam.trading2.datamodel.EntryType.UNKNOWN) {
+                // Restore missing attribution without overwriting a known entry type.
                 holding.setEntryType(brokerHolding.getEntryType());
                 holding.setConvertedToHolding(brokerHolding.isConvertedToHolding());
                 holding.setConversionTime(brokerHolding.getConversionTime());
+            }
+            if (holding.getEntryType() == null) {
+                holding.setEntryType(com.satyam.trading2.datamodel.EntryType.UNKNOWN);
             }
 
             // Update in position manager

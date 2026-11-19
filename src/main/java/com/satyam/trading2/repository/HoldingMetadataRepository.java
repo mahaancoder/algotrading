@@ -64,6 +64,15 @@ public class HoldingMetadataRepository {
         return metadataMap.get(makeKey(symbol, strategy));
     }
     
+    /** Return metadata only when one strategy record matches; ambiguity is never guessed. */
+    public HoldingMetadata findUniqueBySymbol(String symbol) {
+        if (symbol == null) return null;
+        java.util.List<HoldingMetadata> matches = metadataMap.values().stream()
+                .filter(m -> m != null && symbol.equalsIgnoreCase(m.getSymbol()))
+                .collect(java.util.stream.Collectors.toList());
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
     /**
      * Remove metadata when holding is sold
      */

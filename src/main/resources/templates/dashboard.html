@@ -474,7 +474,7 @@
                 <td>${p.strategy}</td>
                 <td><span class="${entryTypeClass}">${entryTypeDisplay}</span></td>
                 <td>${p.entry}</td>
-                <td>${p.last}</td>
+                <td title="Last market tick: ${formatTime(p.priceTimestamp)}">${p.last}</td>
                 <td>${p.qty}</td>
                 <td class='${pnlClass}'>${p.unrealized}</td>
                 <td>${p.sl || '-'}</td>
@@ -519,7 +519,7 @@
                 <td>${h.strategy}</td>
                 <td><span class="${entryTypeClass}">${entryTypeDisplay}</span></td>
                 <td>${h.entry}</td>
-                <td>${h.last}</td>
+                <td title="Last market tick: ${formatTime(h.priceTimestamp)}">${h.last}</td>
                 <td>${h.qty}</td>
                 <td class='${pnlClass}'>${h.pnl.toFixed(2)}</td>
             </tr>`;

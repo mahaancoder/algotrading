@@ -756,20 +756,19 @@ public class OrderServiceV2 {
                         String symbol = holdingNode.path("tradingsymbol").asText(null);
                         JsonNode averageNode = holdingNode.get("average_price");
                         Integer quantityValue = calculateKiteSellableHoldingQuantity(holdingNode);
-                        if (symbol == null || symbol.trim().isEmpty()
-                                || quantityValue == null
-                                || averageNode == null || !averageNode.isNumber()
-                                || averageNode.asDouble() <= 0) {
-                            System.err.println("⚠️ [getHoldings] Malformed Kite holding row; rejecting entire snapshot because sellable inventory or average price is incomplete.");
+                        if (symbol == null || symbol.trim().isEmpty() || quantityValue == null) {
+                            System.err.println("⚠️ [getHoldings] Malformed Kite holding row; rejecting entire snapshot because symbol or sellable inventory is incomplete.");
                             return null;
                         }
                         int quantity = quantityValue;
-                        double avgPrice = averageNode.asDouble();
-
-                        // Skip if no shares are currently sellable.
-                        if (quantity <= 0) {
-                            continue;
+                        // A zero-sellable row is valid broker evidence even when the broker
+                        // omits average_price after a fully sold holding.
+                        if (quantity <= 0) continue;
+                        if (averageNode == null || !averageNode.isNumber() || averageNode.asDouble() <= 0) {
+                            System.err.println("⚠️ [getHoldings] Positive Kite inventory has no valid average_price; rejecting the entire snapshot.");
+                            return null;
                         }
+                        double avgPrice = averageNode.asDouble();
 
                         // Create Position object with HOLDING type
                         // Strategy will be set later when reconciling with existing positions
@@ -789,8 +788,14 @@ public class OrderServiceV2 {
                         // ===== ENRICHMENT: Restore entryType from local metadata store =====
                         // Try to find metadata for this holding with default strategy first
                         HoldingMetadata metadata = holdingMetadataRepository.get(symbol, "Dip-Accumulator-Momentum");
+                        if (metadata == null) metadata = holdingMetadataRepository.findUniqueBySymbol(symbol);
                         if (metadata != null) {
                             metadata.enrichPosition(position);
+                            // When the symbol has one unambiguous metadata row, restore its
+                            // original strategy as well as entry attribution.
+                            if (metadata.getStrategy() != null && !metadata.getStrategy().trim().isEmpty()) {
+                                position.setStrategy(metadata.getStrategy());
+                            }
                             //System.out.println("✅ Enriched holding with metadata: " + symbol +
                                          //    " | EntryType: " + position.getEntryType() +
                                           //   " | Strategy: " + metadata.getStrategy());
