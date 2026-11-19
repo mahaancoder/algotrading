@@ -91,8 +91,9 @@ public class PositionDto {
                 .pnl(pnl)
                 .strategy(position.getStrategy())
                 .target(position.getTarget())
-                .entryType(position.getEntryType() != null ? position.getEntryType().name() : null)
+                .entryType(position.getEntryType() != null ? position.getEntryType().name() : "UNKNOWN")
                 .broker(position.getBroker() != null ? position.getBroker() : "KITE")
+                .priceTimestamp(com.satyam.trading2.helpers.LatestPriceHelper.getLastPriceUpdateTime(position.getSymbol()))
                 .build();
     }
 }
