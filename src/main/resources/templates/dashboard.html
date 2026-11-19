@@ -209,6 +209,7 @@
     <div class="kpi"><div class="label">Pending / Reserved</div><div class="value" id="momentumReservedCount">0</div></div>
     <div class="kpi"><div class="label">Whitelisted</div><div class="value" id="momentumWhitelistCount">0</div></div>
   </div>
+  <div id="momentumFeedStatus" class="small" style="margin:8px 0;color:#aaa;">Waiting for market price data...</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
     <div><h3>Top 10 Gainers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumGainersBody"></tbody></table></div></div>
     <div><h3>Top 10 Losers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumLosersBody"></tbody></table></div></div>
@@ -1170,6 +1171,12 @@
     }
     function renderMomentumState(state){
         if(!state)return;renderMomentumRows('momentumGainersBody',state.gainers);renderMomentumRows('momentumLosersBody',state.losers);
+        const feed=document.getElementById('momentumFeedStatus');
+        if(feed){
+            const refreshed=state.lastSelectionRefreshEpochMs?new Date(state.lastSelectionRefreshEpochMs).toLocaleTimeString():'not refreshed yet';
+            feed.textContent='Market data — previous closes: '+Number(state.previousCloseCount||0)
+                +', live prices: '+Number(state.livePriceCount||0)+', last selection refresh: '+refreshed;
+        }
         const bl=state.blacklist||[],wl=state.whitelist||[],rs=state.reserved||[];
         document.getElementById('momentumBlacklistCount').textContent=bl.length;
         document.getElementById('momentumReservedCount').textContent=rs.length;

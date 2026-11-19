@@ -25,6 +25,7 @@ public class StockSelectionService {
     private volatile List<StockChange> currentGainers = Collections.emptyList();
     private volatile List<StockChange> currentLosers = Collections.emptyList();
     private volatile LocalDate selectionDate = LocalDate.now(ZONE);
+    private volatile long lastSelectionRefreshEpochMs;
 
     @Scheduled(fixedDelay = 60_000L)
     public void refreshSelection() {
@@ -79,6 +80,7 @@ public class StockSelectionService {
                 .sorted(Comparator.comparingDouble(StockChange::getChange))
                 .limit(10).collect(Collectors.toList());
         }
+        lastSelectionRefreshEpochMs = System.currentTimeMillis();
         currentGainers=Collections.unmodifiableList(new ArrayList<>(gainers));
         currentLosers=Collections.unmodifiableList(new ArrayList<>(losers));
         selectedGainers.clear(); selectedLosers.clear();
@@ -93,4 +95,7 @@ public class StockSelectionService {
     public void setPreviousClose(String symbol,double price){if(symbol!=null&&Double.isFinite(price)&&price>0)prevCloseMap.put(symbol,price);}
     public static void updateLtp(String symbol,double ltp){if(symbol!=null&&Double.isFinite(ltp)&&ltp>0)ltpMap.put(symbol,ltp);}
     public double getLatestPrice(String symbol){return ltpMap.getOrDefault(symbol,0.0);}
+    public int getPreviousCloseCount(){return prevCloseMap.size();}
+    public static int getLivePriceCount(){return ltpMap.size();}
+    public long getLastSelectionRefreshEpochMs(){return lastSelectionRefreshEpochMs;}
 }

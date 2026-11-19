@@ -140,6 +140,9 @@ public class MomentumTradingCoordinator {
         m.put("type","MOMENTUM_STATE"); m.put("tradingDate",state.getTradingDate());
         m.put("gainersEnabled",state.isGainersEnabled()); m.put("losersEnabled",state.isLosersEnabled());
         m.put("gainers",mapStocks(selection.getCurrentGainers())); m.put("losers",mapStocks(selection.getCurrentLosers()));
+        m.put("previousCloseCount", selection.getPreviousCloseCount());
+        m.put("livePriceCount", StockSelectionService.getLivePriceCount());
+        m.put("lastSelectionRefreshEpochMs", selection.getLastSelectionRefreshEpochMs());
         m.put("blacklist",state.getBlacklist()); m.put("whitelist",state.getWhitelist());
         m.put("reserved",state.getReserved()); m.put("selectedToday",state.getSelectedToday());
         m.put("executedSchedules",state.getExecutedSchedules());
