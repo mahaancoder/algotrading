@@ -791,6 +791,11 @@ public class OrderServiceV2 {
                         if (metadata == null) metadata = holdingMetadataRepository.findUniqueBySymbol(symbol);
                         if (metadata != null) {
                             metadata.enrichPosition(position);
+                            // When the symbol has one unambiguous metadata row, restore its
+                            // original strategy as well as entry attribution.
+                            if (metadata.getStrategy() != null && !metadata.getStrategy().trim().isEmpty()) {
+                                position.setStrategy(metadata.getStrategy());
+                            }
                             //System.out.println("✅ Enriched holding with metadata: " + symbol +
                                          //    " | EntryType: " + position.getEntryType() +
                                           //   " | Strategy: " + metadata.getStrategy());
