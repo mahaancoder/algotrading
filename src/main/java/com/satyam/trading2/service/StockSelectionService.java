@@ -26,7 +26,7 @@ public class StockSelectionService {
     private volatile List<StockChange> currentLosers = Collections.emptyList();
     private volatile LocalDate selectionDate = LocalDate.now(ZONE);
 
-    @Scheduled(fixedDelay=30000)
+    @Scheduled(fixedDelay = 60_000L)
     public void refreshSelection() {
         DayOfWeek day=LocalDate.now(ZONE).getDayOfWeek();
         if(day==DayOfWeek.SATURDAY||day==DayOfWeek.SUNDAY)return;
@@ -59,7 +59,7 @@ public class StockSelectionService {
 
         List<StockChange> gainers=new ArrayList<>(),losers=new ArrayList<>();
         if(stateService.isGainersEnabled()) {
-            gainers=all.values().stream().filter(s->s.getChange()>=0.25)
+            gainers=all.values().stream().filter(s->s.getChange() > 2.0)
                 .filter(s->!excluded.contains(s.getSymbol()))
                 .filter(s->!Exits.isSymbolExitedToday(s.getSymbol()))
                 .sorted(Comparator.comparingDouble(StockChange::getChange).reversed())
@@ -73,7 +73,7 @@ public class StockSelectionService {
             }
         }
         if(stateService.isLosersEnabled()) {
-            losers=all.values().stream().filter(s->s.getChange()<=-0.25)
+            losers=all.values().stream().filter(s->s.getChange() < -2.0)
                 .filter(s->!excluded.contains(s.getSymbol()))
                 .filter(s->!Exits.isSymbolExitedToday(s.getSymbol()))
                 .sorted(Comparator.comparingDouble(StockChange::getChange))
