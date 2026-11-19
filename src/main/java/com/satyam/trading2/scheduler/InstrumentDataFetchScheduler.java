@@ -32,17 +32,17 @@ public class InstrumentDataFetchScheduler {
     private final KiteConfig kiteConfig;
 
 
-    @Scheduled(cron = "0 03 09 * * MON-FRI")
+    @Scheduled(cron = "0 03 09 * * MON-FRI", zone = "Asia/Kolkata")
     public void fetchInstrumentsTokenCircuitLimitTodayOpen() {
         fetchInstrumentTokenCircuitLimitsTodayOpen();
     }
 
-    @Scheduled(cron = "0 10 09 * * MON-FRI")
+    @Scheduled(cron = "0 10 09 * * MON-FRI", zone = "Asia/Kolkata")
     public void fetchPreviousCloseData() {
         loadPreviousCloseForNIfty500(Nifty500Stocks.Nifty500tokenToInstrument.keySet());
     }
 
-    @Scheduled(cron = "0 20 09 * * MON-FRI")
+    @Scheduled(cron = "0 20 09 * * MON-FRI", zone = "Asia/Kolkata")
     public void fetchOpeningRangeAndVwap() {
         try {
             collectOpeningRangeHighLow();

@@ -118,6 +118,16 @@ public class TradingOrchestrator {
         } else {
             System.out.println("✅ Instrument data already loaded (" + Nifty500Stocks.Nifty500tokenToInstrument.size() + " instruments)");
         }
+
+        // Instrument tokens can already be present while previous-close prices are
+        // still missing (for example, when OAuth/startup happens before the 09:10
+        // scheduled fetch). Do not start the selection cycle with an empty baseline.
+        if (stockSelectionService.getPreviousCloseCount() == 0
+                && !Nifty500Stocks.Nifty500tokenToInstrument.isEmpty()) {
+            System.out.println("⚠️ Previous-close prices are missing - loading them before starting market data");
+            instrumentDataFetchScheduler.fetchPreviousCloseData();
+            System.out.println("✅ Previous-close prices loaded: " + stockSelectionService.getPreviousCloseCount());
+        }
     }
 
     /**
