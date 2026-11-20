@@ -125,7 +125,7 @@ public class OrderServiceV2 {
             rateLimiter.acquire("placeOrder");
 
             // ===== OPTIMIZATION: Pre-build orderRequest body and URI to reduce processing time =====
-            String body = "tradingsymbol=" + symbol + "&exchange=NSE" + "&transaction_type=" + side + "&order_type=" + type + "&quantity=" + qty + "&product=" + product + "&validity=DAY" + (price > 0 ? "&price=" + price : "") + (trigger > 0 ? "&trigger_price=" + trigger : "");
+            String body = "tradingsymbol=" + encodeKiteFormValue(symbol) + "&exchange=NSE" + "&transaction_type=" + side + "&order_type=" + type + "&quantity=" + qty + "&product=" + product + "&validity=DAY" + (price > 0 ? "&price=" + price : "") + (trigger > 0 ? "&trigger_price=" + trigger : "");
 
             // ===== OPTIMIZATION: Request with timeout to prevent hanging =====
             HttpRequest request = HttpRequest.newBuilder()
@@ -554,6 +554,19 @@ public class OrderServiceV2 {
         return result;
     }
 
+    /**
+     * Encode a raw instrument identifier as one Kite HTTP parameter value.
+     * Keep symbols unencoded everywhere inside the application; encode only at
+     * the HTTP boundary so '&' is transmitted as %26 rather than a separator.
+     */
+    private String encodeKiteFormValue(String value) {
+        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private String encodeKiteQueryValue(String value) {
+        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     private String abbreviate(String value, int maxLength) {
         if (value == null) return "null";
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
@@ -573,7 +586,7 @@ public class OrderServiceV2 {
             StringBuilder query = new StringBuilder();
             for (int i = 0; i < symbols.size(); i++) {
                 if (i > 0) query.append("&");
-                query.append("i=").append(symbols.get(i));
+                query.append("i=").append(encodeKiteQueryValue(symbols.get(i)));
             }
             String url = kiteConfig.getBaseUrl() + "/quote?" + query;
             HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).header("X-Kite-Version", "3").header("Authorization", kiteConfig.getAuthHeader()).GET().build();
@@ -613,7 +626,7 @@ public class OrderServiceV2 {
             StringBuilder query = new StringBuilder();
             for (int i = 0; i < symbols.size(); i++) {
                 if (i > 0) query.append("&");
-                query.append("i=").append(symbols.get(i));
+                query.append("i=").append(encodeKiteQueryValue(symbols.get(i)));
             }
 
             String url = kiteConfig.getBaseUrl() + "/quote?" + query;
