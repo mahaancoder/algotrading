@@ -40,6 +40,7 @@ public class MomentumTradingCoordinator {
     private final PendingOrderRepository orders;
     private final PositionManager positions;
     private final BroadcastService broadcasts;
+    private final PreMarketStockRiskService preMarketStockRisk;
     private final ExecutorService momentumOrderExecutor;
 
     /**
@@ -55,6 +56,7 @@ public class MomentumTradingCoordinator {
             PendingOrderRepository orders,
             PositionManager positions,
             BroadcastService broadcasts,
+            PreMarketStockRiskService preMarketStockRisk,
             @Qualifier("momentumOrderExecutor") ExecutorService momentumOrderExecutor) {
         this.selection = selection;
         this.state = state;
@@ -63,6 +65,7 @@ public class MomentumTradingCoordinator {
         this.orders = orders;
         this.positions = positions;
         this.broadcasts = broadcasts;
+        this.preMarketStockRisk = preMarketStockRisk;
         this.momentumOrderExecutor = momentumOrderExecutor;
     }
 
@@ -104,9 +107,51 @@ public class MomentumTradingCoordinator {
     private Map<String, Object> executeBatch(List<Candidate> candidates,
             double budget, boolean markSeen) {
 
+        // Avoid historical API calls or marking candidates for the day when the
+        // BUY window is closed. The window is checked again under batchLock below.
+        LocalTime preflightTime = LocalTime.now(ZONE);
+        DayOfWeek preflightDay = LocalDate.now(ZONE).getDayOfWeek();
+        if (preflightDay == DayOfWeek.SATURDAY || preflightDay == DayOfWeek.SUNDAY
+                || preflightTime.isBefore(LocalTime.of(9, 15))
+                || !preflightTime.isBefore(LocalTime.of(15, 0))) {
+            return result("OUTSIDE_BUY_WINDOW", 0, 0);
+        }
+
+        // Evaluate historical risk before taking the batch lock. Historical API
+        // calls are throttled and must never hold the lock used for reservations.
+        List<String> riskSymbols = candidates.stream()
+                .filter(Objects::nonNull)
+                .map(candidate -> candidate.symbol)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        PreMarketStockRiskService.FilterResult riskResult =
+                preMarketStockRisk.filterCandidates(riskSymbols);
+        Set<String> riskApproved = new HashSet<>(riskResult.acceptedSymbols);
+        List<Candidate> riskApprovedCandidates = new ArrayList<>();
+        for (Candidate candidate : candidates) {
+            if (candidate == null || candidate.symbol == null) continue;
+            String symbol = candidate.symbol.trim().toUpperCase(Locale.ROOT);
+            if (riskApproved.contains(symbol)) {
+                riskApprovedCandidates.add(candidate);
+            } else {
+                state.markSelectedToday(symbol);
+                PreMarketStockRiskService.DailyRiskAssessment assessment =
+                        riskResult.assessments.get(symbol);
+                log.warn("[PreMarketRisk] Skipping {} status={} reason={} threeDay={} fiveDay={} news={}",
+                        symbol,
+                        assessment == null ? "UNKNOWN" : assessment.status,
+                        assessment == null ? "NO_ASSESSMENT" : assessment.reason,
+                        assessment == null ? null : assessment.threeSessionReturn,
+                        assessment == null ? null : assessment.fiveSessionReturn,
+                        assessment == null ? "UNKNOWN" : assessment.newsStatus);
+            }
+        }
+        candidates = riskApprovedCandidates;
+        int riskSkipped = riskSymbols.size() - riskApprovedCandidates.size();
+
         List<ExecutionTask> tasks = new ArrayList<>();
         Set<String> considered = new LinkedHashSet<>();
-        int skipped = 0;
+        int skipped = riskSkipped;
 
         synchronized (batchLock) {
             LocalTime now = LocalTime.now(ZONE);
@@ -359,6 +404,19 @@ public class MomentumTradingCoordinator {
         snapshot.put("reserved", state.getReserved());
         snapshot.put("selectedToday", state.getSelectedToday());
         snapshot.put("executedSchedules", state.getExecutedSchedules());
+        snapshot.put("preMarketRisk", preMarketStockRisk.getDailySnapshot().values().stream()
+                .map(assessment -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("symbol", assessment.symbol);
+                    row.put("status", assessment.status.name());
+                    row.put("reason", assessment.reason);
+                    row.put("consecutiveRedSessions", assessment.consecutiveRedSessions);
+                    row.put("threeSessionReturn", assessment.threeSessionReturn);
+                    row.put("fiveSessionReturn", assessment.fiveSessionReturn);
+                    row.put("niftyFiveSessionReturn", assessment.niftyFiveSessionReturn);
+                    row.put("newsStatus", assessment.newsStatus);
+                    return row;
+                }).collect(Collectors.toList()));
         return snapshot;
     }
 
