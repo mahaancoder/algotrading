@@ -302,10 +302,8 @@ public class MomentumTradingCoordinator {
 
     private double budgetForNow() {
         LocalTime now = LocalTime.now(ZONE);
-        if (now.isBefore(LocalTime.of(9, 16))) return 50000;
-        if (now.isBefore(LocalTime.of(10, 0))) return 25000;
-        if (now.isBefore(LocalTime.of(12, 0))) return 15000;
-        return 10000;
+        if (now.isBefore(LocalTime.of(9, 35))) return 50000;
+        return 25000;
     }
 
     public void addBlacklist(String symbol) {
