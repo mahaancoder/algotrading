@@ -62,6 +62,7 @@ public class StockSelectionService {
 
         boolean gainersEnabled = stateService.isGainersEnabled();
         boolean losersEnabled = stateService.isLosersEnabled();
+        double thresholdPercent = stateService.getMomentumThresholdPercent();
 
         Comparator<RankedStock> gainerBestFirst = (left, right) -> {
             int byChange = Double.compare(right.stock.getChange(), left.stock.getChange());
@@ -99,10 +100,10 @@ public class StockSelectionService {
             StockChange stock = new StockChange(symbol, change);
             RankedStock ranked = new RankedStock(stock, index);
 
-            if (gainersEnabled && change > 2.0) {
+            if (gainersEnabled && change >= thresholdPercent) {
                 offerTop(topGainers, ranked, gainerBestFirst);
             }
-            if (losersEnabled && change < -2.0) {
+            if (losersEnabled && change <= -thresholdPercent) {
                 offerTop(topLosers, ranked, loserBestFirst);
             }
             index++;
