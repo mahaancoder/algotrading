@@ -448,7 +448,7 @@ public class OrderServiceV2 {
                         query.append("&");
                     }
                     query.append("i=")
-                            .append(java.net.URLEncoder.encode(symbol, java.nio.charset.StandardCharsets.UTF_8));
+                            .append(encodeKiteQueryValue(symbol));
                 }
 
                 if (query.length() == 0) {
@@ -928,7 +928,7 @@ public class OrderServiceV2 {
             // 🚦 Rate limiting
             rateLimiter.acquire("convertToHolding");
 
-            String body = "tradingsymbol=" + symbol +
+            String body = "tradingsymbol=" + encodeKiteFormValue(symbol) +
                     "&exchange=NSE" +
                     "&position_type=day" +        // MIS position
                     "&transaction_type=BUY" +
