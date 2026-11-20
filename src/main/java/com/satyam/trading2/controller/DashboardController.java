@@ -410,6 +410,20 @@ public class DashboardController {
         return ResponseEntity.ok(momentumActionResult("Removed " + symbol + " from whitelist"));
     }
 
+    @PostMapping("/api/momentum/top-count")
+    @ResponseBody
+    public ResponseEntity<Map<String, Object>> setMomentumTopCount(@RequestParam int count) {
+        try {
+            momentumTradingCoordinator.setMomentumTopCount(count);
+            Map<String, Object> response = momentumActionResult("Momentum selection updated to top "
+                    + count + " gainers and top " + count + " losers");
+            response.put("momentumTopCount", count);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(momentumActionResult(e.getMessage()));
+        }
+    }
+
     @PostMapping("/api/momentum/threshold")
     @ResponseBody
     public ResponseEntity<Map<String, Object>> setMomentumThreshold(@RequestParam double percent) {

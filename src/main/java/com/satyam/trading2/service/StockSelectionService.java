@@ -17,7 +17,6 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class StockSelectionService {
     private static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
-    private static final int TOP_K = 10;
 
     private final MomentumTradingStateService stateService;
     private final Map<String, Double> prevCloseMap = new ConcurrentHashMap<>();
@@ -44,9 +43,8 @@ public class StockSelectionService {
     /**
      * One pass over the market universe with bounded Top-K heaps.
      *
-     * Ranking is intentionally performed before exclusions: this preserves the
-     * existing strategy behavior where an excluded raw top-10 symbol is not
-     * replaced by the next eligible rank.
+     * Unavailable symbols are excluded before ranking so the result contains
+     * up to the configured number of eligible candidates in each category.
      */
     public synchronized void updateSelection() {
         LocalDate today = LocalDate.now(ZONE);
@@ -63,6 +61,7 @@ public class StockSelectionService {
         boolean gainersEnabled = stateService.isGainersEnabled();
         boolean losersEnabled = stateService.isLosersEnabled();
         double thresholdPercent = stateService.getMomentumThresholdPercent();
+        int topK = stateService.getMomentumTopCount();
 
         Comparator<RankedStock> gainerBestFirst = (left, right) -> {
             int byChange = Double.compare(right.stock.getChange(), left.stock.getChange());
@@ -74,13 +73,23 @@ public class StockSelectionService {
         };
 
         PriorityQueue<RankedStock> topGainers =
-                new PriorityQueue<>(TOP_K + 1, gainerBestFirst.reversed());
+                new PriorityQueue<>(topK + 1, gainerBestFirst.reversed());
         PriorityQueue<RankedStock> topLosers =
-                new PriorityQueue<>(TOP_K + 1, loserBestFirst.reversed());
+                new PriorityQueue<>(topK + 1, loserBestFirst.reversed());
+
+        // Exclude unavailable candidates before ranking so the dashboard and
+        // execution receive up to the configured number of eligible symbols.
+        Set<String> excluded = new HashSet<>(stateService.getBlacklist());
+        excluded.addAll(stateService.getReserved());
+        excluded.addAll(stateService.getSelectedToday());
 
         int index = 0;
         for (Map.Entry<String, Double> entry : prevCloseMap.entrySet()) {
             String symbol = entry.getKey();
+            if (excluded.contains(symbol) || Exits.isSymbolExitedToday(symbol)) {
+                index++;
+                continue;
+            }
             Double previousCloseValue = entry.getValue();
             double previousClose = previousCloseValue == null ? 0.0 : previousCloseValue;
             double ltp = ltpMap.getOrDefault(symbol, 0.0);
@@ -101,25 +110,19 @@ public class StockSelectionService {
             RankedStock ranked = new RankedStock(stock, index);
 
             if (gainersEnabled && change >= thresholdPercent) {
-                offerTop(topGainers, ranked, gainerBestFirst);
+                offerTop(topGainers, ranked, gainerBestFirst, topK);
             }
             if (losersEnabled && change <= -thresholdPercent) {
-                offerTop(topLosers, ranked, loserBestFirst);
+                offerTop(topLosers, ranked, loserBestFirst, topK);
             }
             index++;
         }
 
-        // Snapshot mutable state once, rather than asking the state service for
-        // a fresh defensive copy for every candidate.
-        Set<String> excluded = new HashSet<>(stateService.getBlacklist());
-        excluded.addAll(stateService.getReserved());
-        excluded.addAll(stateService.getSelectedToday());
-
         List<StockChange> gainers = gainersEnabled
-                ? publishEligible(topGainers, gainerBestFirst, excluded)
+                ? publishEligible(topGainers, gainerBestFirst)
                 : Collections.emptyList();
         List<StockChange> losers = losersEnabled
-                ? publishEligible(topLosers, loserBestFirst, excluded)
+                ? publishEligible(topLosers, loserBestFirst)
                 : Collections.emptyList();
 
         // Publish complete immutable snapshots; readers never observe a set
@@ -132,8 +135,8 @@ public class StockSelectionService {
     }
 
     private void offerTop(PriorityQueue<RankedStock> queue, RankedStock candidate,
-            Comparator<RankedStock> bestFirst) {
-        if (queue.size() < TOP_K) {
+            Comparator<RankedStock> bestFirst, int topK) {
+        if (queue.size() < topK) {
             queue.offer(candidate);
             return;
         }
@@ -146,17 +149,14 @@ public class StockSelectionService {
     }
 
     private List<StockChange> publishEligible(PriorityQueue<RankedStock> queue,
-            Comparator<RankedStock> bestFirst, Set<String> excluded) {
+            Comparator<RankedStock> bestFirst) {
         List<RankedStock> ranked = new ArrayList<>(queue);
         ranked.sort(bestFirst);
 
         List<StockChange> result = new ArrayList<>(ranked.size());
         for (RankedStock item : ranked) {
             StockChange stock = item.stock;
-            String symbol = stock.getSymbol();
-            if (!excluded.contains(symbol) && !Exits.isSymbolExitedToday(symbol)) {
-                result.add(stock);
-            }
+            result.add(stock);
         }
         return result;
     }
