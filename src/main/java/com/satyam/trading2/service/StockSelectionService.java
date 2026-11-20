@@ -17,7 +17,6 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class StockSelectionService {
     private static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
-    private static final int TOP_K = 10;
 
     private final MomentumTradingStateService stateService;
     private final Map<String, Double> prevCloseMap = new ConcurrentHashMap<>();
@@ -45,7 +44,7 @@ public class StockSelectionService {
      * One pass over the market universe with bounded Top-K heaps.
      *
      * Ranking is intentionally performed before exclusions: this preserves the
-     * existing strategy behavior where an excluded raw top-10 symbol is not
+     * existing strategy behavior where an excluded raw top-N symbol is not
      * replaced by the next eligible rank.
      */
     public synchronized void updateSelection() {
@@ -63,6 +62,7 @@ public class StockSelectionService {
         boolean gainersEnabled = stateService.isGainersEnabled();
         boolean losersEnabled = stateService.isLosersEnabled();
         double thresholdPercent = stateService.getMomentumThresholdPercent();
+        int topK = stateService.getMomentumTopCount();
 
         Comparator<RankedStock> gainerBestFirst = (left, right) -> {
             int byChange = Double.compare(right.stock.getChange(), left.stock.getChange());
@@ -74,9 +74,9 @@ public class StockSelectionService {
         };
 
         PriorityQueue<RankedStock> topGainers =
-                new PriorityQueue<>(TOP_K + 1, gainerBestFirst.reversed());
+                new PriorityQueue<>(topK + 1, gainerBestFirst.reversed());
         PriorityQueue<RankedStock> topLosers =
-                new PriorityQueue<>(TOP_K + 1, loserBestFirst.reversed());
+                new PriorityQueue<>(topK + 1, loserBestFirst.reversed());
 
         int index = 0;
         for (Map.Entry<String, Double> entry : prevCloseMap.entrySet()) {
@@ -101,10 +101,10 @@ public class StockSelectionService {
             RankedStock ranked = new RankedStock(stock, index);
 
             if (gainersEnabled && change >= thresholdPercent) {
-                offerTop(topGainers, ranked, gainerBestFirst);
+                offerTop(topGainers, ranked, gainerBestFirst, topK);
             }
             if (losersEnabled && change <= -thresholdPercent) {
-                offerTop(topLosers, ranked, loserBestFirst);
+                offerTop(topLosers, ranked, loserBestFirst, topK);
             }
             index++;
         }
@@ -132,8 +132,8 @@ public class StockSelectionService {
     }
 
     private void offerTop(PriorityQueue<RankedStock> queue, RankedStock candidate,
-            Comparator<RankedStock> bestFirst) {
-        if (queue.size() < TOP_K) {
+            Comparator<RankedStock> bestFirst, int topK) {
+        if (queue.size() < topK) {
             queue.offer(candidate);
             return;
         }
