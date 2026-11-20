@@ -61,6 +61,10 @@ public class MomentumTradingStateService {
         if (state.selectedToday == null) state.selectedToday = new LinkedHashSet<>();
         if (state.seenCandidates == null) state.seenCandidates = new LinkedHashSet<>();
         if (state.executedSchedules == null) state.executedSchedules = new LinkedHashSet<>();
+        if (!Double.isFinite(state.momentumThresholdPercent)
+                || state.momentumThresholdPercent <= 0.0 || state.momentumThresholdPercent > 20.0) {
+            state.momentumThresholdPercent = 2.0;
+        }
     }
 
     private void rollDate() {
