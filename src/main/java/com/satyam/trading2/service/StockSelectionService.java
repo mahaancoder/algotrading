@@ -78,9 +78,19 @@ public class StockSelectionService {
         PriorityQueue<RankedStock> topLosers =
                 new PriorityQueue<>(topK + 1, loserBestFirst.reversed());
 
+        // Exclude unavailable candidates before ranking so the dashboard and
+        // execution receive up to the configured number of eligible symbols.
+        Set<String> excluded = new HashSet<>(stateService.getBlacklist());
+        excluded.addAll(stateService.getReserved());
+        excluded.addAll(stateService.getSelectedToday());
+
         int index = 0;
         for (Map.Entry<String, Double> entry : prevCloseMap.entrySet()) {
             String symbol = entry.getKey();
+            if (excluded.contains(symbol) || Exits.isSymbolExitedToday(symbol)) {
+                index++;
+                continue;
+            }
             Double previousCloseValue = entry.getValue();
             double previousClose = previousCloseValue == null ? 0.0 : previousCloseValue;
             double ltp = ltpMap.getOrDefault(symbol, 0.0);
@@ -109,17 +119,11 @@ public class StockSelectionService {
             index++;
         }
 
-        // Snapshot mutable state once, rather than asking the state service for
-        // a fresh defensive copy for every candidate.
-        Set<String> excluded = new HashSet<>(stateService.getBlacklist());
-        excluded.addAll(stateService.getReserved());
-        excluded.addAll(stateService.getSelectedToday());
-
         List<StockChange> gainers = gainersEnabled
-                ? publishEligible(topGainers, gainerBestFirst, excluded)
+                ? publishEligible(topGainers, gainerBestFirst)
                 : Collections.emptyList();
         List<StockChange> losers = losersEnabled
-                ? publishEligible(topLosers, loserBestFirst, excluded)
+                ? publishEligible(topLosers, loserBestFirst)
                 : Collections.emptyList();
 
         // Publish complete immutable snapshots; readers never observe a set
@@ -146,7 +150,7 @@ public class StockSelectionService {
     }
 
     private List<StockChange> publishEligible(PriorityQueue<RankedStock> queue,
-            Comparator<RankedStock> bestFirst, Set<String> excluded) {
+            Comparator<RankedStock> bestFirst) {
         List<RankedStock> ranked = new ArrayList<>(queue);
         ranked.sort(bestFirst);
 
@@ -154,9 +158,7 @@ public class StockSelectionService {
         for (RankedStock item : ranked) {
             StockChange stock = item.stock;
             String symbol = stock.getSymbol();
-            if (!excluded.contains(symbol) && !Exits.isSymbolExitedToday(symbol)) {
-                result.add(stock);
-            }
+            result.add(stock);
         }
         return result;
     }
