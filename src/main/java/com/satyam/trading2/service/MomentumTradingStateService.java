@@ -61,16 +61,22 @@ public class MomentumTradingStateService {
         if (state.selectedToday == null) state.selectedToday = new LinkedHashSet<>();
         if (state.seenCandidates == null) state.seenCandidates = new LinkedHashSet<>();
         if (state.executedSchedules == null) state.executedSchedules = new LinkedHashSet<>();
+        if (!Double.isFinite(state.momentumThresholdPercent)
+                || state.momentumThresholdPercent <= 0.0 || state.momentumThresholdPercent > 20.0) {
+            state.momentumThresholdPercent = 2.0;
+        }
     }
 
     private void rollDate() {
         String today = LocalDate.now(ZONE).toString();
         if (!today.equals(state.tradingDate)) {
             boolean g = state.gainersEnabled, l = state.losersEnabled;
+            double threshold = state.momentumThresholdPercent;
             state = new State();
             state.tradingDate = today;
             state.gainersEnabled = g;
             state.losersEnabled = l;
+            state.momentumThresholdPercent = threshold;
         }
     }
 
@@ -195,6 +201,14 @@ public class MomentumTradingStateService {
         }
     }
 
+    public void setMomentumThresholdPercent(double value) {
+        if (!Double.isFinite(value) || value <= 0.0 || value > 20.0) {
+            throw new IllegalArgumentException("Threshold must be greater than 0 and at most 20 percent");
+        }
+        synchronized (lock) { state.momentumThresholdPercent = value; persist(); }
+    }
+    public double getMomentumThresholdPercent() { synchronized (lock) { return state.momentumThresholdPercent; } }
+
     public void setGainersEnabled(boolean v) { synchronized (lock) { state.gainersEnabled=v; persist(); } }
     public void setLosersEnabled(boolean v) { synchronized (lock) { state.losersEnabled=v; persist(); } }
     public boolean isGainersEnabled() { synchronized (lock) { return state.gainersEnabled; } }
@@ -248,5 +262,6 @@ public class MomentumTradingStateService {
         public Set<String> executedSchedules = new LinkedHashSet<>();
         public boolean gainersEnabled = true;
         public boolean losersEnabled = true;
+        public double momentumThresholdPercent = 2.0;
     }
 }

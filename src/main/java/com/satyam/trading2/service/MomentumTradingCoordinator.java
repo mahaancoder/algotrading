@@ -326,6 +326,12 @@ public class MomentumTradingCoordinator {
         broadcastSnapshot();
     }
 
+    public void setMomentumThresholdPercent(double value) {
+        state.setMomentumThresholdPercent(value);
+        selection.updateSelection();
+        broadcastSnapshot();
+    }
+
     public void setGainersEnabled(boolean enabled) {
         state.setGainersEnabled(enabled);
         selection.updateSelection();
@@ -349,6 +355,7 @@ public class MomentumTradingCoordinator {
         snapshot.put("tradingDate", state.getTradingDate());
         snapshot.put("gainersEnabled", state.isGainersEnabled());
         snapshot.put("losersEnabled", state.isLosersEnabled());
+        snapshot.put("momentumThresholdPercent", state.getMomentumThresholdPercent());
         snapshot.put("gainers", mapStocks(selection.getCurrentGainers()));
         snapshot.put("losers", mapStocks(selection.getCurrentLosers()));
         snapshot.put("previousCloseCount", selection.getPreviousCloseCount());
