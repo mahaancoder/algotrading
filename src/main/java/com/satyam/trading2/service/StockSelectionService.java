@@ -44,7 +44,7 @@ public class StockSelectionService {
      * One pass over the market universe with bounded Top-K heaps.
      *
      * Ranking is intentionally performed before exclusions: this preserves the
-     * existing strategy behavior where an excluded raw top-10 symbol is not
+     * existing strategy behavior where an excluded raw top-N symbol is not
      * replaced by the next eligible rank.
      */
     public synchronized void updateSelection() {
