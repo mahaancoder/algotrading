@@ -65,6 +65,9 @@ public class MomentumTradingStateService {
                 || state.momentumThresholdPercent <= 0.0 || state.momentumThresholdPercent > 20.0) {
             state.momentumThresholdPercent = 2.0;
         }
+        if (state.momentumTopCount < 1 || state.momentumTopCount > 100) {
+            state.momentumTopCount = 10;
+        }
     }
 
     private void rollDate() {
@@ -72,11 +75,13 @@ public class MomentumTradingStateService {
         if (!today.equals(state.tradingDate)) {
             boolean g = state.gainersEnabled, l = state.losersEnabled;
             double threshold = state.momentumThresholdPercent;
+            int topCount = state.momentumTopCount;
             state = new State();
             state.tradingDate = today;
             state.gainersEnabled = g;
             state.losersEnabled = l;
             state.momentumThresholdPercent = threshold;
+            state.momentumTopCount = topCount;
         }
     }
 
@@ -209,6 +214,14 @@ public class MomentumTradingStateService {
     }
     public double getMomentumThresholdPercent() { synchronized (lock) { return state.momentumThresholdPercent; } }
 
+    public void setMomentumTopCount(int value) {
+        if (value < 1 || value > 100) {
+            throw new IllegalArgumentException("Top count must be between 1 and 100");
+        }
+        synchronized (lock) { state.momentumTopCount = value; persist(); }
+    }
+    public int getMomentumTopCount() { synchronized (lock) { return state.momentumTopCount; } }
+
     public void setGainersEnabled(boolean v) { synchronized (lock) { state.gainersEnabled=v; persist(); } }
     public void setLosersEnabled(boolean v) { synchronized (lock) { state.losersEnabled=v; persist(); } }
     public boolean isGainersEnabled() { synchronized (lock) { return state.gainersEnabled; } }
@@ -263,5 +276,6 @@ public class MomentumTradingStateService {
         public boolean gainersEnabled = true;
         public boolean losersEnabled = true;
         public double momentumThresholdPercent = 2.0;
+        public int momentumTopCount = 10;
     }
 }
