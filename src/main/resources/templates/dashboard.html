@@ -202,6 +202,9 @@
     <label for="momentumThresholdInput" class="small">Gainer / loser threshold (%)</label>
     <input id="momentumThresholdInput" type="number" min="0.1" max="20" step="0.1" value="2" inputmode="decimal" aria-label="Gainer and loser threshold percentage" style="width:90px;background:#0d0d0d;color:#ddd;border:1px solid #444;border-radius:5px;padding:9px;">
     <button id="momentumThresholdApply" class="reserved-btn secondary" onclick="applyMomentumThreshold()">Apply Threshold</button>
+    <label for="momentumTopCountInput" class="small">Top gainers / losers</label>
+    <input id="momentumTopCountInput" type="number" min="1" max="100" step="1" value="10" inputmode="numeric" aria-label="Number of top gainers and losers" style="width:80px;background:#0d0d0d;color:#ddd;border:1px solid #444;border-radius:5px;padding:9px;">
+    <button id="momentumTopCountApply" class="reserved-btn secondary" onclick="applyMomentumTopCount()">Apply Count</button>
     <input id="momentumSymbolInput" placeholder="NSE symbol (e.g. RELIANCE)" style="background:#0d0d0d;color:#ddd;border:1px solid #444;border-radius:5px;padding:9px;min-width:190px;">
     <button class="reserved-btn secondary" onclick="addMomentumSymbol('whitelist')">Add to Whitelist</button>
     <button class="reserved-btn danger" onclick="addMomentumSymbol('blacklist')">Add to Blacklist</button>
@@ -214,8 +217,8 @@
   </div>
   <div id="momentumFeedStatus" class="small" style="margin:8px 0;color:#aaa;">Waiting for market price data...</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-    <div><h3>Top 10 Gainers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumGainersBody"></tbody></table></div></div>
-    <div><h3>Top 10 Losers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumLosersBody"></tbody></table></div></div>
+    <div><h3 id="momentumGainersTitle">Top 10 Gainers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumGainersBody"></tbody></table></div></div>
+    <div><h3 id="momentumLosersTitle">Top 10 Losers</h3><div class="scrollable-table"><table><thead><tr><th>Symbol</th><th>Change</th><th>LTP</th><th>Status</th></tr></thead><tbody id="momentumLosersBody"></tbody></table></div></div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;">
     <div><h3>Today's Blacklist</h3><div id="momentumBlacklist" class="small">None</div></div>
@@ -1180,6 +1183,13 @@
             feed.textContent='Market data — previous closes: '+Number(state.previousCloseCount||0)
                 +', live prices: '+Number(state.livePriceCount||0)+', last selection refresh: '+refreshed;
         }
+        const topCountInput=document.getElementById('momentumTopCountInput');
+        const topCount=Number(state.momentumTopCount||10);
+        if(topCountInput && document.activeElement!==topCountInput) topCountInput.value=topCount;
+        const gainersTitle=document.getElementById('momentumGainersTitle');
+        const losersTitle=document.getElementById('momentumLosersTitle');
+        if(gainersTitle) gainersTitle.textContent='Top '+topCount+' Gainers';
+        if(losersTitle) losersTitle.textContent='Top '+topCount+' Losers';
         const thresholdInput=document.getElementById('momentumThresholdInput');
         if(thresholdInput && document.activeElement!==thresholdInput) thresholdInput.value=Number(state.momentumThresholdPercent||2);
         const bl=state.blacklist||[],wl=state.whitelist||[],rs=state.reserved||[];
@@ -1192,6 +1202,22 @@
         g.textContent=state.gainersEnabled?'GAINERS ON':'GAINERS OFF';g.className='product-toggle-btn '+(state.gainersEnabled?'enabled':'disabled');
         l.textContent=state.losersEnabled?'LOSERS ON':'LOSERS OFF';l.className='product-toggle-btn '+(state.losersEnabled?'enabled':'disabled');
     }
+    function applyMomentumTopCount(){
+        const input=document.getElementById('momentumTopCountInput');
+        const button=document.getElementById('momentumTopCountApply');
+        const count=Number(input.value);
+        if(!Number.isInteger(count) || count<1 || count>100){
+            document.getElementById('momentumActionStatus').textContent='Enter a whole number between 1 and 100.';
+            input.focus();
+            return;
+        }
+        button.disabled=true;
+        momentumRequest('/api/momentum/top-count','POST',{count:count})
+            .then(data=>{document.getElementById('momentumActionStatus').textContent=data.message;loadMomentumState();})
+            .catch(error=>{document.getElementById('momentumActionStatus').textContent=error.message;})
+            .finally(()=>{button.disabled=false;});
+    }
+
     function applyMomentumThreshold(){
         const input=document.getElementById('momentumThresholdInput');
         const button=document.getElementById('momentumThresholdApply');
