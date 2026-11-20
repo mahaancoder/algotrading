@@ -107,6 +107,16 @@ public class MomentumTradingCoordinator {
     private Map<String, Object> executeBatch(List<Candidate> candidates,
             double budget, boolean markSeen) {
 
+        // Avoid historical API calls or marking candidates for the day when the
+        // BUY window is closed. The window is checked again under batchLock below.
+        LocalTime preflightTime = LocalTime.now(ZONE);
+        DayOfWeek preflightDay = LocalDate.now(ZONE).getDayOfWeek();
+        if (preflightDay == DayOfWeek.SATURDAY || preflightDay == DayOfWeek.SUNDAY
+                || preflightTime.isBefore(LocalTime.of(9, 15))
+                || !preflightTime.isBefore(LocalTime.of(15, 0))) {
+            return result("OUTSIDE_BUY_WINDOW", 0, 0);
+        }
+
         // Evaluate historical risk before taking the batch lock. Historical API
         // calls are throttled and must never hold the lock used for reservations.
         List<String> riskSymbols = candidates.stream()
