@@ -43,9 +43,8 @@ public class StockSelectionService {
     /**
      * One pass over the market universe with bounded Top-K heaps.
      *
-     * Ranking is intentionally performed before exclusions: this preserves the
-     * existing strategy behavior where an excluded raw top-N symbol is not
-     * replaced by the next eligible rank.
+     * Unavailable symbols are excluded before ranking so the result contains
+     * up to the configured number of eligible candidates in each category.
      */
     public synchronized void updateSelection() {
         LocalDate today = LocalDate.now(ZONE);
@@ -157,7 +156,6 @@ public class StockSelectionService {
         List<StockChange> result = new ArrayList<>(ranked.size());
         for (RankedStock item : ranked) {
             StockChange stock = item.stock;
-            String symbol = stock.getSymbol();
             result.add(stock);
         }
         return result;
