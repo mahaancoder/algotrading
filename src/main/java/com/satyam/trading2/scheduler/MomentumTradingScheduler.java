@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 public class MomentumTradingScheduler {
     private final MomentumTradingCoordinator coordinator;
     @Scheduled(cron="10 15 9 * * MON-FRI",zone="Asia/Kolkata") public void batch091510(){run("09:15:10",50000);}
-    @Scheduled(cron="0 20 9 * * MON-FRI",zone="Asia/Kolkata") public void batch0920(){run("09:20",25000);}
+    @Scheduled(cron="0 20 9 * * MON-FRI",zone="Asia/Kolkata") public void batch0920(){run("09:20",50000);}
     @Scheduled(cron="0 25 9 * * MON-FRI",zone="Asia/Kolkata") public void batch0925(){run("09:25",25000);}
     @Scheduled(cron="0 30 9 * * MON-FRI",zone="Asia/Kolkata") public void batch0930(){run("09:30",25000);}
     @Scheduled(cron="0 0 10 * * MON-FRI",zone="Asia/Kolkata") public void batch1000(){run("10:00",15000);}
