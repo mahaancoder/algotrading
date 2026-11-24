@@ -164,6 +164,7 @@ public class MomentumTradingStateService {
         synchronized (lock) {
             if (po.isCompleted() && po.getRequestQty() > 0 && po.getFilledQty() == po.getRequestQty()) {
                 state.blacklist.add(s);
+                state.acceptedBuySymbols.remove(s);
                 state.reserved.remove(s);
                 state.selectedToday.add(s);
                 state.whitelist.remove(s);
