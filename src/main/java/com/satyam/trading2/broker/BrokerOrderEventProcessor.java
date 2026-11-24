@@ -301,6 +301,9 @@ public class BrokerOrderEventProcessor {
                 pendingOrder.setUpdatedTime(previousUpdatedTime);
                 throw persistenceError;
             }
+            if (pendingOrder.getSide() == TradeSide.BUY) {
+                momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
+            }
             releaseCapitalAndCleanup(pendingOrder, event);
         }
     }
@@ -476,6 +479,9 @@ public class BrokerOrderEventProcessor {
                 pendingOrder.setUpdatedTime(previousUpdatedTime);
                 pendingOrder.setRejectionReason(previousRejectionReason);
                 throw persistenceError;
+            }
+            if (pendingOrder.getSide() == TradeSide.BUY) {
+                momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
             }
             releaseCapitalAndCleanup(pendingOrder, event);
         }
