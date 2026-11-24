@@ -73,7 +73,7 @@ public class MomentumTradingCoordinator {
             if (now.isAfter(at.plusSeconds(45))) {
                 return result("SKIPPED_LATE", 0, 0);
             }
-            if (!state.markScheduleExecuted(state.getTradingDate() + "@" + slot)) {
+            if (!state.markScheduleExecuted(executionIntervalId)) {
                 return result("ALREADY_EXECUTED", 0, 0);
             }
         }
