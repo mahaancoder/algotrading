@@ -38,7 +38,7 @@ public class MarginFetchScheduler {
     // Runs shortly after startup and then every 5 minutes, all day. This keeps
     // the dashboard's available-margin cache populated even after market hours
     // or after a restart, and retries until each broker is logged in.
-    @Scheduled(initialDelay = 30_000, fixedDelay = 180_000)
+    @Scheduled(initialDelay = 180_000, fixedDelay = 60_000)
     public void setDailyBudgets() {
         try {
             // Skip the market-open window (9:14–9:20 AM IST): available margin is
