@@ -56,6 +56,8 @@ public class MomentumTradingStateService {
 
     private void normalize() {
         if (state.blacklist == null) state.blacklist = new LinkedHashSet<>();
+        if (state.manualBlacklist == null) state.manualBlacklist = new LinkedHashSet<>();
+        if (state.acceptedBuySymbols == null) state.acceptedBuySymbols = new LinkedHashSet<>();
         if (state.whitelist == null) state.whitelist = new LinkedHashSet<>();
         if (state.reserved == null) state.reserved = new LinkedHashSet<>();
         if (state.selectedToday == null) state.selectedToday = new LinkedHashSet<>();
@@ -97,13 +99,19 @@ public class MomentumTradingStateService {
             if (po.getState() == PendingOrderState.COMPLETE && po.getRequestQty() > 0
                     && po.getFilledQty() == po.getRequestQty()) {
                 state.blacklist.add(symbol);
+                state.acceptedBuySymbols.remove(symbol);
                 state.selectedToday.add(symbol);
                 state.reserved.remove(symbol);
                 state.whitelist.remove(symbol);
             } else if (po.getFilledQty() > 0 || po.isOpen()
                     || po.getState() == PendingOrderState.COMPLETE) {
+                // An open/partially-filled ledger entry proves the broker accepted
+                // the BUY even if the process stopped before persisting its state.
+                state.blacklist.add(symbol);
+                state.acceptedBuySymbols.add(symbol);
                 state.reserved.add(symbol);
                 state.selectedToday.add(symbol);
+                state.whitelist.remove(symbol);
             }
         }
     }
@@ -119,6 +127,21 @@ public class MomentumTradingStateService {
             state.selectedToday.add(symbol);
             persist();
             return true;
+        }
+    }
+
+    /** Mark a broker-accepted momentum BUY immediately; reservation stays active. */
+    public void markBuyAccepted(String raw) {
+        String s = normalizeSymbol(raw);
+        if (s == null) return;
+        synchronized (lock) {
+            rollDate();
+            state.blacklist.add(s);
+            state.acceptedBuySymbols.add(s);
+            state.reserved.add(s);
+            state.selectedToday.add(s);
+            state.whitelist.remove(s);
+            persist();
         }
     }
 
@@ -141,6 +164,7 @@ public class MomentumTradingStateService {
         synchronized (lock) {
             if (po.isCompleted() && po.getRequestQty() > 0 && po.getFilledQty() == po.getRequestQty()) {
                 state.blacklist.add(s);
+                state.acceptedBuySymbols.remove(s);
                 state.reserved.remove(s);
                 state.selectedToday.add(s);
                 state.whitelist.remove(s);
@@ -157,18 +181,46 @@ public class MomentumTradingStateService {
             if (Integer.valueOf(0).equals(confirmedFilled) && po.getFilledQty() == 0
                     && (po.getState() == PendingOrderState.CANCELLED
                     || po.getState() == PendingOrderState.REJECTED)) {
-                state.reserved.remove(s);
-                state.selectedToday.remove(s);
+                // Roll back the submission-time blacklist only when this is the
+                // only same-day momentum BUY for the symbol and the broker has
+                // explicitly confirmed zero cumulative fills.
+                if (!hasOtherAcceptedMomentumBuy(s, po)) {
+                    boolean wasAcceptedByOrder = state.acceptedBuySymbols.remove(s);
+                    if (wasAcceptedByOrder && !state.manualBlacklist.contains(s)) {
+                        state.blacklist.remove(s);
+                    }
+                    state.reserved.remove(s);
+                    state.selectedToday.remove(s);
+                } else {
+                    state.blacklist.add(s);
+                    state.reserved.add(s);
+                    state.selectedToday.add(s);
+                }
             }
-            else { state.reserved.add(s); state.selectedToday.add(s); }
+            else { state.blacklist.add(s); state.reserved.add(s); state.selectedToday.add(s); }
             persist();
         }
+    }
+
+    private boolean hasOtherAcceptedMomentumBuy(String symbol, PendingOrder current) {
+        LocalDate today = LocalDate.now(ZONE);
+        String currentId = current.getInternalOrderId();
+        for (PendingOrder other : orders.findAll()) {
+            if (other == null || other == current || other.getSide() != TradeSide.BUY
+                    || !momentum(other.getStrategy()) || !symbol.equals(normalizeSymbol(other.getSymbol()))
+                    || other.getCreatedTime() <= 0) continue;
+            if (currentId != null && currentId.equals(other.getInternalOrderId())) continue;
+            LocalDate orderDate = Instant.ofEpochMilli(other.getCreatedTime()).atZone(ZONE).toLocalDate();
+            if (today.equals(orderDate) && (other.getFilledQty() > 0 || other.isOpen()
+                    || other.getState() == PendingOrderState.COMPLETE)) return true;
+        }
+        return false;
     }
 
     public void addBlacklist(String raw) {
         String s = requireSymbol(raw);
         synchronized (lock) {
-            state.blacklist.add(s); state.whitelist.remove(s); state.reserved.remove(s);
+            state.blacklist.add(s); state.manualBlacklist.add(s); state.whitelist.remove(s); state.reserved.remove(s);
             state.selectedToday.add(s); persist();
         }
     }
@@ -268,6 +320,8 @@ public class MomentumTradingStateService {
     public static class State {
         public String tradingDate;
         public Set<String> blacklist = new LinkedHashSet<>();
+        public Set<String> manualBlacklist = new LinkedHashSet<>();
+        public Set<String> acceptedBuySymbols = new LinkedHashSet<>();
         public Set<String> whitelist = new LinkedHashSet<>();
         public Set<String> reserved = new LinkedHashSet<>();
         public Set<String> selectedToday = new LinkedHashSet<>();

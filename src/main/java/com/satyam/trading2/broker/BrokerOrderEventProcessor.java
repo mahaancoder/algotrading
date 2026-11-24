@@ -10,6 +10,7 @@ import com.satyam.trading2.order.PendingOrderRepository;
 import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.risk.RiskManager;
 import com.satyam.trading2.service.DipAccumulatorService;
+import com.satyam.trading2.service.MomentumTradingStateService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -52,6 +53,7 @@ public class BrokerOrderEventProcessor {
     @Autowired
     private RiskManager riskManager;
     private final DipAccumulatorService dipAccumulatorService;
+    private final MomentumTradingStateService momentumTradingStateService;
 
     public void process(BrokerOrderEvent event) throws IOException {
         process(event, false);
@@ -299,6 +301,9 @@ public class BrokerOrderEventProcessor {
                 pendingOrder.setUpdatedTime(previousUpdatedTime);
                 throw persistenceError;
             }
+            if (pendingOrder.getSide() == TradeSide.BUY) {
+                momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
+            }
             releaseCapitalAndCleanup(pendingOrder, event);
         }
     }
@@ -474,6 +479,9 @@ public class BrokerOrderEventProcessor {
                 pendingOrder.setUpdatedTime(previousUpdatedTime);
                 pendingOrder.setRejectionReason(previousRejectionReason);
                 throw persistenceError;
+            }
+            if (pendingOrder.getSide() == TradeSide.BUY) {
+                momentumTradingStateService.onBuyTerminal(pendingOrder, event.getFilledQuantity());
             }
             releaseCapitalAndCleanup(pendingOrder, event);
         }
