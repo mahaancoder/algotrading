@@ -66,7 +66,7 @@ public class MomentumTradingCoordinator {
         this.momentumOrderExecutor = momentumOrderExecutor;
     }
 
-    public Map<String, Object> executeScheduled(String slot, double budget) {
+    public Map<String, Object> executeScheduled(String slot, String executionIntervalId, double budget) {
         synchronized (batchLock) {
             LocalTime at = LocalTime.parse(slot);
             LocalTime now = LocalTime.now(ZONE);
@@ -253,6 +253,13 @@ public class MomentumTradingCoordinator {
                 state.releaseReservationAfterNoOrder(task.symbol);
                 return ExecutionResult.SKIPPED;
             }
+
+            // The broker accepted the BUY request. Blacklist immediately so the symbol
+            // disappears from both candidate lists while the order remains reserved
+            // until a broker-confirmed terminal state is reconciled.
+            state.markBuyAccepted(task.symbol);
+            selection.updateSelection();
+            broadcastSnapshot();
 
             log.info("[Momentum] BUY submitted {} qty={} LTP={} orderId={} thread={}",
                     task.symbol, task.quantity, task.ltp, orderId,
