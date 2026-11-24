@@ -5,11 +5,18 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+
 @Component
 @RequiredArgsConstructor
 public class MomentumTradingScheduler {
+    private static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
+    private static final DateTimeFormatter INTERVAL_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd@HH:mm:ss");
+
     private final MomentumTradingCoordinator coordinator;
-    @Scheduled(cron="1-59/2 15-19 9 * * MON-FRI",zone="Asia/Kolkata") public void batch091501To091959(){run("09:15:01",50000);}
+    @Scheduled(cron="1-59/2 15-19 9 * * MON-FRI",zone="Asia/Kolkata") public void batch091501To091959(){runEveryTwoSeconds();}
     @Scheduled(cron="0 20 9 * * MON-FRI",zone="Asia/Kolkata") public void batch0920(){run("09:20",50000);}
     @Scheduled(cron="0 25 9 * * MON-FRI",zone="Asia/Kolkata") public void batch0925(){run("09:25",25000);}
     @Scheduled(cron="0 30 9 * * MON-FRI",zone="Asia/Kolkata") public void batch0930(){run("09:30",25000);}
@@ -20,5 +27,15 @@ public class MomentumTradingScheduler {
     @Scheduled(cron="0 0 12 * * MON-FRI",zone="Asia/Kolkata") public void batch1200(){run("12:00",10000);}
     @Scheduled(cron="0 0 13 * * MON-FRI",zone="Asia/Kolkata") public void batch1300(){run("13:00",10000);}
     @Scheduled(cron="0 0 14 * * MON-FRI",zone="Asia/Kolkata") public void batch1400(){run("14:00",10000);}
-    private void run(String slot,double budget){java.util.concurrent.CompletableFuture.runAsync(() -> coordinator.executeScheduled(slot,budget));}
+    private void run(String slot,double budget){
+        String executionId = java.time.LocalDate.now(ZONE) + "@" + slot;
+        java.util.concurrent.CompletableFuture.runAsync(() -> coordinator.executeScheduled(slot, executionId, budget));
+    }
+
+    private void runEveryTwoSeconds(){
+        LocalDateTime interval = LocalDateTime.now(ZONE).withNano(0);
+        String slot = interval.toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
+        String executionId = interval.format(INTERVAL_FORMAT);
+        java.util.concurrent.CompletableFuture.runAsync(() -> coordinator.executeScheduled(slot, executionId, 50000));
+    }
 }
