@@ -249,7 +249,9 @@ public class MomentumTrailingExitService {
         // Keep the state monitor only around in-memory/tiny persistence updates.
         // Never hold it while a broker cancel/reconciliation call is waiting.
         synchronized (state) {
-            synchronizePositionBasis(state, position);
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                synchronizePositionBasis(state, position);
+            }
             updateTrailingLevels(state, position, ltp);
 
             if (!state.isEodExitRequested() && !now.isBefore(eodCutoff)) {
