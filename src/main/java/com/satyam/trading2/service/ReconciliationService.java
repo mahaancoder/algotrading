@@ -263,6 +263,9 @@ public class ReconciliationService {
         List<Position> kiteOpenPositions = positionRepository.getAllOpenPositions().stream()
                 .filter(java.util.Objects::nonNull)
                 .filter(ReconciliationService::isKite)
+                // Momentum SELL SL-LIMITs are reconciled through stopLossOrderId;
+                // never adopt or replace them as fixed target orders.
+                .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
                 .filter(p -> !p.isExitProcessed())
                 .collect(Collectors.toList());
 
