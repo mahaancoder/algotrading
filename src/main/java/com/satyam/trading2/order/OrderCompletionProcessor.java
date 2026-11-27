@@ -32,6 +32,9 @@ public class OrderCompletionProcessor {
     @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
     private boolean momentumTrailingLiveEnabled;
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
+    private boolean momentumTrailingEnabled;
+
     private final PositionManager positionManager;
     private final PendingOrderRepository pendingOrderRepository;
     private final com.satyam.trading2.service.MomentumTradingStateService momentumTradingStateService;
@@ -235,7 +238,7 @@ public class OrderCompletionProcessor {
 //      4. TARGET ORDER MANAGEMENT
             boolean isHolding = position.getPositionType() == Position.PositionType.HOLDING;
 
-            if (momentumTrailingLiveEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) {
+            if (momentumTrailingLiveEnabled && momentumTrailingEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) {
                 // Momentum positions use a broker-native trailing SL-LIMIT managed by
                 // MomentumTrailingExitService. Do not create the fixed target SELL.
                 // Any legacy target is retained unless its zero-fill cancellation is
