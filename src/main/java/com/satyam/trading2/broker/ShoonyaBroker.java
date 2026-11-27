@@ -524,6 +524,77 @@ public class ShoonyaBroker extends AbstractRestBroker {
     // reconcileOrders — POST /PositionBook + /OrderBook
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Fetch only demat holdings for the 9:05 target pass. Validate the complete
+     * response before mutating PositionManager; malformed rows fail the snapshot.
+     */
+    @Override
+    public boolean refreshHoldingsForTargetScheduler() {
+        if (!shoonyaConfig.isAuthenticated()) {
+            log.warn("[ShoonyaBroker] Morning holdings refresh skipped — not authenticated");
+            return false;
+        }
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("uid", shoonyaConfig.getUserId());
+            payload.put("actid", shoonyaConfig.getActid());
+            payload.put("prd", "C");
+            String jData = objectMapper.writeValueAsString(payload);
+            JsonNode response = postForm(shoonyaConfig.getBaseUrl() + "Holdings",
+                    norenBody(jData), SLOW_REQUEST_TIMEOUT_MS);
+            if (response == null || !response.isArray()) {
+                log.error("[ShoonyaBroker] Morning holdings refresh failed: /Holdings response is not an array: {}",
+                        response);
+                return false;
+            }
+            for (JsonNode row : response) {
+                if ("Not_Ok".equalsIgnoreCase(textOr(row, "stat", "Ok"))) return false;
+                String tsym = nseTradingSymbol(row.get("exch_tsym"));
+                if (tsym == null) {
+                    log.error("[ShoonyaBroker] Morning holdings row has no NSE trading symbol: {}", row);
+                    return false;
+                }
+                String[] fields = {"holdqty", "dpqty", "npoadqty", "benqty",
+                        "unplgdqty", "brkcolqty", "btstqty", "usedqty"};
+                for (String field : fields) {
+                    if (strictInt(row, field) < 0) {
+                        log.error("[ShoonyaBroker] Morning holdings row {} has invalid field {}",
+                                tsym, field);
+                        return false;
+                    }
+                }
+                int sellableQty = Math.max(0, strictInt(row, "holdqty")
+                        + strictInt(row, "unplgdqty") + strictInt(row, "benqty")
+                        + strictInt(row, "dpqty") + strictInt(row, "btstqty")
+                        - strictInt(row, "usedqty"));
+                if (sellableQty > 0 && parseDoubleSafe(textOr(row, "upldprc", "0")) <= 0) {
+                    log.error("[ShoonyaBroker] Morning holdings row {} has sellable quantity but invalid upldprc",
+                            tsym);
+                    return false;
+                }
+            }
+            if (!syncHoldingsIntoManager(response)) return false;
+            Set<String> snapshotSymbols = new HashSet<>();
+            for (JsonNode row : response) {
+                String tsym = nseTradingSymbol(row.get("exch_tsym"));
+                snapshotSymbols.add(fromShoonyaSymbol(tsym).trim().toUpperCase());
+            }
+            // Remove stale local holdings only after the entire broker snapshot
+            // has passed validation and was applied successfully.
+            for (Position tracked : positionManager.getAllHoldings()) {
+                if (tracked != null && "SHOONYA".equals(tracked.getBroker())
+                        && !snapshotSymbols.contains(tracked.getSymbol().trim().toUpperCase())) {
+                    positionManager.removePosition(tracked.getSymbol(), tracked.getStrategy(), "SHOONYA");
+                }
+            }
+            log.info("[ShoonyaBroker] Morning holdings refresh successful: {} rows", response.size());
+            return true;
+        } catch (Exception e) {
+            log.error("[ShoonyaBroker] Morning holdings refresh failed: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
     @Override
     public void reconcileOrders() {
         if (!shoonyaConfig.isAuthenticated()) {
@@ -809,13 +880,13 @@ public class ShoonyaBroker extends AbstractRestBroker {
      * is used since our system is NSE Kite-symbol based. A row with no sellable qty
      * removes the tracked position.
      */
-    private void syncHoldingsIntoManager(JsonNode holdResp) {
+    private boolean syncHoldingsIntoManager(JsonNode holdResp) {
         for (JsonNode node : holdResp) {
             try {
-                if ("Not_Ok".equalsIgnoreCase(textOr(node, "stat", "Ok"))) continue;
+                if ("Not_Ok".equalsIgnoreCase(textOr(node, "stat", "Ok"))) return false;
 
                 String tsym = nseTradingSymbol(node.get("exch_tsym"));
-                if (tsym == null) continue;
+                if (tsym == null) return false;
 
                 String symbol = fromShoonyaSymbol(tsym);
                 int holdQty = strictInt(node, "holdqty");
@@ -842,7 +913,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
                     log.error("[ShoonyaBroker] Cannot reconcile holding {}: missing/invalid fields={}, response keys={}. "
                                     + "Retaining any existing local holding; verify this payload against the broker's current Holdings schema.",
                             symbol, invalidFields, responseKeys);
-                    continue;
+                    return false;
                 }
                 // Use Shoonya's documented SALABLE formula, not its valuation
                 // formula (which includes broker collateral and max(npoadqty, dpqty)).
@@ -878,8 +949,10 @@ public class ShoonyaBroker extends AbstractRestBroker {
                 }
             } catch (Exception e) {
                 log.warn("[ShoonyaBroker] Failed to sync a Holdings row: {}", e.getMessage());
+                return false;
             }
         }
+        return true;
     }
 
     /** Pick the NSE trading symbol from a Shoonya exch_tsym array (fallback: first). */

@@ -593,6 +593,71 @@ public class IndstocksBroker extends AbstractRestBroker {
     // reconcileOrders — GET /order-book + GET /trade-book
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Fetch and validate the demat holdings snapshot used by the morning target
+     * scheduler. A failed/malformed response is never interpreted as empty.
+     */
+    @Override
+    public boolean refreshHoldingsForTargetScheduler() {
+        if (!indstocksConfig.isAuthenticated()) {
+            log.warn("[IndstocksBroker] Morning holdings refresh skipped — not authenticated");
+            return false;
+        }
+        try {
+            JsonNode response = getJson(indstocksConfig.getBaseUrl() + "/portfolio/holdings",
+                    indstocksConfig.getAuthHeader(), SLOW_REQUEST_TIMEOUT_MS);
+            if (!"success".equals(textOr(response, "status", ""))) {
+                log.error("[IndstocksBroker] Morning holdings refresh failed: status={}, message={}",
+                        textOr(response, "status", ""), textOr(response, "message", ""));
+                return false;
+            }
+            JsonNode rows = response.get("data");
+            if (rows == null || !rows.isArray()) {
+                log.error("[IndstocksBroker] Morning holdings refresh failed: data is not an array");
+                return false;
+            }
+            for (JsonNode row : rows) {
+                String symbol = textOr(row, "symbol", null);
+                int totalQty = intOr(row, "total_qty", -1);
+                int usedQty = intOr(row, "used_qty", -1);
+                if (symbol == null || symbol.trim().isEmpty()
+                        || totalQty < 0 || usedQty < 0 || usedQty > totalQty) {
+                    log.error("[IndstocksBroker] Morning holdings snapshot contains malformed row: {}", row);
+                    return false;
+                }
+                if (totalQty > usedQty && doubleOr(row, "avg_price", -1) <= 0) {
+                    log.error("[IndstocksBroker] Morning holdings snapshot has invalid average price for {}",
+                            symbol);
+                    return false;
+                }
+            }
+            Set<String> snapshotSymbols = new HashSet<>();
+            for (JsonNode row : rows) {
+                String symbol = textOr(row, "symbol", null);
+                snapshotSymbols.add(symbol.trim().toUpperCase());
+                int sellableQty = intOr(row, "total_qty", 0) - intOr(row, "used_qty", 0);
+                if (!upsertPosition(symbol, sellableQty, doubleOr(row, "avg_price", 0),
+                        Position.PositionType.HOLDING)) {
+                    log.error("[IndstocksBroker] Morning holdings refresh could not apply row for {}", symbol);
+                    return false;
+                }
+            }
+            // A complete successful snapshot is authoritative: remove stale local
+            // holdings that the broker no longer reports (including an empty book).
+            for (Position tracked : positionManager.getAllHoldings()) {
+                if (tracked != null && "INDSTOCKS".equals(tracked.getBroker())
+                        && !snapshotSymbols.contains(tracked.getSymbol().trim().toUpperCase())) {
+                    positionManager.removePosition(tracked.getSymbol(), tracked.getStrategy(), "INDSTOCKS");
+                }
+            }
+            log.info("[IndstocksBroker] Morning holdings refresh successful: {} rows", rows.size());
+            return true;
+        } catch (Exception e) {
+            log.error("[IndstocksBroker] Morning holdings refresh failed: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
     @Override
     public void reconcileOrders() {
         if (!indstocksConfig.isAuthenticated()) {
@@ -787,8 +852,8 @@ public class IndstocksBroker extends AbstractRestBroker {
      * removes the tracked row; otherwise the qty/avg is updated in place or a new
      * row is added. Wrapped by callers so one malformed entry can't abort the sync.
      */
-    private void upsertPosition(String symbol, int qty, double avg, Position.PositionType type) {
-        if (symbol == null || symbol.isEmpty()) return;
+    private boolean upsertPosition(String symbol, int qty, double avg, Position.PositionType type) {
+        if (symbol == null || symbol.isEmpty()) return false;
         try {
             Position existing = findIndstocksPosition(symbol, type);
 
@@ -798,7 +863,7 @@ public class IndstocksBroker extends AbstractRestBroker {
                     log.info("[IndstocksBroker] Reconcile: removed flat INDSTOCKS position {} ({})",
                             symbol, existing.getStrategy());
                 }
-                return;
+                return true;
             }
 
             if (existing != null) {
@@ -814,8 +879,10 @@ public class IndstocksBroker extends AbstractRestBroker {
                 log.info("[IndstocksBroker] Reconcile: added INDSTOCKS {} {} qty={} avg={}",
                         type, symbol, qty, avg);
             }
+            return true;
         } catch (Exception e) {
             log.warn("[IndstocksBroker] Failed to sync portfolio row {}: {}", symbol, e.getMessage());
+            return false;
         }
     }
 
