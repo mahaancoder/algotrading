@@ -289,7 +289,7 @@ public class PositionManager {
         return positionMap.values().stream()
             .flatMap(strategyMap -> strategyMap.values().stream())
             .filter(p -> p != null && targetOrderId.equals(p.getTargetOrderId())
-                      && (broker != null ? broker : "KITE").equals(p.getBroker() != null ? p.getBroker() : "KITE"))
+                      && (broker != null ? broker.trim().toUpperCase(java.util.Locale.ROOT) : "KITE").equals(p.getBroker() != null ? p.getBroker().trim().toUpperCase(java.util.Locale.ROOT) : "KITE"))
             .findFirst()
             .orElse(null);
     }
@@ -298,6 +298,40 @@ public class PositionManager {
     // findBySecondaryTargetOrderId — for dual sell-order CNC positions.
     // Searches all positions for one whose secondaryTargetOrderId matches.
     // ─────────────────────────────────────────────────────────────────────
+    /** Broker-aware stop-loss lookup; broker order IDs may collide across accounts. */
+    public Position findByBrokerAndStopLossOrderId(String broker, String stopLossOrderId) {
+        if (stopLossOrderId == null) return null;
+        String expectedBroker = broker != null ? broker.trim().toUpperCase(java.util.Locale.ROOT) : "KITE";
+        return positionMap.values().stream()
+                .flatMap(strategyMap -> strategyMap.values().stream())
+                .filter(p -> p != null && stopLossOrderId.equals(p.getStopLossOrderId())
+                        && expectedBroker.equals(p.getBroker() != null ? p.getBroker().trim().toUpperCase(java.util.Locale.ROOT) : "KITE"))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** Locate a position by its broker-routed protective/exit order ID. */
+    public Position findByStopLossOrderId(String stopLossOrderId) {
+        if (stopLossOrderId == null) return null;
+        return positionMap.values().stream()
+                .flatMap(strategyMap -> strategyMap.values().stream())
+                .filter(p -> p != null && stopLossOrderId.equals(p.getStopLossOrderId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** Broker-aware secondary target lookup; broker order IDs may collide. */
+    public Position findByBrokerAndSecondaryTargetOrderId(String broker, String orderId) {
+        if (orderId == null) return null;
+        String expectedBroker = broker != null ? broker.trim().toUpperCase(java.util.Locale.ROOT) : "KITE";
+        return positionMap.values().stream()
+                .flatMap(strategyMap -> strategyMap.values().stream())
+                .filter(p -> p != null && orderId.equals(p.getSecondaryTargetOrderId())
+                        && expectedBroker.equals(p.getBroker() != null ? p.getBroker().trim().toUpperCase(java.util.Locale.ROOT) : "KITE"))
+                .findFirst()
+                .orElse(null);
+    }
+
     public Position findBySecondaryTargetOrderId(String secondaryTargetOrderId) {
         if (secondaryTargetOrderId == null) {
             return null;

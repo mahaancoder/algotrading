@@ -83,6 +83,11 @@ public class KiteBroker implements Broker {
     }
 
     @Override
+    public boolean supportsSellStopLossLimit() {
+        return true;
+    }
+
+    @Override
     public void cancelOrder(String brokerOrderId) {
         orderServiceV2.cancelOrder(brokerOrderId);
     }
@@ -210,6 +215,7 @@ public class KiteBroker implements Broker {
             case "COMPLETE":  return BrokerOrderStatus.COMPLETE;
             case "REJECTED":  return BrokerOrderStatus.REJECTED;
             case "CANCELLED": return BrokerOrderStatus.CANCELLED;
+            case "TRIGGER PENDING": return BrokerOrderStatus.TRIGGER_PENDING;
             case "OPEN":
             case "UPDATE":
                 int filled = filledQty != null ? filledQty : 0;

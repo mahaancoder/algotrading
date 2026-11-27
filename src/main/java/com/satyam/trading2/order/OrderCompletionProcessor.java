@@ -28,6 +28,9 @@ import static com.satyam.trading2.datamodel.Position.PositionType.HOLDING;
 @Component
 @RequiredArgsConstructor
 public class OrderCompletionProcessor {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.core.env.Environment environment;
+
 
     private final PositionManager positionManager;
     private final PendingOrderRepository pendingOrderRepository;
@@ -232,7 +235,33 @@ public class OrderCompletionProcessor {
 //      4. TARGET ORDER MANAGEMENT
             boolean isHolding = position.getPositionType() == Position.PositionType.HOLDING;
 
-            if (isHolding) {
+            if (com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
+                    position, pendingOrderRepository, environment,
+                    brokerOrderRouter.supportsSellStopLossLimit(position))) {
+                // Momentum positions use a broker-native trailing SL-LIMIT managed by
+                // MomentumTrailingExitService. Do not create the fixed target SELL.
+                // Any legacy target is retained unless its zero-fill cancellation is
+                // broker-confirmed; the trailing manager will fail closed while it remains.
+                String legacyTarget = position.getTargetOrderId();
+                String legacySecondary = position.getSecondaryTargetOrderId();
+                boolean targetSafe = legacyTarget == null
+                        || brokerOrderRouter.cancelAndConfirmSell(position, legacyTarget, 2500L);
+                boolean secondarySafe = legacySecondary == null
+                        || brokerOrderRouter.cancelAndConfirmSell(position, legacySecondary, 2500L);
+                if (targetSafe) {
+                    position.setTargetOrderId(null);
+                    position.setTargetPlaced(false);
+                }
+                if (secondarySafe) {
+                    position.setSecondaryTargetOrderId(null);
+                    position.setSecondaryTargetQty(0);
+                    position.setSecondaryTargetPlaced(false);
+                }
+                if (!targetSafe || !secondarySafe) {
+                    System.err.println("[OrderCompletionProcessor] Momentum fixed SELL remains unresolved for "
+                            + pendingOrder.getSymbol() + "; trailing activation is blocked pending reconciliation.");
+                }
+            } else if (isHolding) {
                 // ===== CNC / HOLDING: Dual sell-order strategy =====
                 //
                 // Sell Order A ("holding target"):
@@ -438,12 +467,19 @@ public class OrderCompletionProcessor {
             String symbol = pendingOrder.getSymbol();
             String strategy = pendingOrder.getStrategy();
 
-            // ===== Find position by primary OR secondary target order ID =====
-            Position position = positionManager.findByTargetOrderId(sellOrderId);
+            // Resolve every SELL against the owning broker. Broker order IDs may
+            // collide across accounts, so cross-broker first-match lookup is unsafe.
+            String orderBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+            Position position = positionManager.findByBrokerAndTargetOrderId(orderBroker, sellOrderId);
             boolean isSecondarySell = false;
+            boolean isStopLossSell = false;
             if (position == null) {
-                position = positionManager.findBySecondaryTargetOrderId(sellOrderId);
+                position = positionManager.findByBrokerAndSecondaryTargetOrderId(orderBroker, sellOrderId);
                 isSecondarySell = (position != null);
+            }
+            if (position == null) {
+                position = positionManager.findByBrokerAndStopLossOrderId(orderBroker, sellOrderId);
+                isStopLossSell = (position != null);
             }
             if(position==null) {
                 System.out.println("⚠️ Position not found for sell order ID: " + sellOrderId + ", exiting");
@@ -501,6 +537,7 @@ public class OrderCompletionProcessor {
             if (fullExit) {
                 position.setOpen(false);
                 position.setExitProcessed(true);
+                if (isStopLossSell) position.setStopLossOrderId(null);
                 if (otherSellCancelled) {
                     positionManager.updatePosition(position);
                     // Broker-aware removal: use the position's broker dimension.
@@ -522,10 +559,12 @@ public class OrderCompletionProcessor {
                     positionManager.updatePosition(position);
                 }
             } else {
-                // Partial exit: keep the remaining long position active. If the other
-                // SELL cannot be confirmed cancelled, retain its ID and do not replace it.
+                // Partial exit: keep the remaining long position active. The old
+                // protective order is terminal and reconciled before the trailing
+                // manager may place a new order for only this remaining quantity.
                 position.setTotalQuantity(position.getTotalQuantity() - soldQty);
                 position.setExitProcessed(false);
+                if (isStopLossSell) position.setStopLossOrderId(null);
                 positionManager.updatePosition(position);
             }
 

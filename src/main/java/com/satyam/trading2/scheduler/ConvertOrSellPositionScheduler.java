@@ -31,6 +31,9 @@ import static com.satyam.trading2.helpers.LatestPriceHelper.getLatestPrice;
 @Service
 @RequiredArgsConstructor
 public class ConvertOrSellPositionScheduler {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.core.env.Environment environment;
+
 
     private final PositionManager positionManager;
     private final OrderServiceV2 orderServiceV2;
@@ -75,6 +78,11 @@ public class ConvertOrSellPositionScheduler {
         List<Position> intradayPositions = new ArrayList<>();
         for (Position position : positionManager.getAllOpenPositions()) {
             if (position.getPositionType() == HOLDING) continue;
+            // Momentum positions are closed by the dedicated trailing EOD manager.
+            // Do not convert them into holdings or replace their protective SELL here.
+            if (com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
+                    position, pendingOrderRepository, environment,
+                    brokerOrderRouter.supportsSellStopLossLimit(position))) continue;
             intradayPositions.add(position);
         }
 

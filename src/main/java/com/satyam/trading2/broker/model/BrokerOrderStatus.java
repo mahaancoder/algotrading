@@ -9,6 +9,7 @@ package com.satyam.trading2.broker.model;
  */
 public enum BrokerOrderStatus {
     OPEN,
+    TRIGGER_PENDING,
     PARTIALLY_FILLED,
     COMPLETE,
     CANCELLED,
