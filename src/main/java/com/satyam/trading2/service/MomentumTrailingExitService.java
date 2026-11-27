@@ -87,29 +87,34 @@ public class MomentumTrailingExitService {
         if (!enabled || symbol == null || !Double.isFinite(ltp) || ltp <= 0) return;
         if (!MomentumTrailingPolicy.isStateStoreWritable(environment)) return;
         for (Position position : positionManager.getPositionsForSymbol(symbol).values()) {
-            if (position == null || !position.isOpen()
-                    || position.getPositionType() != Position.PositionType.INTRADAY) continue;
-            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
-                stateRepository.restoreBuyOrderIds(position, LocalDate.now(ZONE).toString());
-            }
-            if (!MomentumTrailingPolicy.isManagedPosition(position, pendingOrderRepository)) continue;
-            MomentumTrailingState state = getOrCreateState(position, LocalDate.now(ZONE).toString());
-            synchronized (state) {
-                if (!LocalDate.now(ZONE).toString().equals(state.getTradingDate()) || state.isFeedGapObserved()) continue;
-                // The desired trigger may be ahead of the broker order while a
-                // cancel/replace is in flight. Protect against that logical stop too.
-                double triggerToWatch = Math.max(state.getWorkingTriggerPrice(), state.getDesiredTriggerPrice());
-                if (state.isActivated() && !state.isExitTriggered() && !state.isEodExitRequested()
-                        && triggerToWatch > 0 && ltp <= triggerToWatch) {
-                    // Detect trigger crossings on the tick callback itself; the one-second
-                    // broker worker must not miss a brief dip and subsequent rebound.
-                    state.setExitTriggered(true);
-                    state.setPhase("EXIT_TRIGGERED");
-                    state.setLastOrderActionAt(System.currentTimeMillis());
-                    stateRepository.save(state);
-                } else {
-                    updateTrailingLevels(state, position, ltp);
+            try {
+                if (position == null || !position.isOpen()
+                        || position.getPositionType() != Position.PositionType.INTRADAY) continue;
+                synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                    stateRepository.restoreBuyOrderIds(position, LocalDate.now(ZONE).toString());
                 }
+                if (!MomentumTrailingPolicy.isManagedPosition(position, pendingOrderRepository)) continue;
+                MomentumTrailingState state = getOrCreateState(position, LocalDate.now(ZONE).toString());
+                synchronized (state) {
+                    if (!LocalDate.now(ZONE).toString().equals(state.getTradingDate()) || state.isFeedGapObserved()) continue;
+                    // The desired trigger may be ahead of the broker order while a
+                    // cancel/replace is in flight. Protect against that logical stop too.
+                    double triggerToWatch = Math.max(state.getWorkingTriggerPrice(), state.getDesiredTriggerPrice());
+                    if (state.isActivated() && !state.isExitTriggered() && !state.isEodExitRequested()
+                            && triggerToWatch > 0 && ltp <= triggerToWatch) {
+                        // Detect trigger crossings on the tick callback itself; the one-second
+                        // broker worker must not miss a brief dip and subsequent rebound.
+                        state.setExitTriggered(true);
+                        state.setPhase("EXIT_TRIGGERED");
+                        state.setLastOrderActionAt(System.currentTimeMillis());
+                        stateRepository.save(state);
+                    } else {
+                        updateTrailingLevels(state, position, ltp);
+                    }
+                }
+            } catch (Exception e) {
+                // Never let a trailing-state persistence/metadata error break market-data processing.
+                log.error("[MomentumTrailing] Tick-state update failed for {}: {}", symbol, e.getMessage(), e);
             }
         }
     }
