@@ -22,10 +22,11 @@ public final class MomentumTrailingPolicy {
     }
 
     /**
-     * Only classify a live position as momentum-managed when its recorded BUY
-     * order IDs resolve to terminal, fill-reconciled momentum BUYs in the durable order ledger.
+     * Only classify a live position as momentum-managed when every recorded BUY
+     * order ID resolves to a BUY for the same broker, symbol and momentum strategy.
+     * Terminal status and fill reconciliation are checked separately before any SELL.
      * Broker snapshots can use the momentum strategy as a legacy placeholder;
-     * those un-attributed/manual positions must retain the legacy exit policy.
+     * those unattributed/manual positions retain the legacy exit policy.
      */
     public static boolean isManagedPosition(Position position, PendingOrderRepository orders) {
         if (position == null || orders == null || !isManagedStrategy(position.getStrategy())
