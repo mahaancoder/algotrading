@@ -104,6 +104,7 @@ public class MomentumTrailingExitService {
         List<Position> positions = positionManager.getAllOpenPositions();
         for (Position position : positions) {
             if (position == null || !position.isOpen()
+                    || position.getPositionType() != Position.PositionType.INTRADAY
                     || !MomentumTrailingPolicy.isManagedPosition(position, pendingOrderRepository)) continue;
             try {
                 manageOne(position, now, eodCutoff);
