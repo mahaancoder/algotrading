@@ -24,6 +24,8 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 
 /**
  * Dedicated exit manager for Dip-Accumulator-Momentum.
@@ -49,6 +51,8 @@ public class MomentumTrailingExitService {
     private final MomentumTrailingStateRepository stateRepository;
     private final TelegramNotificationService telegram;
     private final Environment environment;
+    private final Map<String, Long> buyCancelAttemptAt = new ConcurrentHashMap<>();
+    private final Map<String, Long> buyCancelAlertAt = new ConcurrentHashMap<>();
 
     @Value("${momentum.trailing.enabled:false}")
     private boolean enabled;
@@ -94,6 +98,9 @@ public class MomentumTrailingExitService {
         if (!enabled) return;
         LocalTime now = LocalTime.now(ZONE);
         LocalTime eodCutoff = parseTime(eodCutoffText, LocalTime.of(15, 0));
+        if (liveEnabled && !now.isBefore(eodCutoff)) {
+            cancelAllPendingMomentumBuys();
+        }
         List<Position> positions = positionManager.getAllOpenPositions();
         for (Position position : positions) {
             if (position == null || !position.isOpen()
@@ -135,7 +142,7 @@ public class MomentumTrailingExitService {
         }
 
         if (state.isEodExitRequested() && liveEnabled
-                && !cancelPendingMomentumBuys(position, state)) {
+                && !areMomentumBuysDrained(position)) {
             return; // Never SELL against an unresolved or still-live BUY.
         }
 
@@ -224,53 +231,72 @@ public class MomentumTrailingExitService {
      * is not considered drained until its cumulative fill has been applied to the
      * local position by the existing broker event/reconciliation lifecycle.
      */
-    private boolean cancelPendingMomentumBuys(Position position, MomentumTrailingState state) {
-        String broker = brokerOrderRouter.brokerOf(position);
-        List<PendingOrder> buys = pendingOrderRepository.findAll().stream()
-                .filter(java.util.Objects::nonNull)
-                .filter(po -> po.getSide() == com.satyam.trading2.datamodel.TradeSide.BUY)
-                .filter(po -> MomentumTrailingPolicy.isManagedStrategy(po.getStrategy()))
-                .filter(po -> position.getSymbol().equalsIgnoreCase(po.getSymbol()))
-                .filter(po -> broker.equals(po.getBroker() != null ? po.getBroker() : "KITE"))
-                .collect(java.util.stream.Collectors.toList());
-
-        boolean drained = true;
+    private void cancelAllPendingMomentumBuys() {
         long now = System.currentTimeMillis();
-        for (PendingOrder buy : buys) {
-            boolean terminal = buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE
-                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
-                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED;
-            if (!terminal) {
-                drained = false;
-                if (now - state.getLastOrderActionAt() >= actionIntervalMillis) {
-                    try {
-                        if (!brokerOrderRouter.requestBuyCancellation(buy)) {
-                            alert(position, "EOD_BUY_CANCEL_REQUEST_FAILED",
-                                    "Could not route cancellation for pending BUY " + buy.getOrderId()
-                                            + "; SELL liquidation is blocked.");
-                        } else {
-                            state.setEodBuyCancelRequested(true);
-                            state.setLastOrderActionAt(now);
-                            stateRepository.save(state);
-                        }
-                    } catch (Exception e) {
-                        alert(position, "EOD_BUY_CANCEL_REQUEST_FAILED",
-                                "Cancellation request failed for BUY " + buy.getOrderId() + ": " + e.getMessage());
-                    }
+        for (PendingOrder pending : pendingOrderRepository.findAll()) {
+            if (pending == null || pending.getSide() != com.satyam.trading2.datamodel.TradeSide.BUY
+                    || !MomentumTrailingPolicy.isManagedStrategy(pending.getStrategy())) continue;
+            String broker = pending.getBroker() != null ? pending.getBroker() : "KITE";
+            String orderId = pending.getBrokerOrderId() != null ? pending.getBrokerOrderId() : pending.getOrderId();
+            String key = broker + "::" + orderId;
+            boolean terminal = pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE
+                    || pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
+                    || pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED;
+            if (terminal) {
+                buyCancelAttemptAt.remove(key);
+                if (pending.getFilledQty() > 0 && !pending.isCompletionProcessed()) {
+                    alertPendingBuy(pending, "Terminal BUY has fills not yet applied to position accounting. No EOD SELL may proceed.");
                 }
                 continue;
             }
-            if (buy.getFilledQty() > 0 && !buy.isCompletionProcessed()) {
-                drained = false;
-                alert(position, "EOD_BUY_FILL_RECONCILIATION_PENDING",
-                        "Terminal BUY " + buy.getOrderId() + " has fills not yet applied to position accounting. SELL liquidation is blocked.");
+
+            Long lastAttempt = buyCancelAttemptAt.get(key);
+            if (lastAttempt != null && now - lastAttempt < actionIntervalMillis) continue;
+            try {
+                if (brokerOrderRouter.requestBuyCancellation(pending)) {
+                    buyCancelAttemptAt.put(key, now);
+                    log.warn("[MomentumTrailing] Requested EOD cancellation for pending BUY {} {}",
+                            pending.getSymbol(), orderId);
+                } else {
+                    alertPendingBuy(pending, "Could not route broker cancellation. EOD SELLs remain blocked until this BUY is terminal.");
+                }
+            } catch (Exception e) {
+                alertPendingBuy(pending, "BUY cancellation request failed: " + e.getMessage());
             }
         }
-        if (!drained) {
-            alert(position, "EOD_WAITING_FOR_BUY_DRAIN",
-                    "Pending momentum BUYs are being cancelled/reconciled. No SELL will be submitted until final BUY quantity is known.");
+    }
+
+    private boolean areMomentumBuysDrained(Position position) {
+        String broker = brokerOrderRouter.brokerOf(position);
+        for (PendingOrder buy : pendingOrderRepository.findAll()) {
+            if (buy == null || buy.getSide() != com.satyam.trading2.datamodel.TradeSide.BUY
+                    || !MomentumTrailingPolicy.isManagedStrategy(buy.getStrategy())
+                    || buy.getSymbol() == null || !position.getSymbol().equalsIgnoreCase(buy.getSymbol())
+                    || !broker.equals(buy.getBroker() != null ? buy.getBroker() : "KITE")) continue;
+            boolean terminal = buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE
+                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
+                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED;
+            if (!terminal || (buy.getFilledQty() > 0 && !buy.isCompletionProcessed())) {
+                alert(position, "EOD_WAITING_FOR_BUY_DRAIN",
+                        "Momentum BUY " + buy.getOrderId() + " is still live or its fills are unreconciled. No SELL will be submitted until final BUY quantity is known.");
+                return false;
+            }
         }
-        return drained;
+        return true;
+    }
+
+    private void alertPendingBuy(PendingOrder pending, String message) {
+        String broker = pending.getBroker() != null ? pending.getBroker() : "KITE";
+        String orderId = pending.getBrokerOrderId() != null ? pending.getBrokerOrderId() : pending.getOrderId();
+        String key = broker + "::" + orderId;
+        long now = System.currentTimeMillis();
+        Long last = buyCancelAlertAt.get(key);
+        if (last != null && now - last < alertRepeatMillis) return;
+        buyCancelAlertAt.put(key, now);
+        String body = "Symbol=" + pending.getSymbol() + " Broker=" + broker + " BUY=" + orderId
+                + " Filled=" + pending.getFilledQty() + "/" + pending.getRequestQty() + ". " + message;
+        telegram.systemAlert("Momentum EOD pending BUY — " + pending.getSymbol(), body);
+        log.error("[MomentumTrailing] {}", body);
     }
 
     private void synchronizePositionBasis(MomentumTrailingState state, Position position) {
