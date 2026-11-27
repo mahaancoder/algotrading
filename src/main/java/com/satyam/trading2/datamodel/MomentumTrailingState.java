@@ -19,6 +19,7 @@ public class MomentumTrailingState {
     private boolean exitTriggered;
     private boolean eodExitRequested;
     private boolean exitOrderIsStopLoss;
+    private boolean orderResizeRequired;
     private double averageBuyPrice;
     private int trackedQuantity;
     private double activationPrice;
