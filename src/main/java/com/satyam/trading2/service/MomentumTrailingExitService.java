@@ -85,6 +85,7 @@ public class MomentumTrailingExitService {
      */
     public void onPriceTick(String symbol, double ltp) {
         if (!enabled || symbol == null || !Double.isFinite(ltp) || ltp <= 0) return;
+        if (!MomentumTrailingPolicy.isStateStoreWritable(environment)) return;
         for (Position position : positionManager.getPositionsForSymbol(symbol).values()) {
             if (position == null || !position.isOpen()
                     || position.getPositionType() != Position.PositionType.INTRADAY) continue;
@@ -116,6 +117,10 @@ public class MomentumTrailingExitService {
     @Scheduled(fixedDelayString = "${momentum.trailing.poll-ms:1000}")
     public void manageMomentumPositions() {
         if (!enabled) return;
+        if (!MomentumTrailingPolicy.isStateStoreWritable(environment)) {
+            log.warn("[MomentumTrailing] State store is not writable; leaving legacy exit management active.");
+            return;
+        }
         LocalTime now = LocalTime.now(ZONE);
         LocalTime entryCutoff = parseTime(entryCutoffText, LocalTime.of(14, 55));
         LocalTime eodCutoff = parseTime(eodCutoffText, LocalTime.of(15, 0));
