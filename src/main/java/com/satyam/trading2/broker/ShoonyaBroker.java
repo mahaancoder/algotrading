@@ -179,6 +179,11 @@ public class ShoonyaBroker extends AbstractRestBroker {
         }
     }
 
+    @Override
+    public boolean supportsSellStopLossLimit() {
+        return true;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // cancelOrder — POST /CancelOrder
     // ─────────────────────────────────────────────────────────────────────
