@@ -469,7 +469,9 @@ public class OrderCompletionProcessor {
 
             // Resolve every SELL against the owning broker. Broker order IDs may
             // collide across accounts, so cross-broker first-match lookup is unsafe.
-            String orderBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+            String orderBroker = pendingOrder.getBroker() != null
+                    ? pendingOrder.getBroker().trim().toUpperCase(java.util.Locale.ROOT)
+                    : pendingOrder.getExecutionRoute() != null ? pendingOrder.getExecutionRoute().name() : "KITE";
             Position position = positionManager.findByBrokerAndTargetOrderId(orderBroker, sellOrderId);
             boolean isSecondarySell = false;
             boolean isStopLossSell = false;
