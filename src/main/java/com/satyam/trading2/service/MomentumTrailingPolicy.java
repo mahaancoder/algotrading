@@ -23,7 +23,7 @@ public final class MomentumTrailingPolicy {
 
     /**
      * Only classify a live position as momentum-managed when its recorded BUY
-     * order IDs resolve to completed momentum BUYs in the durable order ledger.
+     * order IDs resolve to terminal, fill-reconciled momentum BUYs in the durable order ledger.
      * Broker snapshots can use the momentum strategy as a legacy placeholder;
      * those un-attributed/manual positions must retain the legacy exit policy.
      */
@@ -51,11 +51,15 @@ public final class MomentumTrailingPolicy {
             // Every recorded BUY must be attributable to this broker, symbol and
             // momentum strategy, and its cumulative fill must be fully reconciled.
             // One valid BUY is not enough if another recorded BUY ID is unknown.
+            boolean terminal = pending != null
+                    && (pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE
+                        || pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
+                        || pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED);
             if (pending == null || pending.getSide() != TradeSide.BUY
                     || !isManagedStrategy(pending.getStrategy())
                     || position.getSymbol() == null
                     || !position.getSymbol().equalsIgnoreCase(pending.getSymbol())
-                    || !pending.isCompleted() || pending.getFilledQty() <= 0) {
+                    || !terminal || pending.getFilledQty() <= 0 || !pending.isCompletionProcessed()) {
                 return false;
             }
             foundBuy = true;
