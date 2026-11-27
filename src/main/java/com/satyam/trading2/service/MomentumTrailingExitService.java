@@ -112,9 +112,7 @@ public class MomentumTrailingExitService {
                         state.setLastOrderActionAt(System.currentTimeMillis());
                         stateRepository.save(state);
                     } else {
-                        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
-                            updateTrailingLevels(state, position, ltp);
-                        }
+                        updateTrailingLevels(state, position, ltp);
                     }
                 }
             } catch (Exception e) {
