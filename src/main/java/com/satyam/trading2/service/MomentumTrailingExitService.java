@@ -764,11 +764,34 @@ public class MomentumTrailingExitService {
         // The current Kite WebSocket integration stores LTP but not best bid depth.
         // LTP is therefore only a quote proxy. Live enablement is OFF by default until
         // bid-depth sourcing and broker-specific fills are independently verified.
-        double limit = desiredLimit;
         synchronized (SellLifecycleLockRegistry.lockFor(position)) {
             if (!position.isOpen() || position.getTotalQuantity() <= 0) {
-                state.setPhase("CLOSED");
-                stateRepository.save(state);
+                synchronized (state) {
+                    state.setPhase("CLOSED");
+                    stateRepository.save(state);
+                }
+                return;
+            }
+            double currentBreakEven = netBreakEven(position);
+            if (currentBreakEven <= 0) {
+                alert(position, "BREAK_EVEN_NOT_CONFIGURED",
+                        "Cannot submit the remaining-quantity SELL because the broker-specific net break-even estimate is unavailable.");
+                return;
+            }
+            if (ltp + 1.0e-9 < currentBreakEven) {
+                synchronized (state) {
+                    state.setPhase("EXIT_BLOCKED");
+                    stateRepository.save(state);
+                }
+                alert(position, trailingTriggered ? "TRAILING_EXIT_BELOW_BREAK_EVEN" : "EOD_EXIT_BELOW_BREAK_EVEN",
+                        "LTP is below the refreshed net break-even floor ₹" + String.format("%.2f", currentBreakEven)
+                                + ". Strict protection is active; no lower SELL limit was submitted.");
+                return;
+            }
+            double limit = ceilToTick(position.getSymbol(), Math.max(currentBreakEven, ltp));
+            if (limit <= 0 || limit + 1.0e-9 < currentBreakEven) {
+                alert(position, "EXIT_LIMIT_ROUNDING_BLOCKED",
+                        "Cannot round the exit limit to a valid tick without crossing the refreshed net break-even floor.");
                 return;
             }
             int remainingQuantity = position.getTotalQuantity();
