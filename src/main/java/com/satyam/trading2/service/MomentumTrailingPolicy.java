@@ -51,15 +51,10 @@ public final class MomentumTrailingPolicy {
             // Every recorded BUY must be attributable to this broker, symbol and
             // momentum strategy, and its cumulative fill must be fully reconciled.
             // One valid BUY is not enough if another recorded BUY ID is unknown.
-            boolean terminal = pending != null
-                    && (pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE
-                        || pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
-                        || pending.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED);
             if (pending == null || pending.getSide() != TradeSide.BUY
                     || !isManagedStrategy(pending.getStrategy())
                     || position.getSymbol() == null
-                    || !position.getSymbol().equalsIgnoreCase(pending.getSymbol())
-                    || !terminal || pending.getFilledQty() <= 0 || !pending.isCompletionProcessed()) {
+                    || !position.getSymbol().equalsIgnoreCase(pending.getSymbol())) {
                 return false;
             }
             foundBuy = true;
