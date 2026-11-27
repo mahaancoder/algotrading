@@ -403,7 +403,7 @@ public class BrokerOrderRouter {
         if (position == null) return false;
         synchronized (SellLifecycleLockRegistry.lockFor(position)) {
             long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
-            boolean cancelSent = false;
+            long lastCancelAttempt = 0L;
             do {
                 BrokerOrderStatus status = getOrderStatus(position, orderId);
                 Integer filled = getFilledQuantity(position, orderId);
@@ -411,9 +411,10 @@ public class BrokerOrderRouter {
                         || status == BrokerOrderStatus.COMPLETE) {
                     return retireAfterReconciledFill(position, orderId, status, filled);
                 }
-                if (!cancelSent || System.currentTimeMillis() + 1000L < deadline) {
+                long now = System.currentTimeMillis();
+                if (lastCancelAttempt == 0L || now - lastCancelAttempt >= 1000L) {
                     cancelViaBroker(position, orderId);
-                    cancelSent = true;
+                    lastCancelAttempt = now;
                 }
                 try {
                     Thread.sleep(250L);
