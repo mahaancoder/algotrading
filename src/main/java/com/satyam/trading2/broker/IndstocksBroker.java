@@ -631,13 +631,23 @@ public class IndstocksBroker extends AbstractRestBroker {
                     return false;
                 }
             }
+            Set<String> snapshotSymbols = new HashSet<>();
             for (JsonNode row : rows) {
                 String symbol = textOr(row, "symbol", null);
+                snapshotSymbols.add(symbol.trim().toUpperCase());
                 int sellableQty = intOr(row, "total_qty", 0) - intOr(row, "used_qty", 0);
                 if (!upsertPosition(symbol, sellableQty, doubleOr(row, "avg_price", 0),
                         Position.PositionType.HOLDING)) {
                     log.error("[IndstocksBroker] Morning holdings refresh could not apply row for {}", symbol);
                     return false;
+                }
+            }
+            // A complete successful snapshot is authoritative: remove stale local
+            // holdings that the broker no longer reports (including an empty book).
+            for (Position tracked : positionManager.getAllHoldings()) {
+                if (tracked != null && "INDSTOCKS".equals(tracked.getBroker())
+                        && !snapshotSymbols.contains(tracked.getSymbol().trim().toUpperCase())) {
+                    positionManager.removePosition(tracked.getSymbol(), tracked.getStrategy(), "INDSTOCKS");
                 }
             }
             log.info("[IndstocksBroker] Morning holdings refresh successful: {} rows", rows.size());
