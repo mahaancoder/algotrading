@@ -25,12 +25,6 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class HoldingsTargetSetScheduler {
 
-    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
-    private boolean momentumTrailingLiveEnabled;
-
-    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
-    private boolean momentumTrailingEnabled;
-
     private final PositionManager positionManager;
     private final OrderServiceV2 orderServiceV2;
     private final ExecutionEngine executionEngine;
