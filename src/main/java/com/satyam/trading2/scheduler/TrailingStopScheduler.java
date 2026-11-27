@@ -25,6 +25,9 @@ import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 @RequiredArgsConstructor
 public class TrailingStopScheduler {
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
+    private boolean momentumTrailingLiveEnabled;
+
     private final PositionManager positionManager;
     private final ReconciliationService reconciliationService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
@@ -92,7 +95,7 @@ public class TrailingStopScheduler {
                     .filter(p -> p.getPositionType() == INTRADAY)
                     // Momentum has its own SL-LIMIT trailing lifecycle; never let the
                     // legacy target-price scheduler replace that protective order.
-                    .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
+                    .filter(p -> !momentumTrailingLiveEnabled || !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
