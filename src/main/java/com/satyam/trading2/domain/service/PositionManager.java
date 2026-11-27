@@ -320,6 +320,18 @@ public class PositionManager {
                 .orElse(null);
     }
 
+    /** Broker-aware secondary target lookup; broker order IDs may collide. */
+    public Position findByBrokerAndSecondaryTargetOrderId(String broker, String orderId) {
+        if (orderId == null) return null;
+        String expectedBroker = broker != null ? broker : "KITE";
+        return positionMap.values().stream()
+                .flatMap(strategyMap -> strategyMap.values().stream())
+                .filter(p -> p != null && orderId.equals(p.getSecondaryTargetOrderId())
+                        && expectedBroker.equals(p.getBroker() != null ? p.getBroker() : "KITE"))
+                .findFirst()
+                .orElse(null);
+    }
+
     public Position findBySecondaryTargetOrderId(String secondaryTargetOrderId) {
         if (secondaryTargetOrderId == null) {
             return null;
