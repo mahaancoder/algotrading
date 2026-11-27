@@ -232,7 +232,31 @@ public class OrderCompletionProcessor {
 //      4. TARGET ORDER MANAGEMENT
             boolean isHolding = position.getPositionType() == Position.PositionType.HOLDING;
 
-            if (isHolding) {
+            if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) {
+                // Momentum positions use a broker-native trailing SL-LIMIT managed by
+                // MomentumTrailingExitService. Do not create the fixed target SELL.
+                // Any legacy target is retained unless its zero-fill cancellation is
+                // broker-confirmed; the trailing manager will fail closed while it remains.
+                String legacyTarget = position.getTargetOrderId();
+                String legacySecondary = position.getSecondaryTargetOrderId();
+                boolean targetSafe = legacyTarget == null
+                        || brokerOrderRouter.cancelAndConfirmSell(position, legacyTarget, 2500L);
+                boolean secondarySafe = legacySecondary == null
+                        || brokerOrderRouter.cancelAndConfirmSell(position, legacySecondary, 2500L);
+                if (targetSafe) {
+                    position.setTargetOrderId(null);
+                    position.setTargetPlaced(false);
+                }
+                if (secondarySafe) {
+                    position.setSecondaryTargetOrderId(null);
+                    position.setSecondaryTargetQty(0);
+                    position.setSecondaryTargetPlaced(false);
+                }
+                if (!targetSafe || !secondarySafe) {
+                    System.err.println("[OrderCompletionProcessor] Momentum fixed SELL remains unresolved for "
+                            + pendingOrder.getSymbol() + "; trailing activation is blocked pending reconciliation.");
+                }
+            } else if (isHolding) {
                 // ===== CNC / HOLDING: Dual sell-order strategy =====
                 //
                 // Sell Order A ("holding target"):
