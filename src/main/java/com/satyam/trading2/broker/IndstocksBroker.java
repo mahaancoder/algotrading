@@ -593,6 +593,58 @@ public class IndstocksBroker extends AbstractRestBroker {
     // reconcileOrders — GET /order-book + GET /trade-book
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Fetch and validate the demat holdings snapshot used by the morning target
+     * scheduler. A failed/malformed response is never interpreted as empty.
+     */
+    @Override
+    public boolean refreshHoldingsForTargetScheduler() {
+        if (!indstocksConfig.isAuthenticated()) {
+            log.warn("[IndstocksBroker] Morning holdings refresh skipped — not authenticated");
+            return false;
+        }
+        try {
+            JsonNode response = getJson(indstocksConfig.getBaseUrl() + "/portfolio/holdings",
+                    indstocksConfig.getAuthHeader(), SLOW_REQUEST_TIMEOUT_MS);
+            if (!"success".equals(textOr(response, "status", ""))) {
+                log.error("[IndstocksBroker] Morning holdings refresh failed: status={}, message={}",
+                        textOr(response, "status", ""), textOr(response, "message", ""));
+                return false;
+            }
+            JsonNode rows = response.get("data");
+            if (rows == null || !rows.isArray()) {
+                log.error("[IndstocksBroker] Morning holdings refresh failed: data is not an array");
+                return false;
+            }
+            for (JsonNode row : rows) {
+                String symbol = textOr(row, "symbol", null);
+                int totalQty = intOr(row, "total_qty", -1);
+                int usedQty = intOr(row, "used_qty", -1);
+                if (symbol == null || symbol.trim().isEmpty()
+                        || totalQty < 0 || usedQty < 0 || usedQty > totalQty) {
+                    log.error("[IndstocksBroker] Morning holdings snapshot contains malformed row: {}", row);
+                    return false;
+                }
+                if (totalQty > usedQty && doubleOr(row, "avg_price", -1) <= 0) {
+                    log.error("[IndstocksBroker] Morning holdings snapshot has invalid average price for {}",
+                            symbol);
+                    return false;
+                }
+            }
+            for (JsonNode row : rows) {
+                String symbol = textOr(row, "symbol", null);
+                int sellableQty = intOr(row, "total_qty", 0) - intOr(row, "used_qty", 0);
+                upsertPosition(symbol, sellableQty, doubleOr(row, "avg_price", 0),
+                        Position.PositionType.HOLDING);
+            }
+            log.info("[IndstocksBroker] Morning holdings refresh successful: {} rows", rows.size());
+            return true;
+        } catch (Exception e) {
+            log.error("[IndstocksBroker] Morning holdings refresh failed: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
     @Override
     public void reconcileOrders() {
         if (!indstocksConfig.isAuthenticated()) {
