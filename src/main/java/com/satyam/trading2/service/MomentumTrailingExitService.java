@@ -5,6 +5,7 @@ import com.satyam.trading2.datamodel.MomentumTrailingState;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
 import com.satyam.trading2.domain.service.PositionManager;
+import com.satyam.trading2.infrastructure.messaging.BroadcastService;
 import com.satyam.trading2.helpers.LatestPriceHelper;
 import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.PendingOrderRepository;
@@ -51,6 +52,7 @@ public class MomentumTrailingExitService {
     private final PendingOrderRepository pendingOrderRepository;
     private final MomentumTrailingStateRepository stateRepository;
     private final TelegramNotificationService telegram;
+    private final BroadcastService broadcastService;
     private final Environment environment;
     private final Map<String, Long> buyCancelAttemptAt = new ConcurrentHashMap<>();
     private final Map<String, Long> buyCancelAlertAt = new ConcurrentHashMap<>();
@@ -167,17 +169,40 @@ public class MomentumTrailingExitService {
                     "Momentum trailing policy only manages INTRADAY positions. Manual review required.");
             return;
         }
+        String today = LocalDate.now(ZONE).toString();
+        MomentumTrailingState state = getOrCreateState(position, today);
+        if (!today.equals(state.getTradingDate())) {
+            alert(position, "TRAILING_STATE_DATE_MISMATCH",
+                    "Persisted trailing state belongs to another trading date. No automated order changes were made.");
+            return;
+        }
+
+        // Persist the EOD ownership transition before checking market-data freshness.
+        // A stale feed must not prevent the position from leaving trailing mode or
+        // allow the legacy 15:05 conversion scheduler to take ownership.
+        if (!state.isEodExitRequested() && !now.isBefore(eodCutoff)) {
+            synchronized (state) {
+                if (!state.isEodExitRequested()) {
+                    state.setEodExitRequested(true);
+                    state.setPhase("EOD_EXIT");
+                    stateRepository.save(state);
+                }
+            }
+            alert(position, "EOD_EXIT_STARTED",
+                    liveEnabled
+                            ? "New entries are blocked. Momentum position is being managed for EOD exit; no holding conversion is permitted."
+                            : "Shadow tracking reached EOD. No trailing order was sent; legacy exit management remains active.");
+        }
+
         double ltp = LatestPriceHelper.getLatestPrice(position.getSymbol());
         long tickAt = LatestPriceHelper.getLastPriceUpdateTime(position.getSymbol());
-        String today = LocalDate.now(ZONE).toString();
         if (ltp <= 0 || tickAt <= 0 || System.currentTimeMillis() - tickAt > ltpStaleMillis) {
-            MomentumTrailingState staleState = getOrCreateState(position, today);
             boolean activeExit;
-            synchronized (staleState) {
-                activeExit = staleState.isActivated() || staleState.getExitOrderId() != null || staleState.isEodExitRequested();
+            synchronized (state) {
+                activeExit = state.isActivated() || state.getExitOrderId() != null || state.isEodExitRequested();
                 if (activeExit) {
-                    staleState.setFeedGapObserved(true);
-                    stateRepository.save(staleState);
+                    state.setFeedGapObserved(true);
+                    stateRepository.save(state);
                 }
             }
             if (activeExit) {
@@ -186,13 +211,6 @@ public class MomentumTrailingExitService {
             } else {
                 alert(position, "STALE_OR_MISSING_LTP", "Fresh LTP is unavailable; trailing activation is paused.");
             }
-            return;
-        }
-
-        MomentumTrailingState state = getOrCreateState(position, today);
-        if (!today.equals(state.getTradingDate())) {
-            alert(position, "TRAILING_STATE_DATE_MISMATCH",
-                    "Persisted trailing state belongs to another trading date. No automated order changes were made.");
             return;
         }
         if (state.getExitOrderId() != null) {
@@ -466,10 +484,21 @@ public class MomentumTrailingExitService {
             state.setPhase("ACTIVE");
             state.setActivationPrice(activation);
             state.setHighWaterMark(ltp);
-            state.setDesiredTriggerPrice(average * (1.0 + INITIAL_TRIGGER_PERCENT / 100.0));
-            state.setDesiredLimitPrice(state.getDesiredTriggerPrice() * (1.0 - LIMIT_OFFSET_PERCENT / 100.0));
+
+            // The first observed tick may gap through several 0.1% steps above
+            // activation. Apply every already-completed step immediately rather
+            // than waiting for a new high and temporarily leaving the stop too low.
+            double stepSize = average * TRAIL_STEP_PERCENT / 100.0;
+            long completedSteps = stepSize > 0
+                    ? Math.max(0L, (long) Math.floor((ltp - activation) / stepSize + 1.0e-9))
+                    : 0L;
+            double initialTrigger = average * (1.0 + INITIAL_TRIGGER_PERCENT / 100.0);
+            double desiredTrigger = initialTrigger + completedSteps * stepSize;
+            state.setDesiredTriggerPrice(desiredTrigger);
+            state.setDesiredLimitPrice(desiredTrigger * (1.0 - LIMIT_OFFSET_PERCENT / 100.0));
             stateRepository.save(state);
-            log.info("[MomentumTrailing] {} activated at LTP={} avg={}", position.getSymbol(), ltp, average);
+            log.info("[MomentumTrailing] {} activated at LTP={} avg={} trigger={} completedSteps={}",
+                    position.getSymbol(), ltp, average, desiredTrigger, completedSteps);
             return;
         }
 
@@ -852,9 +881,23 @@ public class MomentumTrailingExitService {
                     position.getSymbol(), persistenceFailure.getMessage(), persistenceFailure);
         }
         String title = "Momentum trailing " + code + " — " + position.getSymbol();
-        telegram.systemAlert(title, message + " | Broker=" + brokerOf(position)
+        String details = message + " | Broker=" + brokerOf(position)
                 + " | Qty=" + position.getTotalQuantity()
-                + " | LTP=₹" + String.format("%.2f", LatestPriceHelper.getLatestPrice(position.getSymbol())));
+                + " | LTP=₹" + String.format("%.2f", LatestPriceHelper.getLatestPrice(position.getSymbol()));
+        try {
+            // Keep the alert visible in the trading dashboard even when Telegram
+            // notifications are disabled or unavailable.
+            broadcastService.broadcastLog("🚨 " + title + " | " + details);
+        } catch (Exception broadcastFailure) {
+            log.error("[MomentumTrailing] Dashboard alert broadcast failed for {}: {}",
+                    position.getSymbol(), broadcastFailure.getMessage(), broadcastFailure);
+        }
+        try {
+            telegram.systemAlert(title, details);
+        } catch (Exception notificationFailure) {
+            log.error("[MomentumTrailing] Telegram alert failed for {}: {}",
+                    position.getSymbol(), notificationFailure.getMessage(), notificationFailure);
+        }
         log.warn("[MomentumTrailing][{}] {}: {}", code, position.getSymbol(), message);
     }
 
