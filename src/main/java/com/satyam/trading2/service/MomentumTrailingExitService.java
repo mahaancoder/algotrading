@@ -54,6 +54,7 @@ public class MomentumTrailingExitService {
     private final Environment environment;
     private final Map<String, Long> buyCancelAttemptAt = new ConcurrentHashMap<>();
     private final Map<String, Long> buyCancelAlertAt = new ConcurrentHashMap<>();
+    private final Map<String, Long> alertFallbackAt = new ConcurrentHashMap<>();
 
     @Value("${momentum.trailing.enabled:false}")
     private boolean enabled;
@@ -824,16 +825,27 @@ public class MomentumTrailingExitService {
     }
 
     private void alert(Position position, String code, String message) {
-        // Alert throttling is per position. Critical unresolved states remain visible
-        // in logs even when Telegram is disabled.
-        MomentumTrailingState state = getOrCreateState(position, LocalDate.now(ZONE).toString());
         long now = System.currentTimeMillis();
-        if (now - state.getLastAlertAt() < alertRepeatMillis) {
+        String alertKey = position.compositeKey() + "::" + code;
+        Long fallbackLast = alertFallbackAt.get(alertKey);
+        if (fallbackLast != null && now - fallbackLast < alertRepeatMillis) {
             log.debug("[MomentumTrailing][{}] {} {}: {}", code, position.getSymbol(), position.getStrategy(), message);
             return;
         }
-        state.setLastAlertAt(now);
-        stateRepository.save(state);
+        alertFallbackAt.put(alertKey, now);
+        try {
+            MomentumTrailingState state = getOrCreateState(position, LocalDate.now(ZONE).toString());
+            if (now - state.getLastAlertAt() < alertRepeatMillis) {
+                log.debug("[MomentumTrailing][{}] {} {}: {}", code, position.getSymbol(), position.getStrategy(), message);
+                return;
+            }
+            state.setLastAlertAt(now);
+            stateRepository.save(state);
+        } catch (Exception persistenceFailure) {
+            // Alert delivery must still work if the trailing state store itself fails.
+            log.error("[MomentumTrailing] Could not persist alert throttle for {}: {}",
+                    position.getSymbol(), persistenceFailure.getMessage(), persistenceFailure);
+        }
         String title = "Momentum trailing " + code + " — " + position.getSymbol();
         telegram.systemAlert(title, message + " | Broker=" + brokerOf(position)
                 + " | Qty=" + position.getTotalQuantity()
