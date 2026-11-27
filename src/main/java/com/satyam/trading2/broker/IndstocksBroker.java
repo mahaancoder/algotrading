@@ -62,12 +62,6 @@ import java.util.concurrent.ConcurrentHashMap;
 @ConditionalOnProperty(name = "broker.indstocks.enabled", havingValue = "true")
 public class IndstocksBroker extends AbstractRestBroker {
 
-    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
-    private boolean momentumTrailingLiveEnabled;
-
-    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
-    private boolean momentumTrailingEnabled;
-
     private final IndstocksConfig indstocksConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
     private final PositionManager positionManager;
