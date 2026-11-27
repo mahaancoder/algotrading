@@ -13,6 +13,7 @@ import lombok.NoArgsConstructor;
 public class MomentumTrailingState {
     private String positionKey;
     private String tradingDate;
+    private String positionFingerprint;
     private String phase = "INACTIVE";
     private String exitOrderId;
     private boolean activated;
