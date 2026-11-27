@@ -471,7 +471,8 @@ public class OrderCompletionProcessor {
                 isSecondarySell = (position != null);
             }
             if (position == null) {
-                position = positionManager.findByStopLossOrderId(sellOrderId);
+                String orderBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+                position = positionManager.findByBrokerAndStopLossOrderId(orderBroker, sellOrderId);
                 isStopLossSell = (position != null);
             }
             if(position==null) {
