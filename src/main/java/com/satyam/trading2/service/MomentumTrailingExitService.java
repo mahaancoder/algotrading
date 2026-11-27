@@ -85,8 +85,8 @@ public class MomentumTrailingExitService {
             if (position == null || !position.isOpen()
                     || position.getPositionType() != Position.PositionType.INTRADAY
                     || !MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) continue;
-            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
-                MomentumTrailingState state = stateRepository.getOrCreate(position, LocalDate.now(ZONE).toString());
+            MomentumTrailingState state = stateRepository.getOrCreate(position, LocalDate.now(ZONE).toString());
+            synchronized (state) {
                 if (!LocalDate.now(ZONE).toString().equals(state.getTradingDate())) continue;
                 updateTrailingLevels(state, position, ltp);
             }
@@ -102,14 +102,12 @@ public class MomentumTrailingExitService {
         for (Position position : positions) {
             if (position == null || !position.isOpen()
                     || !MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) continue;
-            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
-                try {
-                    manageOne(position, now, eodCutoff);
-                } catch (Exception e) {
-                    log.error("[MomentumTrailing] {} failed closed: {}", position.getSymbol(), e.getMessage(), e);
-                    alert(position, "TRAILING_MANAGER_ERROR",
-                            "Exit manager failed; no replacement SELL was assumed. " + e.getMessage());
-                }
+            try {
+                manageOne(position, now, eodCutoff);
+            } catch (Exception e) {
+                log.error("[MomentumTrailing] {} failed closed: {}", position.getSymbol(), e.getMessage(), e);
+                alert(position, "TRAILING_MANAGER_ERROR",
+                        "Exit manager failed; no replacement SELL was assumed. " + e.getMessage());
             }
         }
     }
@@ -129,6 +127,7 @@ public class MomentumTrailingExitService {
 
         String today = LocalDate.now(ZONE).toString();
         MomentumTrailingState state = stateRepository.getOrCreate(position, today);
+        synchronized (state) {
         if (!today.equals(state.getTradingDate())) {
             alert(position, "TRAILING_STATE_DATE_MISMATCH",
                     "Persisted trailing state belongs to another trading date. No automated order changes were made.");
@@ -190,6 +189,7 @@ public class MomentumTrailingExitService {
             return;
         }
         ensureProtectiveStop(position, state, breakEven);
+        }
     }
 
     private void synchronizePositionBasis(MomentumTrailingState state, Position position) {
