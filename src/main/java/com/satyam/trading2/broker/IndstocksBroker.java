@@ -656,6 +656,7 @@ public class IndstocksBroker extends AbstractRestBroker {
 
             for (Position pos : positionManager.getAllIntradayPositions()) {
                 if (pos == null || !"INDSTOCKS".equals(pos.getBroker())) continue;
+                if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(pos.getStrategy())) continue;
                 if (pos.getTotalQuantity() <= 0) continue;
 
                 String secId = resolveSecurityId(pos.getSymbol());
