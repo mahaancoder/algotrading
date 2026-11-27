@@ -358,8 +358,12 @@ public class BrokerOrderRouter {
         String orderId = pendingOrder.getBrokerOrderId() != null
                 ? pendingOrder.getBrokerOrderId() : pendingOrder.getOrderId();
         if (orderId == null) return false;
-        ExecutionRoute route = pendingOrder.getExecutionRoute() != null
-                ? pendingOrder.getExecutionRoute() : ExecutionRoute.KITE;
+        ExecutionRoute route = pendingOrder.getExecutionRoute();
+        if (route == null && "KITE".equalsIgnoreCase(pendingOrder.getBroker())) {
+            route = ExecutionRoute.KITE;
+        }
+        // Never guess a non-Kite route from a missing persisted execution route.
+        if (route == null) return false;
         Broker broker = brokerRouter.getBroker(route);
         if (broker == null) return false;
         broker.cancelOrder(orderId);
