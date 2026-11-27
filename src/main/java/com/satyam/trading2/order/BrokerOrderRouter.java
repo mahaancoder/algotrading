@@ -406,14 +406,13 @@ public class BrokerOrderRouter {
             OrderRequest request = OrderRequest.builder()
                     .symbol(symbol)
                     .exchange("NSE")
-                    .transactionType(TransactionType.SELL)
-                    .orderType(OrderType.STOP_LOSS)
+                    .side(TradeSide.SELL)
+                    .orderType("SL")
                     .quantity(qty)
                     .price(limitPrice)
                     .triggerPrice(triggerPrice)
-                    .productType(position.getPositionType() == Position.PositionType.HOLDING
-                            ? ProductType.DELIVERY : ProductType.INTRADAY)
-                    .strategyId(strategy)
+                    .product(position.getPositionType() == Position.PositionType.HOLDING ? "CNC" : "MIS")
+                    .strategy(strategy)
                     .build();
             BrokerOrderResponse response = SellOrderAuthorizationContext.withAuthorization(
                     () -> broker.placeOrder(request));
