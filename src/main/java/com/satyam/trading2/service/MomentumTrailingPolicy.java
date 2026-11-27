@@ -93,6 +93,18 @@ public final class MomentumTrailingPolicy {
     }
 
     public static boolean isLivePolicyReady(Position position, PendingOrderRepository orders,
+                                            Environment environment, boolean brokerSupportsStopLimit,
+                                            MomentumTrailingStateRepository stateRepository) {
+        if (position != null && stateRepository != null) {
+            synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(position)) {
+                stateRepository.restoreBuyOrderIds(position,
+                        java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString());
+            }
+        }
+        return isLivePolicyReady(position, orders, environment, brokerSupportsStopLimit);
+    }
+
+    public static boolean isLivePolicyReady(Position position, PendingOrderRepository orders,
                                             Environment environment, boolean brokerSupportsStopLimit) {
         if (position == null || environment == null || !brokerSupportsStopLimit
                 || !position.isOpen() || position.getAveragePrice() <= 0 || position.getTotalQuantity() <= 0
