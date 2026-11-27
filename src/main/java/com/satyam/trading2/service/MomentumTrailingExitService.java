@@ -205,7 +205,7 @@ public class MomentumTrailingExitService {
             manageExitOrder(position, state, ltp, breakEven, true);
             return;
         }
-        ensureProtectiveStop(position, state, breakEven);
+        ensureProtectiveStop(position, state, breakEven, ltp);
     }
 
     private void synchronizePositionBasis(MomentumTrailingState state, Position position) {
@@ -269,7 +269,8 @@ public class MomentumTrailingExitService {
         }
     }
 
-    private void ensureProtectiveStop(Position position, MomentumTrailingState state, double breakEven) {
+    private void ensureProtectiveStop(Position position, MomentumTrailingState state,
+                                      double breakEven, double ltp) {
         if (state.getExitOrderId() == null && position.getStopLossOrderId() != null) {
             state.setExitOrderId(position.getStopLossOrderId());
             state.setExitOrderIsStopLoss(true);
@@ -291,6 +292,16 @@ public class MomentumTrailingExitService {
         if (working.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE) {
             alert(position, "PROTECTIVE_ORDER_COMPLETE_UNRECONCILED",
                     "Broker reports protective SELL complete but position is still open locally. Waiting for reconciliation.");
+            return;
+        }
+        if (working.getFilledQty() > 0
+                || working.getState() == com.satyam.trading2.datamodel.PendingOrderState.PARTIALLY_FILLED) {
+            // Any broker-confirmed fill on the protective SELL means the stop has
+            // activated. Freeze trailing and manage only the broker-reconciled remainder.
+            state.setExitTriggered(true);
+            state.setPhase("EXIT_TRIGGERED");
+            stateRepository.save(state);
+            manageExitOrder(position, state, ltp, breakEven, true);
             return;
         }
         if (working.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
