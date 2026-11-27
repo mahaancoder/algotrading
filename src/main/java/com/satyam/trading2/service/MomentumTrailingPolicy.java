@@ -106,8 +106,8 @@ public final class MomentumTrailingPolicy {
                             java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString());
                 }
             } catch (RuntimeException restoreFailure) {
-                // A failed state restore must never let a legacy scheduler infer
-                // that a momentum position is safe to target/convert.
+                // The trailing policy is not ready if attribution cannot be restored;
+                // retain the existing legacy exit path rather than guessing ownership.
                 return false;
             }
         }
