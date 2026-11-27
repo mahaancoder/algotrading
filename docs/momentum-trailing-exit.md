@@ -46,7 +46,9 @@ The percentage is an estimate used to calculate the break-even floor; it is not 
 - Kite and Shoonya adapters declare SELL SL-LIMIT support. Their live trigger/limit behaviour still requires broker-account verification.
 - INDstocks currently does not send a trigger-price field in its place-order payload, so the adapter explicitly does not advertise SELL SL-LIMIT support. When trailing live mode is enabled, INDstocks positions retain the legacy fixed-target and EOD management; the new trailing exit policy is not activated for that broker.
 - The current market-data path stores LTP but not best-bid depth. The triggered/EOD limit repricer currently uses LTP as a quote proxy, not the actual best bid. This is one reason live order placement remains disabled by default.
-- Stop amendments use broker-confirmed cancel-and-replace because the Kite adapter does not implement a native modify operation for this order. This creates a protection gap during replacement; do not enable live trading until this behaviour is accepted and broker-specific modification support is verified.
+- Stop amendments currently use broker-confirmed cancel-and-replace rather than native order modification. This creates a protection gap during replacement; do not enable live trading until this behaviour is accepted and broker-specific modification support is verified.
+- If LTP becomes stale while a stop is active, the service pauses trailing and checks broker order status before resuming. Ambiguous terminal states remain blocked for manual reconciliation.
+- Live target suppression also requires a writable trailing-state directory; otherwise the existing fixed-target path remains active.
 - Tick-size rounding is applied before submission. If a valid SELL SL-LIMIT cannot be formed with the limit at/above the configured break-even floor, the service refuses the order and alerts.
 - State is persisted atomically to `/home/ec2-user/momentum_trailing_state.json` by default. An unreadable state file fails startup rather than silently resetting a protective stop.
 
