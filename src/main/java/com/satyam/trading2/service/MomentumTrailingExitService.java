@@ -136,6 +136,17 @@ public class MomentumTrailingExitService {
                     "Persisted trailing state belongs to another trading date. No automated order changes were made.");
             return;
         }
+        if (state.getExitOrderId() != null) {
+            if (position.getStopLossOrderId() == null) {
+                // Restore the order-to-position link before broker events are handled.
+                position.setStopLossOrderId(state.getExitOrderId());
+                positionManager.updatePosition(position);
+            } else if (!state.getExitOrderId().equals(position.getStopLossOrderId())) {
+                alert(position, "TRAILING_ORDER_ID_MISMATCH",
+                        "Persisted trailing order ID differs from the position's SELL reference. No automated replacement is safe.");
+                return;
+            }
+        }
         if (!state.isActivated() && (state.getExitOrderId() != null || position.getStopLossOrderId() != null)) {
             alert(position, "TRAILING_STATE_MISSING_FOR_EXISTING_ORDER",
                     "A protective SELL exists but its persisted activation/high-water state is missing. Manual reconciliation required.");
