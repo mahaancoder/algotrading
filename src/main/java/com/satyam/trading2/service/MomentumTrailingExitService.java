@@ -158,8 +158,10 @@ public class MomentumTrailingExitService {
                             + ". Configure the broker-specific estimated all-in round-trip cost before enabling exits.");
             return;
         }
-        state.setEstimatedNetBreakEvenPrice(breakEven);
-        stateRepository.save(state);
+        if (Double.compare(state.getEstimatedNetBreakEvenPrice(), breakEven) != 0) {
+            state.setEstimatedNetBreakEvenPrice(breakEven);
+            stateRepository.save(state);
+        }
 
         if (state.isEodExitRequested() && ltp < breakEven) {
             LocalTime deadline = parseTime(environment.getProperty(
@@ -252,7 +254,8 @@ public class MomentumTrailingExitService {
         double highWater = ltp;
         double stepSize = average * TRAIL_STEP_PERCENT / 100.0;
         if (stepSize <= 0) return;
-        long completedSteps = (long) Math.floor((highWater - state.getActivationPrice()) / stepSize + 1.0e-9);
+        long completedSteps = Math.max(0L,
+                (long) Math.floor((highWater - state.getActivationPrice()) / stepSize + 1.0e-9));
         double baseTrigger = state.getActivationPrice() - average * TRAIL_GAP_PERCENT / 100.0;
         double desiredTrigger = baseTrigger + completedSteps * stepSize;
         desiredTrigger = Math.max(state.getDesiredTriggerPrice(), desiredTrigger);
@@ -378,8 +381,10 @@ public class MomentumTrailingExitService {
             ensurePendingOrderRecord(position, state);
         }
         if (ltp + 1.0e-9 < breakEven) {
-            state.setPhase("EXIT_BLOCKED");
-            stateRepository.save(state);
+            if (!"EXIT_BLOCKED".equals(state.getPhase())) {
+                state.setPhase("EXIT_BLOCKED");
+                stateRepository.save(state);
+            }
             alert(position, trailingTriggered ? "TRAILING_EXIT_BELOW_BREAK_EVEN" : "EOD_EXIT_BELOW_BREAK_EVEN",
                     "LTP is below estimated net break-even ₹" + String.format("%.2f", breakEven)
                             + ". Strict protection is active: no lower SELL limit will be submitted. Position remains unresolved.");
