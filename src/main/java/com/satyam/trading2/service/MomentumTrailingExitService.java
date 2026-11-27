@@ -70,6 +70,9 @@ public class MomentumTrailingExitService {
     @Value("${momentum.trailing.action-interval-ms:1000}")
     private long actionIntervalMillis;
 
+    @Value("${momentum.trailing.buy-cancel-retry-ms:5000}")
+    private long buyCancelRetryMillis;
+
     @Value("${momentum.trailing.alert-repeat-ms:60000}")
     private long alertRepeatMillis;
 
@@ -346,7 +349,7 @@ public class MomentumTrailingExitService {
             }
 
             Long lastAttempt = buyCancelAttemptAt.get(key);
-            if (lastAttempt != null && now - lastAttempt < actionIntervalMillis) continue;
+            if (lastAttempt != null && now - lastAttempt < buyCancelRetryMillis) continue;
             try {
                 if (brokerOrderRouter.requestBuyCancellation(pending)) {
                     buyCancelAttemptAt.put(key, now);
