@@ -109,6 +109,15 @@ public class ReconciliationService {
                 return false;
             }
 
+            // Fetch one strict order-book snapshot for the whole reconciliation cycle.
+            // It is needed to settle manually cancelled target orders and to avoid
+            // releasing a reservation based on a position snapshot alone.
+            List<Order> orderSnapshot = orderServiceV2.fetchOrdersSnapshot();
+            if (orderSnapshot == null) {
+                log.error("[Reconciliation] Kite order-book snapshot unavailable; retaining local order references and skipping automation.");
+                return false;
+            }
+
             List<Position> allBrokerPositions = new ArrayList<>();
             allBrokerPositions.addAll(brokerPositions.stream()
                     .filter(p -> p != null && p.getPositionType() == Position.PositionType.INTRADAY)
@@ -223,14 +232,7 @@ public class ReconciliationService {
                                     && p.getPositionType() == local.getPositionType()))
                     .collect(Collectors.toList());
 
-            List<Order> orderSnapshot = null;
-            if (!missingLocals.isEmpty()) {
-                orderSnapshot = orderServiceV2.fetchOrdersSnapshot();
-                if (orderSnapshot == null) {
-                    log.error("[Reconciliation] Missing positions detected but Kite order book is unavailable; retaining local positions.");
-                    return false; // do not let trailing/target logic run on an incomplete reconciliation cycle
-                }
-            }
+            // orderSnapshot was fetched and validated before any local mutation.
 
             List<PendingOrder> unresolvedOrders = pendingOrderRepository.findOrdersRequiringReconciliation();
             for (Position local : missingLocals) {
@@ -278,11 +280,97 @@ public class ReconciliationService {
                 }
             }
 
+            // Broker position quantities have now been applied. Only now can terminal
+            // SELL states be committed and their stale target references released.
+            reconcileTerminalKiteSellOrders(orderSnapshot);
             return true;
         } catch (Exception e) {
             log.error("[Reconciliation] Error syncing broker positions; retaining local positions where possible: {}", e.getMessage(), e);
             return false;
         }
+    }
+
+    /**
+     * Reconcile app-tracked Kite SELL order states against the same validated
+     * order snapshot used for position reconciliation. For terminal orders,
+     * broker net positions have already been applied, so the reservation can
+     * safely be released even when the order was manually cancelled after a
+     * partial fill. Unknown/missing order states remain untouched.
+     */
+    private void reconcileTerminalKiteSellOrders(List<Order> orderSnapshot) throws IOException {
+        Map<String, Order> byId = orderSnapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> o.getOrderId() != null)
+                .collect(Collectors.toMap(Order::getOrderId, o -> o, (first, ignored) -> first));
+
+        for (PendingOrder pending : pendingOrderRepository.findAll()) {
+            if (pending == null || pending.getSide() != TradeSide.SELL
+                    || !"KITE".equalsIgnoreCase(pending.getBroker() == null ? "KITE" : pending.getBroker())) {
+                continue;
+            }
+            String orderId = pending.getBrokerOrderId() != null
+                    ? pending.getBrokerOrderId() : pending.getOrderId();
+            Order brokerOrder = orderId == null ? null : byId.get(orderId);
+            if (brokerOrder == null || brokerOrder.getStatus() == null
+                    || brokerOrder.getFilledQuantity() == null) {
+                continue;
+            }
+            String status = brokerOrder.getStatus().trim().toUpperCase(java.util.Locale.ROOT);
+            boolean complete = "COMPLETE".equals(status) || "FILLED".equals(status);
+            boolean cancelled = "CANCELLED".equals(status) || "CANCELED".equals(status)
+                    || "EXPIRED".equals(status);
+            boolean rejected = "REJECTED".equals(status);
+            if (!complete && !cancelled && !rejected) {
+                continue;
+            }
+
+            pending.setFilledQty(Math.max(0, brokerOrder.getFilledQuantity()));
+            if (brokerOrder.getAveragePrice() != null && brokerOrder.getAveragePrice() > 0) {
+                pending.setAvgPrice(brokerOrder.getAveragePrice());
+            }
+            pending.setState(complete ? PendingOrderState.COMPLETE
+                    : (rejected ? PendingOrderState.REJECTED : PendingOrderState.CANCELLED));
+            // Position inventory was reconciled from Kite before this marker is
+            // persisted; this prevents replaying a terminal partial fill on restart.
+            pending.setCompletionProcessed(true);
+            pending.setUpdatedTime(System.currentTimeMillis());
+            pendingOrderRepository.save(pending);
+        }
+
+        for (Position position : positionRepository.getAllPositions()) {
+            if (position == null || !isKite(position)) continue;
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                boolean changed = false;
+                String primary = position.getTargetOrderId();
+                String secondary = position.getSecondaryTargetOrderId();
+                if (isConfirmedTerminalSell(primary, position, byId)) {
+                    position.setTargetOrderId(null);
+                    position.setTargetPlaced(false);
+                    changed = true;
+                }
+                if (isConfirmedTerminalSell(secondary, position, byId)) {
+                    position.setSecondaryTargetOrderId(null);
+                    position.setSecondaryTargetPlaced(false);
+                    position.setSecondaryTargetQty(0);
+                    changed = true;
+                }
+                if (changed) positionRepository.updatePosition(position);
+            }
+        }
+    }
+
+    private boolean isConfirmedTerminalSell(String orderId, Position position, Map<String, Order> byId) {
+        if (orderId == null) return false;
+        Order order = byId.get(orderId);
+        if (order == null || order.getStatus() == null || order.getFilledQuantity() == null) return false;
+        if (!position.getSymbol().equalsIgnoreCase(order.getTradingSymbol())
+                || !"SELL".equalsIgnoreCase(order.getTransactionType())
+                || !(position.getPositionType() == Position.PositionType.HOLDING
+                    ? "CNC" : "MIS").equalsIgnoreCase(order.getProduct())) return false;
+        String status = order.getStatus().trim().toUpperCase(java.util.Locale.ROOT);
+        return "COMPLETE".equals(status) || "FILLED".equals(status)
+                || "CANCELLED".equals(status) || "CANCELED".equals(status)
+                || "REJECTED".equals(status) || "EXPIRED".equals(status);
     }
 
     private static String missingKey(Position position) {
