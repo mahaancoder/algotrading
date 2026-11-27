@@ -112,8 +112,6 @@ public class HoldingsTargetSetScheduler {
         // fresh sync from each non-KITE broker here so their holdings exist before we
         // look them up — otherwise getAllHoldings() has no non-KITE rows yet and their
         // targets are silently skipped.
-        refreshNonKiteHoldings();
-
         Set<ExecutionRoute> refreshedBrokers = refreshNonKiteHoldings();
 
         for (Position holding : positionManager.getAllHoldings()) {
