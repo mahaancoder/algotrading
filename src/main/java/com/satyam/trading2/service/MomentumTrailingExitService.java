@@ -4,13 +4,10 @@ import com.satyam.trading2.datamodel.Instrument;
 import com.satyam.trading2.datamodel.MomentumTrailingState;
 import com.satyam.trading2.datamodel.PendingOrder;
 import com.satyam.trading2.datamodel.Position;
-import com.satyam.trading2.datamodel.TradeSide;
 import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.helpers.LatestPriceHelper;
-import com.satyam.trading2.infrastructure.messaging.BroadcastService;
 import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.PendingOrderRepository;
-import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.service.TelegramNotificationService;
 import com.satyam.trading2.datamodel.Nifty500Stocks;
 import lombok.RequiredArgsConstructor;
@@ -27,7 +24,6 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Dedicated exit manager for Dip-Accumulator-Momentum.
@@ -198,6 +194,9 @@ public class MomentumTrailingExitService {
         if (ltp <= state.getWorkingTriggerPrice() && state.getWorkingTriggerPrice() > 0) {
             state.setExitTriggered(true);
             state.setPhase("EXIT_TRIGGERED");
+            // Give the broker-native SL-LIMIT a short opportunity to execute before
+            // switching to controlled limit repricing.
+            state.setLastOrderActionAt(System.currentTimeMillis());
             stateRepository.save(state);
             manageExitOrder(position, state, ltp, breakEven, true);
             return;
@@ -246,8 +245,8 @@ public class MomentumTrailingExitService {
         double stepSize = average * TRAIL_STEP_PERCENT / 100.0;
         if (stepSize <= 0) return;
         long completedSteps = (long) Math.floor((highWater - state.getActivationPrice()) / stepSize + 1.0e-9);
-        double desiredTrigger = average * (1.0 + INITIAL_TRIGGER_PERCENT / 100.0)
-                + completedSteps * stepSize;
+        double baseTrigger = state.getActivationPrice() - average * TRAIL_GAP_PERCENT / 100.0;
+        double desiredTrigger = baseTrigger + completedSteps * stepSize;
         desiredTrigger = Math.max(state.getDesiredTriggerPrice(), desiredTrigger);
         state.setHighWaterMark(highWater);
         if (desiredTrigger > state.getDesiredTriggerPrice()) {
@@ -541,7 +540,7 @@ public class MomentumTrailingExitService {
         MomentumTrailingState state = stateRepository.getOrCreate(position, LocalDate.now(ZONE).toString());
         long now = System.currentTimeMillis();
         if (now - state.getLastAlertAt() < alertRepeatMillis) {
-            log.warn("[MomentumTrailing][{}] {} {}: {}", code, position.getSymbol(), position.getStrategy(), message);
+            log.debug("[MomentumTrailing][{}] {} {}: {}", code, position.getSymbol(), position.getStrategy(), message);
             return;
         }
         state.setLastAlertAt(now);
