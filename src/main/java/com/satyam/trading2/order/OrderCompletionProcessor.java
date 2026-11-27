@@ -49,6 +49,7 @@ public class OrderCompletionProcessor {
     private final com.satyam.trading2.service.TradeMetricsCollector tradeMetricsCollector;
     private final com.satyam.trading2.broker.BrokerRouter brokerRouter;
     private final BrokerOrderRouter brokerOrderRouter;
+    private final com.satyam.trading2.service.MomentumTrailingStateRepository momentumTrailingStateRepository;
 
 
     // Async executor for non-blocking broadcasts
@@ -237,7 +238,7 @@ public class OrderCompletionProcessor {
 
             if (com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
                     position, pendingOrderRepository, environment,
-                    brokerOrderRouter.supportsSellStopLossLimit(position))) {
+                    brokerOrderRouter.supportsSellStopLossLimit(position), momentumTrailingStateRepository)) {
                 // Momentum positions use a broker-native trailing SL-LIMIT managed by
                 // MomentumTrailingExitService. Do not create the fixed target SELL.
                 // Any legacy target is retained unless its zero-fill cancellation is
