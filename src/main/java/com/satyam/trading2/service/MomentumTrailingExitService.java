@@ -93,8 +93,9 @@ public class MomentumTrailingExitService {
             MomentumTrailingState state = stateRepository.getOrCreate(position, LocalDate.now(ZONE).toString());
             synchronized (state) {
                 if (!LocalDate.now(ZONE).toString().equals(state.getTradingDate()) || state.isFeedGapObserved()) continue;
-                double triggerToWatch = state.getWorkingTriggerPrice() > 0
-                        ? state.getWorkingTriggerPrice() : state.getDesiredTriggerPrice();
+                // The desired trigger may be ahead of the broker order while a
+                // cancel/replace is in flight. Protect against that logical stop too.
+                double triggerToWatch = Math.max(state.getWorkingTriggerPrice(), state.getDesiredTriggerPrice());
                 if (state.isActivated() && !state.isExitTriggered() && !state.isEodExitRequested()
                         && triggerToWatch > 0 && ltp <= triggerToWatch) {
                     // Detect trigger crossings on the tick callback itself; the one-second
@@ -289,8 +290,7 @@ public class MomentumTrailingExitService {
         }
 
         if (!state.isActivated()) return;
-        double triggerToWatch = state.getWorkingTriggerPrice() > 0
-                ? state.getWorkingTriggerPrice() : state.getDesiredTriggerPrice();
+        double triggerToWatch = Math.max(state.getWorkingTriggerPrice(), state.getDesiredTriggerPrice());
         if (triggerToWatch > 0 && ltp <= triggerToWatch) {
             state.setExitTriggered(true);
             state.setPhase("EXIT_TRIGGERED");
