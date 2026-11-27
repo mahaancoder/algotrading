@@ -274,9 +274,11 @@ public class MomentumTrailingExitService {
                     log.warn("[MomentumTrailing] Requested EOD cancellation for pending BUY {} {}",
                             pending.getSymbol(), orderId);
                 } else {
+                    buyCancelAttemptAt.put(key, now);
                     alertPendingBuy(pending, "Could not route broker cancellation. EOD SELLs remain blocked until this BUY is terminal.");
                 }
             } catch (Exception e) {
+                buyCancelAttemptAt.put(key, now);
                 alertPendingBuy(pending, "BUY cancellation request failed: " + e.getMessage());
             }
         }
