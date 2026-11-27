@@ -337,6 +337,10 @@ public class BrokerOrderRouter {
             return null;
         }
         synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (!supportsSellStopLossLimit(position)) {
+                System.err.println("[BrokerOrderRouter] Refusing SELL SL-LIMIT for unknown/unsupported broker " + brokerOf(position));
+                return null;
+            }
             if (!hasSellCapacity(position, symbol, qty, null)) {
                 System.err.println("🛑 [BrokerOrderRouter] Refusing plain SELL for " + symbol
                         + ": requested quantity exceeds broker long quantity after reservations.");
