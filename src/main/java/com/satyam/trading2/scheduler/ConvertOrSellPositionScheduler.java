@@ -35,6 +35,9 @@ public class ConvertOrSellPositionScheduler {
     @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
     private boolean momentumTrailingLiveEnabled;
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
+    private boolean momentumTrailingEnabled;
+
     private final PositionManager positionManager;
     private final OrderServiceV2 orderServiceV2;
     private final BroadcastService broadcastService;
@@ -80,7 +83,7 @@ public class ConvertOrSellPositionScheduler {
             if (position.getPositionType() == HOLDING) continue;
             // Momentum positions are closed by the dedicated trailing EOD manager.
             // Do not convert them into holdings or replace their protective SELL here.
-            if (momentumTrailingLiveEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) continue;
+            if (momentumTrailingLiveEnabled && momentumTrailingEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) continue;
             intradayPositions.add(position);
         }
 
