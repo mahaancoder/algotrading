@@ -81,42 +81,44 @@ public class MomentumTrailingStateRepository {
         if (position == null || (position.getBuyOrderIds() != null && !position.getBuyOrderIds().isEmpty())) {
             return false;
         }
-        String currentKey = position.compositeKey();
-        MomentumTrailingState state = states.get(currentKey);
-        String stateKey = currentKey;
-        if (state == null) {
-            String broker = position.getBroker() != null ? position.getBroker()
-                    : position.getExecutionRoute() != null ? position.getExecutionRoute().name() : "KITE";
-            String baseStrategy = baseStrategy(position.getStrategy());
-            String symbol = position.getSymbol();
-            java.util.List<java.util.Map.Entry<String, MomentumTrailingState>> matches = states.entrySet().stream()
-                    .filter(entry -> {
-                        String[] parts = entry.getKey().split("::", 3);
-                        return parts.length == 3 && broker.equals(parts[0])
-                                && baseStrategy.equals(baseStrategy(parts[1]))
-                                && symbol != null && symbol.equalsIgnoreCase(parts[2])
-                                && tradingDate.equals(entry.getValue().getTradingDate());
-                    }).collect(java.util.stream.Collectors.toList());
-            if (matches.size() != 1) return false;
-            stateKey = matches.get(0).getKey();
-            state = matches.get(0).getValue();
-            // Broker snapshots may omit the #MIS suffix. Re-key the verified
-            // state to the current position identity without losing its stop/HWM.
-            states.remove(stateKey);
-            state.setPositionKey(currentKey);
-            states.put(currentKey, state);
-            persist();
+        synchronized (lock) {
+            String currentKey = position.compositeKey();
+            MomentumTrailingState state = states.get(currentKey);
+            if (state == null) {
+                String broker = position.getBroker() != null
+                        ? position.getBroker().trim().toUpperCase(java.util.Locale.ROOT)
+                        : position.getExecutionRoute() != null ? position.getExecutionRoute().name() : "KITE";
+                String baseStrategy = baseStrategy(position.getStrategy());
+                String symbol = position.getSymbol();
+                java.util.List<java.util.Map.Entry<String, MomentumTrailingState>> matches = states.entrySet().stream()
+                        .filter(entry -> {
+                            String[] parts = entry.getKey().split("::", 3);
+                            return parts.length == 3 && broker.equals(parts[0])
+                                    && baseStrategy.equals(baseStrategy(parts[1]))
+                                    && symbol != null && symbol.equalsIgnoreCase(parts[2])
+                                    && tradingDate.equals(entry.getValue().getTradingDate());
+                        }).collect(java.util.stream.Collectors.toList());
+                if (matches.size() != 1) return false;
+                String stateKey = matches.get(0).getKey();
+                state = matches.get(0).getValue();
+                // Broker snapshots may omit the #MIS suffix. Re-key the verified
+                // state to the current position identity without losing its stop/HWM.
+                states.remove(stateKey);
+                state.setPositionKey(currentKey);
+                states.put(currentKey, state);
+                persist();
+            }
+            if (!tradingDate.equals(state.getTradingDate())
+                    || state.getPositionFingerprint() == null || state.getPositionFingerprint().trim().isEmpty()) {
+                return false;
+            }
+            java.util.Set<String> ids = java.util.Arrays.stream(state.getPositionFingerprint().split("\\|"))
+                    .filter(value -> value != null && !value.trim().isEmpty())
+                    .collect(java.util.stream.Collectors.toSet());
+            if (ids.isEmpty()) return false;
+            position.setBuyOrderIds(ids);
+            return true;
         }
-        if (!tradingDate.equals(state.getTradingDate())
-                || state.getPositionFingerprint() == null || state.getPositionFingerprint().trim().isEmpty()) {
-            return false;
-        }
-        java.util.Set<String> ids = java.util.Arrays.stream(state.getPositionFingerprint().split("\\|"))
-                .filter(value -> value != null && !value.trim().isEmpty())
-                .collect(java.util.stream.Collectors.toSet());
-        if (ids.isEmpty()) return false;
-        position.setBuyOrderIds(ids);
-        return true;
     }
 
     private String baseStrategy(String strategy) {
