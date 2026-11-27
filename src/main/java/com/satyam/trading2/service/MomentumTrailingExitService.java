@@ -127,22 +127,25 @@ public class MomentumTrailingExitService {
 
         String today = LocalDate.now(ZONE).toString();
         MomentumTrailingState state = stateRepository.getOrCreate(position, today);
-        synchronized (state) {
         if (!today.equals(state.getTradingDate())) {
             alert(position, "TRAILING_STATE_DATE_MISMATCH",
                     "Persisted trailing state belongs to another trading date. No automated order changes were made.");
             return;
         }
 
-        synchronizePositionBasis(state, position);
-        updateTrailingLevels(state, position, ltp);
+        // Keep the state monitor only around in-memory/tiny persistence updates.
+        // Never hold it while a broker cancel/reconciliation call is waiting.
+        synchronized (state) {
+            synchronizePositionBasis(state, position);
+            updateTrailingLevels(state, position, ltp);
 
-        if (!state.isEodExitRequested() && !now.isBefore(eodCutoff)) {
-            state.setEodExitRequested(true);
-            state.setPhase("EOD_EXIT");
-            stateRepository.save(state);
-            alert(position, "EOD_EXIT_STARTED",
-                    "New entries must stop. Momentum position is being managed for EOD exit; no holding conversion is permitted.");
+            if (!state.isEodExitRequested() && !now.isBefore(eodCutoff)) {
+                state.setEodExitRequested(true);
+                state.setPhase("EOD_EXIT");
+                stateRepository.save(state);
+                alert(position, "EOD_EXIT_STARTED",
+                        "New entries must stop. Momentum position is being managed for EOD exit; no holding conversion is permitted.");
+            }
         }
 
         // Tracking can be enabled independently, but broker order placement requires
@@ -189,7 +192,6 @@ public class MomentumTrailingExitService {
             return;
         }
         ensureProtectiveStop(position, state, breakEven);
-        }
     }
 
     private void synchronizePositionBasis(MomentumTrailingState state, Position position) {
