@@ -320,6 +320,22 @@ public class MomentumTrailingExitService {
 
         long now = System.currentTimeMillis();
         if (now - state.getLastOrderActionAt() < actionIntervalMillis) return;
+
+        // Do not churn an already-working LIMIT order. Reprice only when the market
+        // has moved down enough that the current SELL limit is no longer competitive.
+        double desiredLimit = ceilToTick(position.getSymbol(), Math.max(breakEven, ltp));
+        if (desiredLimit < breakEven || desiredLimit <= 0) {
+            alert(position, "EXIT_LIMIT_ROUNDING_BLOCKED",
+                    "Cannot round the exit limit to a valid tick without crossing net break-even.");
+            return;
+        }
+        double tick = tickSize(position.getSymbol());
+        boolean needsReplacement = state.getExitOrderId() == null
+                || state.isExitOrderIsStopLoss()
+                || (state.getWorkingLimitPrice() > 0
+                    && desiredLimit < state.getWorkingLimitPrice() - Math.max(tick / 2.0, 0.000001));
+        if (!needsReplacement) return;
+
         if (state.getExitOrderId() != null) {
             if (!brokerOrderRouter.cancelAndConfirmSellForReplacement(
                     position, state.getExitOrderId(), 3000L)) {
@@ -337,14 +353,9 @@ public class MomentumTrailingExitService {
         }
 
         // The current Kite WebSocket integration stores LTP but not best bid depth.
-        // LTP is therefore only a conservative quote proxy here. Live enablement is
-        // kept OFF by default until bid-depth sourcing and broker-specific fills are verified.
-        double limit = ceilToTick(position.getSymbol(), Math.max(breakEven, ltp));
-        if (limit < breakEven || limit <= 0) {
-            alert(position, "EXIT_LIMIT_ROUNDING_BLOCKED",
-                    "Cannot round the exit limit to a valid tick without crossing net break-even.");
-            return;
-        }
+        // LTP is therefore only a quote proxy. Live enablement is OFF by default until
+        // bid-depth sourcing and broker-specific fills are independently verified.
+        double limit = desiredLimit;
         String orderId = brokerOrderRouter.placeLimitSell(position, position.getSymbol(),
                 limit, position.getTotalQuantity(), false, position.getStrategy());
         if (orderId == null) {
