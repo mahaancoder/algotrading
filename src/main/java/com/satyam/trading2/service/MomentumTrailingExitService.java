@@ -94,7 +94,7 @@ public class MomentumTrailingExitService {
         }
     }
 
-    @Scheduled(fixedDelayString = "${momentum.trailing.poll-ms:500}")
+    @Scheduled(fixedDelayString = "${momentum.trailing.poll-ms:1000}")
     public void manageMomentumPositions() {
         if (!enabled) return;
         LocalTime now = LocalTime.now(ZONE);
