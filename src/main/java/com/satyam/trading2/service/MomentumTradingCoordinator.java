@@ -39,6 +39,9 @@ public class MomentumTradingCoordinator {
     @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
     private boolean momentumTrailingLiveEnabled;
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
+    private boolean momentumTrailingEnabled;
+
     private final StockSelectionService selection;
     private final MomentumTradingStateService state;
     private final OrderExecutionService execution;
@@ -119,7 +122,7 @@ public class MomentumTradingCoordinator {
             DayOfWeek day = LocalDate.now(ZONE).getDayOfWeek();
             if (day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY
                     || now.isBefore(LocalTime.of(9, 15))
-                    || !now.isBefore(momentumTrailingLiveEnabled ? parseMomentumEntryCutoff() : LocalTime.of(15, 0))) {
+                    || !now.isBefore((momentumTrailingLiveEnabled && momentumTrailingEnabled) ? parseMomentumEntryCutoff() : LocalTime.of(15, 0))) {
                 return result("OUTSIDE_BUY_WINDOW", 0, 0);
             }
 
