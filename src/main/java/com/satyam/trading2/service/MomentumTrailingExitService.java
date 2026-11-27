@@ -285,8 +285,9 @@ public class MomentumTrailingExitService {
             return;
         }
 
-        if (state.isEodExitRequested() && liveEnabled
-                && !areMomentumBuysDrained(position)) {
+        if (liveEnabled && !areMomentumBuysDrained(position)) {
+            alert(position, "WAITING_FOR_BUY_DRAIN",
+                    "At least one momentum BUY for this broker/symbol is still live or has unreconciled fills. Protective/EOD SELL placement is blocked until the final BUY quantity is confirmed.");
             return; // Never SELL against an unresolved or still-live BUY.
         }
 
