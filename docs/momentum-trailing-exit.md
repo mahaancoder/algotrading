@@ -26,6 +26,7 @@ momentum.trailing.eod-cutoff=15:00
 momentum.trailing.mis-squareoff-deadline=15:20
 momentum.trailing.poll-ms=1000
 momentum.trailing.action-interval-ms=1000
+momentum.trailing.buy-cancel-retry-ms=5000
 momentum.trailing.alert-repeat-ms=60000
 momentum.trailing.ltp-stale-ms=5000
 ```
