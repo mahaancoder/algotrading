@@ -92,7 +92,7 @@ public class MomentumTrailingExitService {
                 stateRepository.restoreBuyOrderIds(position, LocalDate.now(ZONE).toString());
             }
             if (!MomentumTrailingPolicy.isManagedPosition(position, pendingOrderRepository)) continue;
-            MomentumTrailingState state = stateRepository.getOrCreate(position, LocalDate.now(ZONE).toString());
+            MomentumTrailingState state = getOrCreateState(position, LocalDate.now(ZONE).toString());
             synchronized (state) {
                 if (!LocalDate.now(ZONE).toString().equals(state.getTradingDate()) || state.isFeedGapObserved()) continue;
                 // The desired trigger may be ahead of the broker order while a
@@ -152,7 +152,7 @@ public class MomentumTrailingExitService {
         long tickAt = LatestPriceHelper.getLastPriceUpdateTime(position.getSymbol());
         String today = LocalDate.now(ZONE).toString();
         if (ltp <= 0 || tickAt <= 0 || System.currentTimeMillis() - tickAt > ltpStaleMillis) {
-            MomentumTrailingState staleState = stateRepository.getOrCreate(position, today);
+            MomentumTrailingState staleState = getOrCreateState(position, today);
             if (staleState.isActivated() || staleState.getExitOrderId() != null || staleState.isEodExitRequested()) {
                 staleState.setFeedGapObserved(true);
                 stateRepository.save(staleState);
@@ -164,7 +164,7 @@ public class MomentumTrailingExitService {
             return;
         }
 
-        MomentumTrailingState state = stateRepository.getOrCreate(position, today);
+        MomentumTrailingState state = getOrCreateState(position, today);
         if (!today.equals(state.getTradingDate())) {
             alert(position, "TRAILING_STATE_DATE_MISMATCH",
                     "Persisted trailing state belongs to another trading date. No automated order changes were made.");
@@ -778,10 +778,16 @@ public class MomentumTrailingExitService {
         try { return LocalTime.parse(text); } catch (Exception e) { return fallback; }
     }
 
+    private MomentumTrailingState getOrCreateState(Position position, String tradingDate) {
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            return stateRepository.getOrCreate(position, tradingDate);
+        }
+    }
+
     private void alert(Position position, String code, String message) {
         // Alert throttling is per position. Critical unresolved states remain visible
         // in logs even when Telegram is disabled.
-        MomentumTrailingState state = stateRepository.getOrCreate(position, LocalDate.now(ZONE).toString());
+        MomentumTrailingState state = getOrCreateState(position, LocalDate.now(ZONE).toString());
         long now = System.currentTimeMillis();
         if (now - state.getLastAlertAt() < alertRepeatMillis) {
             log.debug("[MomentumTrailing][{}] {} {}: {}", code, position.getSymbol(), position.getStrategy(), message);
