@@ -132,6 +132,11 @@ public class MomentumTrailingExitService {
                     "Persisted trailing state belongs to another trading date. No automated order changes were made.");
             return;
         }
+        if (!state.isActivated() && (state.getExitOrderId() != null || position.getStopLossOrderId() != null)) {
+            alert(position, "TRAILING_STATE_MISSING_FOR_EXISTING_ORDER",
+                    "A protective SELL exists but its persisted activation/high-water state is missing. Manual reconciliation required.");
+            return;
+        }
 
         // Keep the state monitor only around in-memory/tiny persistence updates.
         // Never hold it while a broker cancel/reconciliation call is waiting.
@@ -263,6 +268,30 @@ public class MomentumTrailingExitService {
             placeStop(position, state, breakEven);
             return;
         }
+        ensurePendingOrderRecord(position, state);
+        PendingOrder working = pendingOrderRepository.findByBrokerAndBrokerOrderId(
+                brokerOrderRouter.brokerOf(position), state.getExitOrderId()).orElse(null);
+        if (working == null) {
+            alert(position, "PROTECTIVE_ORDER_LEDGER_MISSING",
+                    "Cannot find the local pending-order record for protective SELL " + state.getExitOrderId());
+            return;
+        }
+        if (working.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE) {
+            alert(position, "PROTECTIVE_ORDER_COMPLETE_UNRECONCILED",
+                    "Broker reports protective SELL complete but position is still open locally. Waiting for reconciliation.");
+            return;
+        }
+        if (working.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
+                || working.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED) {
+            if (!brokerOrderRouter.cancelAndConfirmSellForReplacement(position, state.getExitOrderId(), 3000L)) {
+                alert(position, "PROTECTIVE_ORDER_TERMINAL_UNRECONCILED",
+                        "Protective SELL is terminal but its fills/cancellation are not reconciled. Replacement blocked.");
+                return;
+            }
+            clearCurrentExitOrder(position, state);
+            placeStop(position, state, breakEven);
+            return;
+        }
         if (state.getWorkingTriggerPrice() > 0
                 && state.getDesiredTriggerPrice() > state.getWorkingTriggerPrice() + tickSize(position.getSymbol()) / 2.0) {
             if (!brokerOrderRouter.cancelAndConfirmSellForReplacement(
@@ -364,6 +393,24 @@ public class MomentumTrailingExitService {
                 || state.isExitOrderIsStopLoss()
                 || (state.getWorkingLimitPrice() > 0
                     && desiredLimit < state.getWorkingLimitPrice() - Math.max(tick / 2.0, 0.000001));
+        if (state.getExitOrderId() != null) {
+            PendingOrder working = pendingOrderRepository.findByBrokerAndBrokerOrderId(
+                    brokerOrderRouter.brokerOf(position), state.getExitOrderId()).orElse(null);
+            if (working == null) {
+                alert(position, "EXIT_ORDER_LEDGER_MISSING",
+                        "Cannot find local pending-order record for exit SELL " + state.getExitOrderId());
+                return;
+            }
+            if (working.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE) {
+                alert(position, "EXIT_ORDER_COMPLETE_UNRECONCILED",
+                        "Broker reports exit SELL complete but the position is still open locally. Waiting for reconciliation.");
+                return;
+            }
+            if (working.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
+                    || working.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED) {
+                needsReplacement = true;
+            }
+        }
         if (!needsReplacement) return;
 
         if (state.getExitOrderId() != null) {
