@@ -97,6 +97,11 @@ public final class MomentumTrailingPolicy {
         if (limit >= trigger) limit = trigger - tick;
         if (limit + 1.0e-9 < breakEven) return false;
 
+        return isStateStoreWritable(environment);
+    }
+
+    public static boolean isStateStoreWritable(Environment environment) {
+        if (environment == null) return false;
         String stateFile = environment.getProperty("momentum.trailing.state-file",
                 "/home/ec2-user/momentum_trailing_state.json");
         try {
