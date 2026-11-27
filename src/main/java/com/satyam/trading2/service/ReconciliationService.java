@@ -40,6 +40,11 @@ public class ReconciliationService {
     private final Map<String, Integer> consecutiveMissingSnapshots = new ConcurrentHashMap<>();
     private static final int MISSING_SNAPSHOTS_BEFORE_REMOVAL = 2;
 
+    // A manually submitted Kite MARKET SELL means the operator is actively
+    // managing exits. Do not recreate automated target SELLs later in the same
+    // session after the manual reconciliation has updated inventory.
+    private volatile boolean manualKiteMarketSellObserved;
+
     // ─────────────────────────────────────────────────────────────────────
     // Kite is the ONLY positions/holdings source (getPositions()/getHoldings()
     // hit the Kite API). Reconciliation must therefore only touch KITE positions
@@ -73,6 +78,15 @@ public class ReconciliationService {
             // Step 1: Sync broker positions with our PositionManager
             if (!syncBrokerPositions(false)) {
                 log.warn("[Reconciliation] Skipping target-order reconciliation because the broker position snapshot was not safely applied.");
+                return;
+            }
+
+            // Manual MARKET SELLs are an explicit operator exit workflow.
+            // Position quantities and terminal target references are reconciled
+            // above, but automatically recreating target SELLs would fight the
+            // operator's cancel-and-market-exit sequence.
+            if (manualKiteMarketSellObserved) {
+                log.warn("[Reconciliation] Manual Kite MARKET SELL activity detected; broker positions reconciled, automated target recreation paused for this session.");
                 return;
             }
 
@@ -117,6 +131,15 @@ public class ReconciliationService {
                 log.error("[Reconciliation] Kite order-book snapshot unavailable; retaining local order references and skipping automation.");
                 return false;
             }
+            manualKiteMarketSellObserved = orderSnapshot.stream()
+                    .filter(java.util.Objects::nonNull)
+                    .filter(o -> o.getOrderId() != null)
+                    .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
+                    .filter(o -> "MARKET".equalsIgnoreCase(o.getOrderType()))
+                    .filter(o -> "MIS".equalsIgnoreCase(o.getProduct())
+                            || "CNC".equalsIgnoreCase(o.getProduct()))
+                    .anyMatch(o -> !pendingOrderRepository
+                            .findByBrokerAndBrokerOrderId("KITE", o.getOrderId()).isPresent());
 
             List<Position> allBrokerPositions = new ArrayList<>();
             allBrokerPositions.addAll(brokerPositions.stream()
