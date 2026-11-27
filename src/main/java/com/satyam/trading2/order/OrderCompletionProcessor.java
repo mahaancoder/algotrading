@@ -238,7 +238,9 @@ public class OrderCompletionProcessor {
 //      4. TARGET ORDER MANAGEMENT
             boolean isHolding = position.getPositionType() == Position.PositionType.HOLDING;
 
-            if (momentumTrailingLiveEnabled && momentumTrailingEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) {
+            if (momentumTrailingLiveEnabled && momentumTrailingEnabled
+                    && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())
+                    && brokerOrderRouter.supportsSellStopLossLimit(position)) {
                 // Momentum positions use a broker-native trailing SL-LIMIT managed by
                 // MomentumTrailingExitService. Do not create the fixed target SELL.
                 // Any legacy target is retained unless its zero-fill cancellation is
