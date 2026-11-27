@@ -11,7 +11,7 @@ This policy applies only to `Dip-Accumulator-Momentum`. Other strategies retain 
 - The stop only moves upward. Once triggered, trailing stops moving.
 - Partial SELL fills are applied by the existing broker event/reconciliation lifecycle. A replacement is permitted only after the old order is terminal and its cumulative fills have been applied to the local position.
 - Repricing floor: estimated net break-even. If LTP is below the floor, do not lower the SELL limit; retain the unresolved position and alert.
-- EOD: entry cutoff defaults to 14:55 IST; EOD exit management starts at 15:00 IST. Momentum positions are excluded from the legacy MIS-to-holding conversion scheduler.
+- EOD: entry cutoff defaults to 14:55 IST; EOD exit management starts at 15:00 IST. Pending momentum intraday BUYs are cancelled first; no SELL is submitted until they are terminal and any fills are reconciled. Eligible momentum positions are excluded from the legacy MIS-to-holding conversion scheduler.
 - An unresolved below-break-even position raises an alert before the configured MIS square-off deadline. No automatic delivery conversion or loss-making override is performed.
 
 ## Configuration
