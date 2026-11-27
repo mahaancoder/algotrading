@@ -439,7 +439,9 @@ public class BrokerOrderRouter {
         PendingOrder pending = pendingOrderRepository
                 .findByBrokerAndBrokerOrderId(brokerName, orderId).orElse(null);
         if (pending == null) return false;
-        if (filled == 0) return retirePendingSell(position, orderId);
+        if (filled == 0) {
+            return status != BrokerOrderStatus.COMPLETE && retirePendingSell(position, orderId);
+        }
         if (!pending.isCompletionProcessed() || pending.getFilledQty() != filled) {
             System.err.println("[BrokerOrderRouter] SELL " + orderId
                     + " has fills not yet reconciled into position accounting; replacement blocked.");
