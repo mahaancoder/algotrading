@@ -150,8 +150,6 @@ public class MomentumTrailingExitService {
 
         // Tracking can be enabled independently, but broker order placement requires
         // a second explicit opt-in so a deploy cannot silently activate live trading.
-        if (!liveEnabled) return;
-
         double breakEven = netBreakEven(position);
         if (breakEven <= 0) {
             alert(position, "BREAK_EVEN_NOT_CONFIGURED",
@@ -171,6 +169,14 @@ public class MomentumTrailingExitService {
                         "Position remains below net break-even and broker MIS square-off deadline is approaching at "
                                 + deadline + ". Manual intervention is required; the broker may force-square-off.");
             }
+        }
+
+        if (!liveEnabled) {
+            if (state.isEodExitRequested()) {
+                alert(position, "EOD_EXIT_NOT_SENT_LIVE_DISABLED",
+                        "Trailing tracking is enabled but live order placement is disabled. Manual EOD action is required.");
+            }
+            return;
         }
 
         if (state.isEodExitRequested()) {
