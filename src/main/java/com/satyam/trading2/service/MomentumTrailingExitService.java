@@ -134,6 +134,12 @@ public class MomentumTrailingExitService {
             return;
         }
 
+        if (liveEnabled && !brokerOrderRouter.supportsSellStopLossLimit(position)) {
+            alert(position, "BROKER_SL_LIMIT_UNSUPPORTED",
+                    "This broker adapter does not support a verified SELL SL-LIMIT. Legacy fixed-target/EOD management remains active.");
+            return;
+        }
+
         // Keep the state monitor only around in-memory/tiny persistence updates.
         // Never hold it while a broker cancel/reconciliation call is waiting.
         synchronized (state) {
