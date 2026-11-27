@@ -351,6 +351,13 @@ public class MomentumTrailingExitService {
         }
 
         if (state.isEodExitRequested()) {
+            // EOD takes ownership even when trailing never activated. Retire any
+            // legacy fixed/secondary targets before creating the EOD exit order.
+            if (state.getExitOrderId() == null
+                    && (position.getTargetOrderId() != null || position.getSecondaryTargetOrderId() != null)
+                    && !retireLegacyTargets(position)) {
+                return;
+            }
             manageExitOrder(position, state, ltp, breakEven, false);
             return;
         }
@@ -605,14 +612,14 @@ public class MomentumTrailingExitService {
     private boolean retireLegacyTargets(Position position) {
         String target = position.getTargetOrderId();
         String secondary = position.getSecondaryTargetOrderId();
-        if (target != null && !brokerOrderRouter.cancelAndConfirmSell(position, target, 3000L)) {
+        if (target != null && !brokerOrderRouter.cancelAndConfirmSellForReplacement(position, target, 3000L)) {
             alert(position, "LEGACY_TARGET_UNRESOLVED",
-                    "Legacy fixed target SELL " + target + " is not confirmed cancelled with zero fills.");
+                    "Legacy fixed target SELL " + target + " is not terminal with all cumulative fills reconciled.");
             return false;
         }
-        if (secondary != null && !brokerOrderRouter.cancelAndConfirmSell(position, secondary, 3000L)) {
+        if (secondary != null && !brokerOrderRouter.cancelAndConfirmSellForReplacement(position, secondary, 3000L)) {
             alert(position, "LEGACY_SECONDARY_SELL_UNRESOLVED",
-                    "Legacy secondary SELL " + secondary + " is not confirmed cancelled with zero fills.");
+                    "Legacy secondary SELL " + secondary + " is not terminal with all cumulative fills reconciled.");
             return false;
         }
         if (target != null) position.setTargetOrderId(null);
