@@ -116,7 +116,9 @@ public class HourlyTargetUpdateScheduler {
             }
             List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.getPositionType() == INTRADAY)
-                    .filter(p -> !(momentumTrailingLiveEnabled && momentumTrailingEnabled) || !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
+                    .filter(p -> !((momentumTrailingLiveEnabled && momentumTrailingEnabled)
+                            && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy())
+                            && brokerOrderRouter.supportsSellStopLossLimit(p)))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
