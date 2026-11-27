@@ -634,8 +634,11 @@ public class IndstocksBroker extends AbstractRestBroker {
             for (JsonNode row : rows) {
                 String symbol = textOr(row, "symbol", null);
                 int sellableQty = intOr(row, "total_qty", 0) - intOr(row, "used_qty", 0);
-                upsertPosition(symbol, sellableQty, doubleOr(row, "avg_price", 0),
-                        Position.PositionType.HOLDING);
+                if (!upsertPosition(symbol, sellableQty, doubleOr(row, "avg_price", 0),
+                        Position.PositionType.HOLDING)) {
+                    log.error("[IndstocksBroker] Morning holdings refresh could not apply row for {}", symbol);
+                    return false;
+                }
             }
             log.info("[IndstocksBroker] Morning holdings refresh successful: {} rows", rows.size());
             return true;
@@ -839,8 +842,8 @@ public class IndstocksBroker extends AbstractRestBroker {
      * removes the tracked row; otherwise the qty/avg is updated in place or a new
      * row is added. Wrapped by callers so one malformed entry can't abort the sync.
      */
-    private void upsertPosition(String symbol, int qty, double avg, Position.PositionType type) {
-        if (symbol == null || symbol.isEmpty()) return;
+    private boolean upsertPosition(String symbol, int qty, double avg, Position.PositionType type) {
+        if (symbol == null || symbol.isEmpty()) return false;
         try {
             Position existing = findIndstocksPosition(symbol, type);
 
@@ -850,7 +853,7 @@ public class IndstocksBroker extends AbstractRestBroker {
                     log.info("[IndstocksBroker] Reconcile: removed flat INDSTOCKS position {} ({})",
                             symbol, existing.getStrategy());
                 }
-                return;
+                return true;
             }
 
             if (existing != null) {
@@ -866,8 +869,10 @@ public class IndstocksBroker extends AbstractRestBroker {
                 log.info("[IndstocksBroker] Reconcile: added INDSTOCKS {} {} qty={} avg={}",
                         type, symbol, qty, avg);
             }
+            return true;
         } catch (Exception e) {
             log.warn("[IndstocksBroker] Failed to sync portfolio row {}: {}", symbol, e.getMessage());
+            return false;
         }
     }
 
