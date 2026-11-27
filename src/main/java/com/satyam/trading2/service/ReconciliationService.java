@@ -25,6 +25,9 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class ReconciliationService {
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
+    private boolean momentumTrailingLiveEnabled;
+
     private final OrderServiceV2 orderServiceV2;
     private final PendingOrderRepository pendingOrderRepository;
     private final BrokerOrderRouter brokerOrderRouter;
@@ -265,7 +268,7 @@ public class ReconciliationService {
                 .filter(ReconciliationService::isKite)
                 // Momentum SELL SL-LIMITs are reconciled through stopLossOrderId;
                 // never adopt or replace them as fixed target orders.
-                .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
+                .filter(p -> !momentumTrailingLiveEnabled || !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
                 .filter(p -> !p.isExitProcessed())
                 .collect(Collectors.toList());
 
