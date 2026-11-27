@@ -462,16 +462,17 @@ public class OrderCompletionProcessor {
             String symbol = pendingOrder.getSymbol();
             String strategy = pendingOrder.getStrategy();
 
-            // ===== Find position by primary OR secondary target order ID =====
-            Position position = positionManager.findByTargetOrderId(sellOrderId);
+            // Resolve every SELL against the owning broker. Broker order IDs may
+            // collide across accounts, so cross-broker first-match lookup is unsafe.
+            String orderBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
+            Position position = positionManager.findByBrokerAndTargetOrderId(orderBroker, sellOrderId);
             boolean isSecondarySell = false;
             boolean isStopLossSell = false;
             if (position == null) {
-                position = positionManager.findBySecondaryTargetOrderId(sellOrderId);
+                position = positionManager.findByBrokerAndSecondaryTargetOrderId(orderBroker, sellOrderId);
                 isSecondarySell = (position != null);
             }
             if (position == null) {
-                String orderBroker = pendingOrder.getBroker() != null ? pendingOrder.getBroker() : "KITE";
                 position = positionManager.findByBrokerAndStopLossOrderId(orderBroker, sellOrderId);
                 isStopLossSell = (position != null);
             }
