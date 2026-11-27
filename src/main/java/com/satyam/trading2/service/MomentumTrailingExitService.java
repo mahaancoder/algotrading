@@ -211,6 +211,16 @@ public class MomentumTrailingExitService {
             } else {
                 alert(position, "STALE_OR_MISSING_LTP", "Fresh LTP is unavailable; trailing activation is paused.");
             }
+            if (state.isEodExitRequested()) {
+                LocalTime deadline = parseTime(environment.getProperty(
+                        "momentum.trailing.mis-squareoff-deadline." + brokerOf(position), defaultMisSquareoffDeadline),
+                        LocalTime.of(15, 20));
+                if (!now.isBefore(deadline.minusMinutes(5))) {
+                    alert(position, "MIS_SQUAREOFF_DEADLINE_APPROACHING",
+                            "EOD position remains unresolved and market data is stale as the broker MIS square-off deadline approaches at "
+                                    + deadline + ". Manual intervention is required; the broker may force-square-off.");
+                }
+            }
             return;
         }
         if (state.getExitOrderId() != null) {
@@ -869,10 +879,9 @@ public class MomentumTrailingExitService {
         alertFallbackAt.put(alertKey, now);
         try {
             MomentumTrailingState state = getOrCreateState(position, LocalDate.now(ZONE).toString());
-            if (now - state.getLastAlertAt() < alertRepeatMillis) {
-                log.debug("[MomentumTrailing][{}] {} {}: {}", code, position.getSymbol(), position.getStrategy(), message);
-                return;
-            }
+            // Throttle by alert code above, not with one timestamp for the entire
+            // position. A stale-feed warning must not suppress a distinct critical
+            // MIS square-off deadline alert in the same minute.
             state.setLastAlertAt(now);
             stateRepository.save(state);
         } catch (Exception persistenceFailure) {
