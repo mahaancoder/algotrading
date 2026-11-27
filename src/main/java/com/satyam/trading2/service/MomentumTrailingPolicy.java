@@ -62,6 +62,30 @@ public final class MomentumTrailingPolicy {
      * configuration, instrument tick size, BUY attribution or broker SL-LIMIT
      * capability is missing, callers must retain the legacy fixed-target path.
      */
+    public static boolean hasUnresolvedMomentumBuy(Position position, PendingOrderRepository orders) {
+        if (position == null || orders == null || position.getSymbol() == null
+                || !isManagedStrategy(position.getStrategy())) return false;
+        String broker = position.getBroker() != null ? position.getBroker().trim().toUpperCase(Locale.ROOT)
+                : position.getExecutionRoute() != null ? position.getExecutionRoute().name() : "KITE";
+        for (PendingOrder buy : orders.findAll()) {
+            if (buy == null || buy.getSide() != TradeSide.BUY
+                    || !isManagedStrategy(buy.getStrategy())
+                    || buy.getSymbol() == null || !position.getSymbol().equalsIgnoreCase(buy.getSymbol())
+                    || (buy.getPositionType() != null && buy.getPositionType() != Position.PositionType.INTRADAY)) {
+                continue;
+            }
+            String pendingBroker = buy.getBroker() != null
+                    ? buy.getBroker().trim().toUpperCase(Locale.ROOT)
+                    : buy.getExecutionRoute() != null ? buy.getExecutionRoute().name() : "KITE";
+            if (!broker.equals(pendingBroker)) continue;
+            boolean terminal = buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE
+                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
+                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED;
+            if (!terminal || (buy.getFilledQty() > 0 && !buy.isCompletionProcessed())) return true;
+        }
+        return false;
+    }
+
     public static boolean isLivePolicyReady(Position position, PendingOrderRepository orders,
                                             Environment environment, boolean brokerSupportsStopLimit) {
         if (position == null || environment == null || !brokerSupportsStopLimit
