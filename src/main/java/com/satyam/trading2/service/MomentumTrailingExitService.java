@@ -145,7 +145,9 @@ public class MomentumTrailingExitService {
                 state.setPhase("EOD_EXIT");
                 stateRepository.save(state);
                 alert(position, "EOD_EXIT_STARTED",
-                        "New entries must stop. Momentum position is being managed for EOD exit; no holding conversion is permitted.");
+                        liveEnabled
+                                ? "New entries must stop. Momentum position is being managed for EOD exit; no holding conversion is permitted."
+                                : "Shadow tracking reached EOD. No trailing order was sent; legacy exit management remains active.");
             }
         }
 
@@ -177,7 +179,7 @@ public class MomentumTrailingExitService {
         if (!liveEnabled) {
             if (state.isEodExitRequested()) {
                 alert(position, "EOD_EXIT_NOT_SENT_LIVE_DISABLED",
-                        "Trailing tracking is enabled but live order placement is disabled. Manual EOD action is required.");
+                        "Shadow mode only: no trailing order was sent. Legacy fixed-target/EOD management remains responsible for this position.");
             }
             return;
         }
