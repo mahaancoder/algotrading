@@ -609,6 +609,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
 
             for (Position pos : positionManager.getAllIntradayPositions()) {
                 if (pos == null || !"SHOONYA".equals(pos.getBroker())) continue;
+                if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(pos.getStrategy())) continue;
                 if (pos.getTotalQuantity() <= 0) continue;
                 if (symbolsWithOpenSell.contains(pos.getSymbol())) {
                     continue; // already has a resting target sell — nothing to recover
