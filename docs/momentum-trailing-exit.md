@@ -29,6 +29,7 @@ momentum.trailing.action-interval-ms=1000
 momentum.trailing.buy-cancel-retry-ms=5000
 momentum.trailing.alert-repeat-ms=60000
 momentum.trailing.ltp-stale-ms=5000
+momentum.trailing.state-file=/home/ec2-user/momentum_trailing_state.json
 ```
 
 To collect trailing state without placing broker orders, set `momentum.trailing.enabled=true` and keep `momentum.trailing.live-enabled=false`. In this shadow mode, existing fixed-target and legacy EOD handling remain active; the new service only records the trailing state.
