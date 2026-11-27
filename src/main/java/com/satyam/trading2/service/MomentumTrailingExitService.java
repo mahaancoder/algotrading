@@ -72,6 +72,9 @@ public class MomentumTrailingExitService {
     @Value("${momentum.trailing.ltp-stale-ms:5000}")
     private long ltpStaleMillis;
 
+    @Value("${momentum.trailing.mis-squareoff-deadline:15:20}")
+    private String defaultMisSquareoffDeadline;
+
     /**
      * Called from the market-data tick path. This method only updates durable
      * strategy state; broker REST operations are performed by the scheduled worker.
@@ -156,6 +159,17 @@ public class MomentumTrailingExitService {
         }
         state.setEstimatedNetBreakEvenPrice(breakEven);
         stateRepository.save(state);
+
+        if (state.isEodExitRequested() && ltp < breakEven) {
+            LocalTime deadline = parseTime(environment.getProperty(
+                    "momentum.trailing.mis-squareoff-deadline." + brokerOf(position), defaultMisSquareoffDeadline),
+                    LocalTime.of(15, 20));
+            if (!now.isBefore(deadline.minusMinutes(5))) {
+                alert(position, "MIS_SQUAREOFF_DEADLINE_APPROACHING",
+                        "Position remains below net break-even and broker MIS square-off deadline is approaching at "
+                                + deadline + ". Manual intervention is required; the broker may force-square-off.");
+            }
+        }
 
         if (state.isEodExitRequested()) {
             manageExitOrder(position, state, ltp, breakEven, false);
@@ -309,6 +323,14 @@ public class MomentumTrailingExitService {
 
     private void manageExitOrder(Position position, MomentumTrailingState state,
                                  double ltp, double breakEven, boolean trailingTriggered) {
+        if (state.getExitOrderId() == null && position.getStopLossOrderId() != null) {
+            state.setExitOrderId(position.getStopLossOrderId());
+            state.setExitOrderIsStopLoss(state.getWorkingTriggerPrice() > 0);
+            stateRepository.save(state);
+        }
+        if (state.getExitOrderId() != null) {
+            ensurePendingOrderRecord(position, state);
+        }
         if (ltp + 1.0e-9 < breakEven) {
             state.setPhase("EXIT_BLOCKED");
             stateRepository.save(state);
@@ -384,6 +406,16 @@ public class MomentumTrailingExitService {
         state.setWorkingLimitPrice(0);
         state.setLastOrderActionAt(System.currentTimeMillis());
         stateRepository.save(state);
+    }
+
+    private void ensurePendingOrderRecord(Position position, MomentumTrailingState state) {
+        String orderId = state.getExitOrderId();
+        if (orderId == null) return;
+        String broker = brokerOrderRouter.brokerOf(position);
+        if (pendingOrderRepository.findByBrokerAndBrokerOrderId(broker, orderId).isPresent()) return;
+        double requestedPrice = state.getWorkingLimitPrice() > 0
+                ? state.getWorkingLimitPrice() : state.getDesiredLimitPrice();
+        persistPendingOrder(position, orderId, requestedPrice);
     }
 
     private void persistPendingOrder(Position position, String orderId, double requestedPrice) {
