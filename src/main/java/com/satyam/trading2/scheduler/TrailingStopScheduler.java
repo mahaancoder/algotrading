@@ -98,7 +98,9 @@ public class TrailingStopScheduler {
                     .filter(p -> p.getPositionType() == INTRADAY)
                     // Momentum has its own SL-LIMIT trailing lifecycle; never let the
                     // legacy target-price scheduler replace that protective order.
-                    .filter(p -> !(momentumTrailingLiveEnabled && momentumTrailingEnabled) || !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
+                    .filter(p -> !((momentumTrailingLiveEnabled && momentumTrailingEnabled)
+                            && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy())
+                            && brokerOrderRouter.supportsSellStopLossLimit(p)))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
