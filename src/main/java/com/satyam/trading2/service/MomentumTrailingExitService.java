@@ -209,10 +209,18 @@ public class MomentumTrailingExitService {
             alert(position, "INVALID_POSITION_BASIS", "Average BUY price or remaining quantity is invalid.");
             return;
         }
+        boolean quantityChanged = state.getTrackedQuantity() != position.getTotalQuantity();
         if (Double.compare(state.getAverageBuyPrice(), position.getAveragePrice()) != 0
-                || state.getTrackedQuantity() != position.getTotalQuantity()) {
+                || quantityChanged) {
             state.setAverageBuyPrice(position.getAveragePrice());
             state.setTrackedQuantity(position.getTotalQuantity());
+            state.setActivationPrice(position.getAveragePrice() * (1.0 + ACTIVATION_PERCENT / 100.0));
+            // An accumulation changes both the average cost and the quantity covered
+            // by the broker stop. Force a cancel/reconcile/replace even if the stop
+            // trigger itself did not move; never leave newly bought shares uncovered.
+            if (quantityChanged && state.isActivated() && !state.isExitTriggered()) {
+                state.setOrderResizeRequired(true);
+            }
             // A higher blended cost basis may increase the required stop. Never lower
             // an already-established trigger after an accumulation or reconciliation.
             if (state.isActivated() && !state.isExitTriggered()) {
@@ -291,8 +299,9 @@ public class MomentumTrailingExitService {
             placeStop(position, state, breakEven);
             return;
         }
-        if (state.getWorkingTriggerPrice() > 0
-                && state.getDesiredTriggerPrice() > state.getWorkingTriggerPrice() + tickSize(position.getSymbol()) / 2.0) {
+        if (state.isOrderResizeRequired()
+                || (state.getWorkingTriggerPrice() > 0
+                    && state.getDesiredTriggerPrice() > state.getWorkingTriggerPrice() + tickSize(position.getSymbol()) / 2.0)) {
             if (!brokerOrderRouter.cancelAndConfirmSellForReplacement(
                     position, state.getExitOrderId(), 3000L)) {
                 alert(position, "TRAILING_STOP_REPLACE_BLOCKED",
@@ -349,6 +358,7 @@ public class MomentumTrailingExitService {
         state.setExitOrderIsStopLoss(true);
         state.setWorkingTriggerPrice(prices.trigger);
         state.setWorkingLimitPrice(prices.limit);
+        state.setOrderResizeRequired(false);
         state.setLastOrderActionAt(System.currentTimeMillis());
         state.setPhase("ACTIVE");
         stateRepository.save(state);
