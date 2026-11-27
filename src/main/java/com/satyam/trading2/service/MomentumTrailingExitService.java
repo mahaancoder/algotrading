@@ -429,6 +429,7 @@ public class MomentumTrailingExitService {
     }
 
     private boolean areMomentumBuysDrained(Position position) {
+        if (position == null || position.getSymbol() == null) return false;
         String broker = brokerOrderRouter.brokerOf(position);
         for (PendingOrder buy : pendingOrderRepository.findAll()) {
             if (buy == null || buy.getSide() != com.satyam.trading2.datamodel.TradeSide.BUY
