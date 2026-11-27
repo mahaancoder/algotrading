@@ -102,14 +102,6 @@ public class HoldingsTargetSetScheduler {
             // Update in position manager
             positionManager.addPosition(holding);
 
-            // Momentum positions use their own exit policy and must never receive
-            // a fixed holding target from the morning holdings scheduler.
-            if (momentumTrailingLiveEnabled && momentumTrailingEnabled
-                    && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedPosition(holding, pendingOrderRepository)
-                    && brokerOrderRouter.supportsSellStopLossLimit(holding)) {
-                continue;
-            }
-
             // Place target order with specified multiplier
             placeTargetForHolding(holding, targetMultiplier);
 
@@ -127,11 +119,6 @@ public class HoldingsTargetSetScheduler {
         refreshNonKiteHoldings();
 
         for (Position holding : positionManager.getAllHoldings()) {
-            if (momentumTrailingLiveEnabled && momentumTrailingEnabled
-                    && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedPosition(holding, pendingOrderRepository)
-                    && brokerOrderRouter.supportsSellStopLossLimit(holding)) {
-                continue; // Momentum exit policy never installs fixed holding targets.
-            }
             if (brokerOrderRouter.isKite(holding)) {
                 continue; // KITE holdings already handled from the broker API above
             }
