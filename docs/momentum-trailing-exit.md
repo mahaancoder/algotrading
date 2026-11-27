@@ -8,7 +8,7 @@ This policy applies only to broker-confirmed `Dip-Accumulator-Momentum` INTRADAY
 - Initial SELL SL-LIMIT trigger: +0.5%.
 - Initial SELL limit: 0.05% below the trigger, rounded to the instrument tick.
 - Trailing: for each additional +0.1% move from the activation price, raise the trigger by +0.1% of average BUY price.
-- The stop only moves upward. Once triggered, trailing stops moving. If the first observed LTP gaps several 0.1% steps beyond activation, all completed steps are applied immediately.
+- The stop only moves upward. Once triggered, trailing stops moving. If the first observed LTP gaps several 0.1% steps beyond activation, all completed steps are applied immediately. If the first observed LTP gaps several 0.1% steps beyond activation, all completed steps are applied immediately.
 - Partial SELL fills are applied by the existing broker event/reconciliation lifecycle. A replacement is permitted only after the old order is terminal and its cumulative fills have been applied to the local position.
 - Repricing floor: estimated net break-even. If LTP is below the floor, do not lower the SELL limit; retain the unresolved position and alert.
 - EOD: entry cutoff defaults to 14:55 IST; EOD exit management starts at 15:00 IST. Pending momentum intraday BUYs are cancelled first; no SELL is submitted until they are terminal and any fills are reconciled. Eligible momentum positions are excluded from the legacy MIS-to-holding conversion scheduler.
