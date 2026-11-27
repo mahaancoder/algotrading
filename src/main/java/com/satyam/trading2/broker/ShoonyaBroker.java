@@ -524,6 +524,55 @@ public class ShoonyaBroker extends AbstractRestBroker {
     // reconcileOrders — POST /PositionBook + /OrderBook
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Fetch only demat holdings for the 9:05 target pass. Validate the complete
+     * response before mutating PositionManager; malformed rows fail the snapshot.
+     */
+    @Override
+    public boolean refreshHoldingsForTargetScheduler() {
+        if (!shoonyaConfig.isAuthenticated()) {
+            log.warn("[ShoonyaBroker] Morning holdings refresh skipped — not authenticated");
+            return false;
+        }
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("uid", shoonyaConfig.getUserId());
+            payload.put("actid", shoonyaConfig.getActid());
+            payload.put("prd", "C");
+            String jData = objectMapper.writeValueAsString(payload);
+            JsonNode response = postForm(shoonyaConfig.getBaseUrl() + "Holdings",
+                    norenBody(jData), SLOW_REQUEST_TIMEOUT_MS);
+            if (response == null || !response.isArray()) {
+                log.error("[ShoonyaBroker] Morning holdings refresh failed: /Holdings response is not an array: {}",
+                        response);
+                return false;
+            }
+            for (JsonNode row : response) {
+                if ("Not_Ok".equalsIgnoreCase(textOr(row, "stat", "Ok"))) return false;
+                String tsym = nseTradingSymbol(row.get("exch_tsym"));
+                if (tsym == null) {
+                    log.error("[ShoonyaBroker] Morning holdings row has no NSE trading symbol: {}", row);
+                    return false;
+                }
+                String[] fields = {"holdqty", "dpqty", "npoadqty", "benqty",
+                        "unplgdqty", "brkcolqty", "btstqty", "usedqty"};
+                for (String field : fields) {
+                    if (strictInt(row, field) < 0) {
+                        log.error("[ShoonyaBroker] Morning holdings row {} has invalid field {}",
+                                tsym, field);
+                        return false;
+                    }
+                }
+            }
+            syncHoldingsIntoManager(response);
+            log.info("[ShoonyaBroker] Morning holdings refresh successful: {} rows", response.size());
+            return true;
+        } catch (Exception e) {
+            log.error("[ShoonyaBroker] Morning holdings refresh failed: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
     @Override
     public void reconcileOrders() {
         if (!shoonyaConfig.isAuthenticated()) {
