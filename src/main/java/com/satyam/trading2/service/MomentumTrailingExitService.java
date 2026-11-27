@@ -235,6 +235,7 @@ public class MomentumTrailingExitService {
         long now = System.currentTimeMillis();
         for (PendingOrder pending : pendingOrderRepository.findAll()) {
             if (pending == null || pending.getSide() != com.satyam.trading2.datamodel.TradeSide.BUY
+                    || pending.getPositionType() != Position.PositionType.INTRADAY
                     || !MomentumTrailingPolicy.isManagedStrategy(pending.getStrategy())) continue;
             String broker = pending.getBroker() != null ? pending.getBroker() : "KITE";
             String orderId = pending.getBrokerOrderId() != null ? pending.getBrokerOrderId() : pending.getOrderId();
@@ -270,6 +271,7 @@ public class MomentumTrailingExitService {
         String broker = brokerOrderRouter.brokerOf(position);
         for (PendingOrder buy : pendingOrderRepository.findAll()) {
             if (buy == null || buy.getSide() != com.satyam.trading2.datamodel.TradeSide.BUY
+                    || buy.getPositionType() != Position.PositionType.INTRADAY
                     || !MomentumTrailingPolicy.isManagedStrategy(buy.getStrategy())
                     || buy.getSymbol() == null || !position.getSymbol().equalsIgnoreCase(buy.getSymbol())
                     || !broker.equals(buy.getBroker() != null ? buy.getBroker() : "KITE")) continue;
