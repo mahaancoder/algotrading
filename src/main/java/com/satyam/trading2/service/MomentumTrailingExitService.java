@@ -516,7 +516,7 @@ public class MomentumTrailingExitService {
             placeStop(position, state, breakEven);
             return;
         }
-        if (state.isExitTriggered()) {
+        if (isExitTriggered(state)) {
             manageExitOrder(position, state, LatestPriceHelper.getLatestPrice(position.getSymbol()), breakEven, true);
             return;
         }
