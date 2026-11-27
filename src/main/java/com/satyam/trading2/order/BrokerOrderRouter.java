@@ -348,6 +348,24 @@ public class BrokerOrderRouter {
         }
     }
 
+    /**
+     * Request cancellation of a BUY order at its owning broker. EOD exit code must
+     * still wait for the order event/reconciliation path to make the terminal fill
+     * quantity durable before submitting any SELL.
+     */
+    public boolean requestBuyCancellation(PendingOrder pendingOrder) {
+        if (pendingOrder == null || pendingOrder.getSide() != TradeSide.BUY) return false;
+        String orderId = pendingOrder.getBrokerOrderId() != null
+                ? pendingOrder.getBrokerOrderId() : pendingOrder.getOrderId();
+        if (orderId == null) return false;
+        ExecutionRoute route = pendingOrder.getExecutionRoute() != null
+                ? pendingOrder.getExecutionRoute() : ExecutionRoute.KITE;
+        Broker broker = brokerRouter.getBroker(route);
+        if (broker == null) return false;
+        broker.cancelOrder(orderId);
+        return true;
+    }
+
     /** True only when the owning broker adapter explicitly supports SELL SL-LIMIT. */
     public boolean supportsSellStopLossLimit(Position position) {
         if (position == null) return false;
