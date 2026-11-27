@@ -22,7 +22,7 @@ public class MomentumTrailingStateRepository {
     private final Map<String, MomentumTrailingState> states = new ConcurrentHashMap<>();
     private final Object lock = new Object();
 
-    @Value("${momentum.trailing.state.file:/home/ec2-user/momentum_trailing_state.json}")
+    @Value("${momentum.trailing.state-file:${momentum.trailing.state.file:/home/ec2-user/momentum_trailing_state.json}}")
     private String filePath;
 
     @PostConstruct
