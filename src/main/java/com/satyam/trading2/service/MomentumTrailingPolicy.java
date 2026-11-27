@@ -34,7 +34,9 @@ public final class MomentumTrailingPolicy {
         }
         String broker = position.getBroker() != null ? position.getBroker().trim().toUpperCase(Locale.ROOT)
                 : position.getExecutionRoute() != null ? position.getExecutionRoute().name() : "KITE";
+        boolean foundBuy = false;
         for (String orderId : position.getBuyOrderIds()) {
+            if (orderId == null || orderId.trim().isEmpty()) return false;
             PendingOrder pending = orders.findByBrokerAndBrokerOrderId(broker, orderId).orElse(null);
             if (pending == null) {
                 pending = orders.findAll().stream()
@@ -46,15 +48,19 @@ public final class MomentumTrailingPolicy {
                                 : po.getExecutionRoute() != null ? po.getExecutionRoute().name() : "KITE"))
                         .findFirst().orElse(null);
             }
-            if (pending != null && pending.getSide() == TradeSide.BUY
-                    && isManagedStrategy(pending.getStrategy())
-                    && position.getSymbol() != null
-                    && position.getSymbol().equalsIgnoreCase(pending.getSymbol())
-                    && pending.isCompleted() && pending.getFilledQty() > 0) {
-                return true;
+            // Every recorded BUY must be attributable to this broker, symbol and
+            // momentum strategy, and its cumulative fill must be fully reconciled.
+            // One valid BUY is not enough if another recorded BUY ID is unknown.
+            if (pending == null || pending.getSide() != TradeSide.BUY
+                    || !isManagedStrategy(pending.getStrategy())
+                    || position.getSymbol() == null
+                    || !position.getSymbol().equalsIgnoreCase(pending.getSymbol())
+                    || !pending.isCompleted() || pending.getFilledQty() <= 0) {
+                return false;
             }
+            foundBuy = true;
         }
-        return false;
+        return foundBuy;
     }
 
     /**
