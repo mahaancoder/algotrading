@@ -574,6 +574,19 @@ public class ShoonyaBroker extends AbstractRestBroker {
                 }
             }
             if (!syncHoldingsIntoManager(response)) return false;
+            Set<String> snapshotSymbols = new HashSet<>();
+            for (JsonNode row : response) {
+                String tsym = nseTradingSymbol(row.get("exch_tsym"));
+                snapshotSymbols.add(fromShoonyaSymbol(tsym).trim().toUpperCase());
+            }
+            // Remove stale local holdings only after the entire broker snapshot
+            // has passed validation and was applied successfully.
+            for (Position tracked : positionManager.getAllHoldings()) {
+                if (tracked != null && "SHOONYA".equals(tracked.getBroker())
+                        && !snapshotSymbols.contains(tracked.getSymbol().trim().toUpperCase())) {
+                    positionManager.removePosition(tracked.getSymbol(), tracked.getStrategy(), "SHOONYA");
+                }
+            }
             log.info("[ShoonyaBroker] Morning holdings refresh successful: {} rows", response.size());
             return true;
         } catch (Exception e) {
