@@ -166,9 +166,15 @@ public class MomentumTrailingExitService {
         String today = LocalDate.now(ZONE).toString();
         if (ltp <= 0 || tickAt <= 0 || System.currentTimeMillis() - tickAt > ltpStaleMillis) {
             MomentumTrailingState staleState = getOrCreateState(position, today);
-            if (staleState.isActivated() || staleState.getExitOrderId() != null || staleState.isEodExitRequested()) {
-                staleState.setFeedGapObserved(true);
-                stateRepository.save(staleState);
+            boolean activeExit;
+            synchronized (staleState) {
+                activeExit = staleState.isActivated() || staleState.getExitOrderId() != null || staleState.isEodExitRequested();
+                if (activeExit) {
+                    staleState.setFeedGapObserved(true);
+                    stateRepository.save(staleState);
+                }
+            }
+            if (activeExit) {
                 alert(position, "TRAILING_FEED_GAP",
                         "Market-data gap observed while an exit was active. Trailing/order replacement is paused until broker order status is reconciled.");
             } else {
@@ -196,20 +202,28 @@ public class MomentumTrailingExitService {
                 }
             }
         }
-        if (state.isFeedGapObserved()) {
+        boolean feedGapObserved;
+        synchronized (state) {
+            feedGapObserved = state.isFeedGapObserved();
+        }
+        if (feedGapObserved) {
             if (state.getExitOrderId() != null && state.isExitOrderIsStopLoss()) {
                 com.satyam.trading2.broker.model.BrokerOrderStatus brokerStatus =
                         brokerOrderRouter.getOrderStatus(position, state.getExitOrderId());
                 if (brokerStatus == com.satyam.trading2.broker.model.BrokerOrderStatus.TRIGGER_PENDING) {
-                    state.setFeedGapObserved(false);
-                    stateRepository.save(state);
+                    synchronized (state) {
+                        state.setFeedGapObserved(false);
+                        stateRepository.save(state);
+                    }
                 } else if (brokerStatus == com.satyam.trading2.broker.model.BrokerOrderStatus.OPEN
                         || brokerStatus == com.satyam.trading2.broker.model.BrokerOrderStatus.PARTIALLY_FILLED
                         || brokerStatus == com.satyam.trading2.broker.model.BrokerOrderStatus.COMPLETE) {
-                    state.setExitTriggered(true);
-                    state.setPhase("EXIT_TRIGGERED");
-                    state.setFeedGapObserved(false);
-                    stateRepository.save(state);
+                    synchronized (state) {
+                        state.setExitTriggered(true);
+                        state.setPhase("EXIT_TRIGGERED");
+                        state.setFeedGapObserved(false);
+                        stateRepository.save(state);
+                    }
                 } else {
                     alert(position, "TRAILING_FEED_GAP_ORDER_UNRESOLVED",
                             "Could not prove whether the protective SELL triggered during the market-data gap. Manual reconciliation required; no replacement was submitted.");
@@ -218,13 +232,17 @@ public class MomentumTrailingExitService {
             } else if (state.isActivated() && state.getExitOrderId() == null) {
                 // There was no broker stop to inspect during the gap. Conservatively
                 // treat the stop as crossed rather than resume trailing after a missed dip.
-                state.setExitTriggered(true);
-                state.setPhase("EXIT_TRIGGERED");
-                state.setFeedGapObserved(false);
-                stateRepository.save(state);
+                synchronized (state) {
+                    state.setExitTriggered(true);
+                    state.setPhase("EXIT_TRIGGERED");
+                    state.setFeedGapObserved(false);
+                    stateRepository.save(state);
+                }
             } else {
-                state.setFeedGapObserved(false);
-                stateRepository.save(state);
+                synchronized (state) {
+                    state.setFeedGapObserved(false);
+                    stateRepository.save(state);
+                }
             }
         }
         if (!state.isActivated() && (state.getExitOrderId() != null || position.getStopLossOrderId() != null)) {
