@@ -441,9 +441,14 @@ public class OrderCompletionProcessor {
             // ===== Find position by primary OR secondary target order ID =====
             Position position = positionManager.findByTargetOrderId(sellOrderId);
             boolean isSecondarySell = false;
+            boolean isStopLossSell = false;
             if (position == null) {
                 position = positionManager.findBySecondaryTargetOrderId(sellOrderId);
                 isSecondarySell = (position != null);
+            }
+            if (position == null) {
+                position = positionManager.findByStopLossOrderId(sellOrderId);
+                isStopLossSell = (position != null);
             }
             if(position==null) {
                 System.out.println("⚠️ Position not found for sell order ID: " + sellOrderId + ", exiting");
@@ -501,6 +506,7 @@ public class OrderCompletionProcessor {
             if (fullExit) {
                 position.setOpen(false);
                 position.setExitProcessed(true);
+                if (isStopLossSell) position.setStopLossOrderId(null);
                 if (otherSellCancelled) {
                     positionManager.updatePosition(position);
                     // Broker-aware removal: use the position's broker dimension.
@@ -522,10 +528,12 @@ public class OrderCompletionProcessor {
                     positionManager.updatePosition(position);
                 }
             } else {
-                // Partial exit: keep the remaining long position active. If the other
-                // SELL cannot be confirmed cancelled, retain its ID and do not replace it.
+                // Partial exit: keep the remaining long position active. The old
+                // protective order is terminal and reconciled before the trailing
+                // manager may place a new order for only this remaining quantity.
                 position.setTotalQuantity(position.getTotalQuantity() - soldQty);
                 position.setExitProcessed(false);
+                if (isStopLossSell) position.setStopLossOrderId(null);
                 positionManager.updatePosition(position);
             }
 
