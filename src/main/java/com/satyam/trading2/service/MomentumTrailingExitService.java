@@ -80,7 +80,7 @@ public class MomentumTrailingExitService {
         for (Position position : positionManager.getPositionsForSymbol(symbol).values()) {
             if (position == null || !position.isOpen()
                     || position.getPositionType() != Position.PositionType.INTRADAY
-                    || !MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) continue;
+                    || !MomentumTrailingPolicy.isManagedPosition(position, pendingOrderRepository)) continue;
             MomentumTrailingState state = stateRepository.getOrCreate(position, LocalDate.now(ZONE).toString());
             synchronized (state) {
                 if (!LocalDate.now(ZONE).toString().equals(state.getTradingDate())) continue;
@@ -97,7 +97,7 @@ public class MomentumTrailingExitService {
         List<Position> positions = positionManager.getAllOpenPositions();
         for (Position position : positions) {
             if (position == null || !position.isOpen()
-                    || !MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) continue;
+                    || !MomentumTrailingPolicy.isManagedPosition(position, pendingOrderRepository)) continue;
             try {
                 manageOne(position, now, eodCutoff);
             } catch (Exception e) {
