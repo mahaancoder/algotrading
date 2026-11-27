@@ -9,6 +9,9 @@ import org.springframework.core.env.Environment;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Locale;
 
 /** Shared strategy guard for the momentum-only trailing exit policy. */
@@ -92,7 +95,19 @@ public final class MomentumTrailingPolicy {
         double trigger = ceilToTick(average * 1.005, tick);
         double limit = ceilToTick(trigger * (1.0 - 0.0005), tick);
         if (limit >= trigger) limit = trigger - tick;
-        return limit + 1.0e-9 >= breakEven;
+        if (limit + 1.0e-9 < breakEven) return false;
+
+        String stateFile = environment.getProperty("momentum.trailing.state-file",
+                "/home/ec2-user/momentum_trailing_state.json");
+        try {
+            Path file = Paths.get(stateFile).toAbsolutePath();
+            if (Files.exists(file) && !Files.isWritable(file)) return false;
+            Path directory = file.getParent();
+            while (directory != null && !Files.exists(directory)) directory = directory.getParent();
+            return directory != null && Files.isDirectory(directory) && Files.isWritable(directory);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static double ceilToTick(double price, double tick) {
