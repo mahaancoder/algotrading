@@ -1,6 +1,6 @@
 # Momentum trailing exit (feature-flagged)
 
-This policy applies only to broker-confirmed `Dip-Accumulator-Momentum` INTRADAY positions whose recorded BUY order IDs resolve to completed momentum BUYs in the pending-order ledger. Unattributed/manual positions and momentum HOLDING positions retain their existing fixed-target behaviour. Other strategies are unchanged.
+This policy applies only to `Dip-Accumulator-Momentum` INTRADAY positions whose every recorded BUY order ID resolves to a momentum BUY for the same broker and symbol in the pending-order ledger. Before any protective or EOD SELL is submitted, all momentum BUYs for that broker/symbol must be terminal and their cumulative fills reconciled. Unattributed/manual positions and momentum HOLDING positions retain their existing fixed-target behaviour. Other strategies are unchanged.
 
 ## Strategy parameters
 
