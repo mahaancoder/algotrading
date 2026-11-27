@@ -179,12 +179,20 @@ public class ReconciliationService {
                                             ? p.getCreatedAt() : p.getUpdatedAt())
                                     .thenComparing(p -> p.getStrategy() == null ? "" : p.getStrategy()))
                             .collect(Collectors.toList());
-                    int remainingBrokerQty = Math.max(0, brokerPos.getTotalQuantity());
+                    int totalLocalQty = fifo.stream()
+                            .mapToInt(p -> Math.max(0, p.getTotalQuantity())).sum();
+                    int quantityToConsume = Math.max(0, totalLocalQty - brokerPos.getTotalQuantity());
+                    int unallocatedBrokerQty = Math.max(0, brokerPos.getTotalQuantity() - totalLocalQty);
                     for (Position local : fifo) {
                         consecutiveMissingSnapshots.remove(missingKey(local));
                         synchronized (SellLifecycleLockRegistry.lockFor(local)) {
-                            int allocatedQty = Math.min(Math.max(0, local.getTotalQuantity()), remainingBrokerQty);
-                            remainingBrokerQty -= allocatedQty;
+                            int originalQty = Math.max(0, local.getTotalQuantity());
+                            // FIFO SELL consumption removes shares from the oldest
+                            // strategy allocation first; remaining shares therefore
+                            // belong to the newer strategy allocations.
+                            int consumedQty = Math.min(originalQty, quantityToConsume);
+                            quantityToConsume -= consumedQty;
+                            int allocatedQty = originalQty - consumedQty;
                             if (local.getTotalQuantity() != allocatedQty) {
                                 log.warn("[Reconciliation][FIFO] {} {} strategy={} localQty={} -> brokerAllocatedQty={} (aggregate Kite qty={})",
                                         local.getSymbol(), local.getPositionType(), local.getStrategy(),
@@ -206,19 +214,19 @@ public class ReconciliationService {
                             positionRepository.updatePosition(local);
                         }
                     }
-                    if (remainingBrokerQty > 0) {
+                    if (unallocatedBrokerQty > 0) {
                         // Broker reports more inventory than the sum of local strategy
                         // allocations. Preserve it as an explicit recovery allocation;
                         // never silently inflate an existing strategy's position.
                         Position recovered = new Position(
-                                brokerPos.getSymbol(), remainingBrokerQty, brokerPos.getAveragePrice(),
+                                brokerPos.getSymbol(), unallocatedBrokerQty, brokerPos.getAveragePrice(),
                                 0, true, "MANUAL-RECONCILIATION", null, null, null,
                                 brokerPos.getPositionType());
                         recovered.setBroker("KITE");
                         recovered.setExecutionRoute(com.satyam.trading2.broker.ExecutionRoute.KITE);
                         positionRepository.addPosition(recovered);
                         log.error("[Reconciliation][FIFO] Kite reports {} unallocated shares for {}; restored under MANUAL-RECONCILIATION for explicit review.",
-                                remainingBrokerQty, brokerPos.getSymbol());
+                                unallocatedBrokerQty, brokerPos.getSymbol());
                     }
                 }
             }
