@@ -43,15 +43,33 @@ public class MomentumTrailingStateRepository {
 
     public MomentumTrailingState getOrCreate(Position position, String tradingDate) {
         String key = position.compositeKey();
-        return states.computeIfAbsent(key, ignored -> {
-            MomentumTrailingState state = new MomentumTrailingState();
-            state.setPositionKey(key);
-            state.setTradingDate(tradingDate);
-            state.setAverageBuyPrice(position.getAveragePrice());
-            state.setTrackedQuantity(position.getTotalQuantity());
-            state.setPhase("INACTIVE");
+        String fingerprint = position.getBuyOrderIds() == null ? ""
+                : position.getBuyOrderIds().stream().filter(java.util.Objects::nonNull)
+                    .sorted().collect(java.util.stream.Collectors.joining("|"));
+        synchronized (lock) {
+            MomentumTrailingState state = states.get(key);
+            if (state == null || (!tradingDate.equals(state.getTradingDate())
+                    && !fingerprint.isEmpty()
+                    && !fingerprint.equals(state.getPositionFingerprint()))) {
+                state = new MomentumTrailingState();
+                state.setPositionKey(key);
+                state.setTradingDate(tradingDate);
+                state.setPositionFingerprint(fingerprint);
+                state.setAverageBuyPrice(position.getAveragePrice());
+                state.setTrackedQuantity(position.getTotalQuantity());
+                state.setPhase("INACTIVE");
+                states.put(key, state);
+                persist();
+                return state;
+            }
+            // A same-day accumulation adds BUY order IDs to the position. Keep the
+            // existing high-water/stop state, but durably update its fingerprint.
+            if (!fingerprint.isEmpty() && !fingerprint.equals(state.getPositionFingerprint())) {
+                state.setPositionFingerprint(fingerprint);
+                persist();
+            }
             return state;
-        });
+        }
     }
 
     public MomentumTrailingState find(String key) {
