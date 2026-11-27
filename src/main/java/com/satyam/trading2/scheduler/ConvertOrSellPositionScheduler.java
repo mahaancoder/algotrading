@@ -31,6 +31,9 @@ import static com.satyam.trading2.helpers.LatestPriceHelper.getLatestPrice;
 @Service
 @RequiredArgsConstructor
 public class ConvertOrSellPositionScheduler {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.core.env.Environment environment;
+
 
     private final PositionManager positionManager;
     private final OrderServiceV2 orderServiceV2;
@@ -41,6 +44,7 @@ public class ConvertOrSellPositionScheduler {
     private final HoldingMetadataRepository holdingMetadataRepository;
     private final com.satyam.trading2.service.EntryTypeAnalyticsService entryTypeAnalytics;
     private final BrokerOrderRouter brokerOrderRouter;
+    private final com.satyam.trading2.service.MomentumTrailingStateRepository momentumTrailingStateRepository;
 
     // ===== FIX: Use ExecutionEngine's locks to prevent race conditions =====
     // Suffix on a forced-MIS leg (MIS-only mode). The leg is tracked under
@@ -75,6 +79,19 @@ public class ConvertOrSellPositionScheduler {
         List<Position> intradayPositions = new ArrayList<>();
         for (Position position : positionManager.getAllOpenPositions()) {
             if (position.getPositionType() == HOLDING) continue;
+            if (Boolean.parseBoolean(environment.getProperty("momentum.trailing.enabled", "false"))
+                    && Boolean.parseBoolean(environment.getProperty("momentum.trailing.live-enabled", "false"))
+                    && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())
+                    && com.satyam.trading2.service.MomentumTrailingPolicy.hasUnresolvedMomentumBuy(position, pendingOrderRepository)) {
+                System.err.println("[EOD Scheduler] Blocking " + position.getSymbol()
+                        + " liquidation: momentum BUY cancellation/fill reconciliation is unresolved.");
+                continue;
+            }
+            // Momentum positions are closed by the dedicated trailing EOD manager.
+            // Do not convert them into holdings or replace their protective SELL here.
+            if (com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
+                    position, pendingOrderRepository, environment,
+                    brokerOrderRouter.supportsSellStopLossLimit(position), momentumTrailingStateRepository)) continue;
             intradayPositions.add(position);
         }
 

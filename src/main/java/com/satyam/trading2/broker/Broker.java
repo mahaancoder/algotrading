@@ -20,6 +20,14 @@ public interface Broker {
     void modifyOrder(String brokerOrderId, OrderRequest request);
     BrokerOrderStatus getOrderStatus(String brokerOrderId);
 
+    /**
+     * True only when this adapter maps SELL STOP_LOSS to a verified broker-native
+     * stop-limit order including both trigger and limit prices. Default is false.
+     */
+    default boolean supportsSellStopLossLimit() {
+        return false;
+    }
+
     /** Cumulative filled quantity, or null when not authoritatively available. */
     default Integer getOrderFilledQuantity(String brokerOrderId) {
         return null;

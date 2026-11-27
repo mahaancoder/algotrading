@@ -24,12 +24,16 @@ import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 @Service
 @RequiredArgsConstructor
 public class TrailingStopScheduler {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.core.env.Environment environment;
+
 
     private final PositionManager positionManager;
     private final ReconciliationService reconciliationService;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
     private final PendingOrderRepository pendingOrderRepository;
     private final BrokerOrderRouter brokerOrderRouter;
+    private final com.satyam.trading2.service.MomentumTrailingStateRepository momentumTrailingStateRepository;
 
     private volatile long lastPositionSyncAtMillis = 0L;
     private static final long POSITION_SYNC_INTERVAL_MILLIS = 60_000L;
@@ -90,6 +94,10 @@ public class TrailingStopScheduler {
             List<Position> openPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.isOpen())
                     .filter(p -> p.getPositionType() == INTRADAY)
+                    // Momentum has its own SL-LIMIT trailing lifecycle; never let the
+                    // legacy target-price scheduler replace that protective order.
+                    .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
+                            p, pendingOrderRepository, environment, brokerOrderRouter.supportsSellStopLossLimit(p), momentumTrailingStateRepository))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 

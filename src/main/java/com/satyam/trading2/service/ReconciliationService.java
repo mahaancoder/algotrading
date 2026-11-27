@@ -24,6 +24,9 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 @RequiredArgsConstructor
 public class ReconciliationService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.core.env.Environment environment;
+
 
     private final OrderServiceV2 orderServiceV2;
     private final PendingOrderRepository pendingOrderRepository;
@@ -34,6 +37,7 @@ public class ReconciliationService {
     private final DipAccumulatorService dipAccumulatorService;
     private final MarketContextBuilder marketContextBuilder;
     private final HoldingMetadataRepository holdingMetadataRepository;
+    private final MomentumTrailingStateRepository momentumTrailingStateRepository;
 
     // A single transient broker snapshot must never erase a live local position.
     // Counts are reset as soon as the broker reports the position again.
@@ -470,6 +474,10 @@ public class ReconciliationService {
         List<Position> kiteOpenPositions = positionRepository.getAllOpenPositions().stream()
                 .filter(java.util.Objects::nonNull)
                 .filter(ReconciliationService::isKite)
+                // Momentum SELL SL-LIMITs are reconciled through stopLossOrderId;
+                // never adopt or replace them as fixed target orders.
+                .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
+                        p, pendingOrderRepository, environment, brokerOrderRouter.supportsSellStopLossLimit(p), momentumTrailingStateRepository))
                 .filter(p -> !p.isExitProcessed())
                 .collect(Collectors.toList());
 

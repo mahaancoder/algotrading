@@ -21,6 +21,9 @@ import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 @Service
 @RequiredArgsConstructor
 public class HourlyTargetUpdateScheduler {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.core.env.Environment environment;
+
 
     private final PositionManager positionManager;
     private final BroadcastService broadcastService;
@@ -28,6 +31,7 @@ public class HourlyTargetUpdateScheduler {
     private final ReconciliationService reconciliationService;
     private final BrokerOrderRouter brokerOrderRouter;
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
+    private final com.satyam.trading2.service.MomentumTrailingStateRepository momentumTrailingStateRepository;
 
     /**
      * Update target orders at 10:15 AM with 0.7% multiplier
@@ -110,6 +114,8 @@ public class HourlyTargetUpdateScheduler {
             }
             List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.getPositionType() == INTRADAY)
+                    .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
+                            p, pendingOrderRepository, environment, brokerOrderRouter.supportsSellStopLossLimit(p), momentumTrailingStateRepository))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 

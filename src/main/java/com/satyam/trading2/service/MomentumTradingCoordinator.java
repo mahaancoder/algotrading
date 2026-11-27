@@ -33,6 +33,15 @@ public class MomentumTradingCoordinator {
     public static final String STRATEGY = "Dip-Accumulator-Momentum";
     private static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.entry-cutoff:14:55}")
+    private String momentumEntryCutoff;
+
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
+    private boolean momentumTrailingLiveEnabled;
+
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
+    private boolean momentumTrailingEnabled;
+
     private final StockSelectionService selection;
     private final MomentumTradingStateService state;
     private final OrderExecutionService execution;
@@ -113,7 +122,7 @@ public class MomentumTradingCoordinator {
             DayOfWeek day = LocalDate.now(ZONE).getDayOfWeek();
             if (day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY
                     || now.isBefore(LocalTime.of(9, 15))
-                    || !now.isBefore(LocalTime.of(15, 0))) {
+                    || !now.isBefore((momentumTrailingLiveEnabled && momentumTrailingEnabled) ? parseMomentumEntryCutoff() : LocalTime.of(15, 0))) {
                 return result("OUTSIDE_BUY_WINDOW", 0, 0);
             }
 
@@ -271,6 +280,15 @@ public class MomentumTradingCoordinator {
             log.error("[Momentum] BUY execution failed for {}; reservation retained",
                     task.symbol, brokerFailure);
             return ExecutionResult.SKIPPED;
+        }
+    }
+
+    private LocalTime parseMomentumEntryCutoff() {
+        try {
+            return LocalTime.parse(momentumEntryCutoff);
+        } catch (Exception e) {
+            log.error("Invalid momentum.trailing.entry-cutoff '{}'; falling back to 14:55", momentumEntryCutoff);
+            return LocalTime.of(14, 55);
         }
     }
 

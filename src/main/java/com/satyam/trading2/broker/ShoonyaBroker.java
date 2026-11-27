@@ -52,6 +52,9 @@ import java.util.Set;
 @RequiredArgsConstructor
 @ConditionalOnProperty(name = "broker.shoonya.enabled", havingValue = "true")
 public class ShoonyaBroker extends AbstractRestBroker {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.core.env.Environment environment;
+
 
     private final ShoonyaConfig shoonyaConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
@@ -177,6 +180,11 @@ public class ShoonyaBroker extends AbstractRestBroker {
                     .rejectionReason("Exception: " + e.getMessage())
                     .build();
         }
+    }
+
+    @Override
+    public boolean supportsSellStopLossLimit() {
+        return true;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -609,6 +617,8 @@ public class ShoonyaBroker extends AbstractRestBroker {
 
             for (Position pos : positionManager.getAllIntradayPositions()) {
                 if (pos == null || !"SHOONYA".equals(pos.getBroker())) continue;
+                if (com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
+                        pos, pendingOrderRepository, environment, supportsSellStopLossLimit())) continue;
                 if (pos.getTotalQuantity() <= 0) continue;
                 if (symbolsWithOpenSell.contains(pos.getSymbol())) {
                     continue; // already has a resting target sell — nothing to recover
@@ -719,6 +729,9 @@ public class ShoonyaBroker extends AbstractRestBroker {
                 return BrokerOrderStatus.CANCELLED;
             case "PARTIALLY_FILLED":
                 return BrokerOrderStatus.PARTIALLY_FILLED;
+            case "TRIGGER_PENDING":
+            case "TRIGGER PENDING":
+                return BrokerOrderStatus.TRIGGER_PENDING;
             case "OPEN":
             case "PENDING":
             case "PENDING_ALL":

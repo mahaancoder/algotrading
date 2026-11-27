@@ -61,7 +61,8 @@ public class BrokerOrderRouter {
 
     /** Broker name string for this position (defaults to KITE). */
     public String brokerOf(Position position) {
-        return position.getBroker() != null ? position.getBroker() : routeOf(position).name();
+        return position.getBroker() != null
+                ? position.getBroker().trim().toUpperCase(java.util.Locale.ROOT) : routeOf(position).name();
     }
 
     /** True if this position is owned by Kite (uses OrderServiceV2). */
@@ -133,6 +134,7 @@ public class BrokerOrderRouter {
             case "COMPLETE":  return BrokerOrderStatus.COMPLETE;
             case "REJECTED":  return BrokerOrderStatus.REJECTED;
             case "CANCELLED": return BrokerOrderStatus.CANCELLED;
+            case "TRIGGER PENDING": return BrokerOrderStatus.TRIGGER_PENDING;
             case "OPEN":
             case "UPDATE":
                 int filled = filledQty != null ? filledQty : 0;
@@ -349,6 +351,157 @@ public class BrokerOrderRouter {
     }
 
     /**
+     * Request cancellation of a BUY order at its owning broker. EOD exit code must
+     * still wait for the order event/reconciliation path to make the terminal fill
+     * quantity durable before submitting any SELL.
+     */
+    public boolean requestBuyCancellation(PendingOrder pendingOrder) {
+        if (pendingOrder == null || pendingOrder.getSide() != TradeSide.BUY) return false;
+        String orderId = pendingOrder.getBrokerOrderId() != null
+                ? pendingOrder.getBrokerOrderId() : pendingOrder.getOrderId();
+        if (orderId == null) return false;
+        ExecutionRoute route = pendingOrder.getExecutionRoute();
+        if (route == null && "KITE".equalsIgnoreCase(pendingOrder.getBroker())) {
+            route = ExecutionRoute.KITE;
+        }
+        // Never guess a non-Kite route from a missing persisted execution route.
+        if (route == null) return false;
+        Broker broker = brokerRouter.getBroker(route);
+        if (broker == null) return false;
+        broker.cancelOrder(orderId);
+        return true;
+    }
+
+    /** True only when the owning broker adapter explicitly supports SELL SL-LIMIT. */
+    public boolean supportsSellStopLossLimit(Position position) {
+        if (position == null) return false;
+        String brokerName = position.getBroker();
+        if (brokerName != null) {
+            String normalized = brokerName.trim().toUpperCase(java.util.Locale.ROOT);
+            if (!"KITE".equals(normalized) && !"SHOONYA".equals(normalized)) {
+                return false;
+            }
+        }
+        Broker broker = brokerRouter.getBroker(routeOf(position));
+        return broker != null && broker.supportsSellStopLossLimit();
+    }
+
+    /**
+     * Place a broker-native SELL SL-LIMIT order after the same inventory and
+     * outstanding-order checks used by ordinary SELLs. This is deliberately
+     * routed through the owning broker and the SELL authorization context.
+     */
+    public String placeStopLossSell(Position position, String symbol, double triggerPrice,
+                                    double limitPrice, int qty, String strategy) {
+        if (position == null || symbol == null || qty <= 0 || strategy == null
+                || !Double.isFinite(triggerPrice) || !Double.isFinite(limitPrice)
+                || triggerPrice <= limitPrice || limitPrice <= 0) {
+            System.err.println("[BrokerOrderRouter] Refusing invalid SELL SL-LIMIT request for " + symbol);
+            return null;
+        }
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (!hasSellCapacity(position, symbol, qty, null)) {
+                System.err.println("[BrokerOrderRouter] Refusing SELL SL-LIMIT for " + symbol
+                        + ": broker-confirmed inventory/reservations do not authorize quantity " + qty);
+                return null;
+            }
+            Broker broker = brokerRouter.getBroker(routeOf(position));
+            if (broker == null) return null;
+            if (!broker.supportsSellStopLossLimit()) {
+                System.err.println("[BrokerOrderRouter] " + routeOf(position)
+                        + " has no verified SELL SL-LIMIT adapter; refusing protective stop for " + symbol);
+                return null;
+            }
+            OrderRequest request = OrderRequest.builder()
+                    .symbol(symbol)
+                    .exchange("NSE")
+                    .transactionType(TransactionType.SELL)
+                    .orderType(OrderType.STOP_LOSS)
+                    .quantity(qty)
+                    .price(limitPrice)
+                    .triggerPrice(triggerPrice)
+                    .productType(position.getPositionType() == Position.PositionType.HOLDING
+                            ? ProductType.DELIVERY : ProductType.INTRADAY)
+                    .strategyId(strategy)
+                    .build();
+            BrokerOrderResponse response = SellOrderAuthorizationContext.withAuthorization(
+                    () -> broker.placeOrder(request));
+            if (response != null && response.isAccepted() && response.getBrokerOrderId() != null) {
+                return response.getBrokerOrderId();
+            }
+            System.err.println("[BrokerOrderRouter] SELL SL-LIMIT rejected for " + symbol + ": "
+                    + (response != null ? response.getRejectionReason() : "null broker response"));
+            return null;
+        }
+    }
+
+    /**
+     * Cancel an exit order and permit replacement only after broker-terminal state
+     * AND any cumulative partial fills have been durably applied to the local
+     * position. This is stricter than cancelAndConfirmSell(), which intentionally
+     * accepts only zero-fill cancellations.
+     */
+    public boolean cancelAndConfirmSellForReplacement(Position position, String orderId, long timeoutMillis) {
+        if (orderId == null) return true;
+        if (position == null) return false;
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
+            long lastCancelAttempt = 0L;
+            do {
+                BrokerOrderStatus status = getOrderStatus(position, orderId);
+                Integer filled = getFilledQuantity(position, orderId);
+                if (status == BrokerOrderStatus.CANCELLED || status == BrokerOrderStatus.REJECTED
+                        || status == BrokerOrderStatus.COMPLETE) {
+                    return retireAfterReconciledFill(position, orderId, status, filled);
+                }
+                long now = System.currentTimeMillis();
+                if (lastCancelAttempt == 0L || now - lastCancelAttempt >= 1000L) {
+                    cancelViaBroker(position, orderId);
+                    lastCancelAttempt = now;
+                }
+                try {
+                    Thread.sleep(250L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            } while (System.currentTimeMillis() < deadline);
+            return false;
+        }
+    }
+
+    private boolean retireAfterReconciledFill(Position position, String orderId,
+                                               BrokerOrderStatus status, Integer filled) {
+        if (filled == null || filled < 0) return false;
+        String brokerName = brokerOf(position);
+        PendingOrder pending = pendingOrderRepository
+                .findByBrokerAndBrokerOrderId(brokerName, orderId).orElse(null);
+        if (pending == null) return false;
+        if (filled == 0) {
+            return status != BrokerOrderStatus.COMPLETE && retirePendingSell(position, orderId);
+        }
+        if (!pending.isCompletionProcessed() || pending.getFilledQty() != filled) {
+            System.err.println("[BrokerOrderRouter] SELL " + orderId
+                    + " has fills not yet reconciled into position accounting; replacement blocked.");
+            return false;
+        }
+        if (status == BrokerOrderStatus.COMPLETE) {
+            if (filled != pending.getRequestQty()) return false;
+            if (position.isOpen() && !position.isExitProcessed() && position.getTotalQuantity() > 0
+                    && !hasSellCapacity(position, position.getSymbol(), 1, orderId)) {
+                return false;
+            }
+            return retirePendingSell(position, orderId);
+        }
+        if (position.isOpen() && !position.isExitProcessed() && position.getTotalQuantity() > 0) {
+            // This verifies broker inventory == all locally tracked sellable inventory,
+            // while excluding the now-terminal order being replaced.
+            if (!hasSellCapacity(position, position.getSymbol(), 1, orderId)) return false;
+        }
+        return retirePendingSell(position, orderId);
+    }
+
+    /**
      * Authorize a SELL against a fresh broker inventory snapshot and reserve only
      * each other live SELL's remaining unfilled quantity. Missing inventory/fill
      * data fails closed. Filled shares are already reflected in broker inventory,
@@ -412,7 +565,7 @@ public class BrokerOrderRouter {
         boolean orphanedSellReference = positionManager.getPositionsForSymbol(symbol).values().stream()
                 .filter(java.util.Objects::nonNull)
                 .filter(p -> brokerName.equalsIgnoreCase(p.getBroker() != null ? p.getBroker() : "KITE"))
-                .flatMap(p -> java.util.stream.Stream.of(p.getTargetOrderId(), p.getSecondaryTargetOrderId()))
+                .flatMap(p -> java.util.stream.Stream.of(p.getTargetOrderId(), p.getSecondaryTargetOrderId(), p.getStopLossOrderId()))
                 .filter(id -> id != null && !id.equals(replacedOrderId))
                 .anyMatch(id -> pendingOrderRepository.findByBrokerAndBrokerOrderId(brokerName, id)
                         .map(pending -> pending.getFilledQty() > 0
