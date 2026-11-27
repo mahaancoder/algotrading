@@ -332,14 +332,18 @@ public class MomentumTrailingExitService {
             stateRepository.save(state);
         }
 
-        if (state.isEodExitRequested() && ltp < breakEven) {
+        if (state.isEodExitRequested()) {
             LocalTime deadline = parseTime(environment.getProperty(
                     "momentum.trailing.mis-squareoff-deadline." + brokerOf(position), defaultMisSquareoffDeadline),
                     LocalTime.of(15, 20));
             if (!now.isBefore(deadline.minusMinutes(5))) {
-                alert(position, "MIS_SQUAREOFF_DEADLINE_APPROACHING",
-                        "Position remains below net break-even and broker MIS square-off deadline is approaching at "
-                                + deadline + ". Manual intervention is required; the broker may force-square-off.");
+                String deadlineMessage = ltp < breakEven
+                        ? "Position remains below net break-even ₹" + String.format("%.2f", breakEven)
+                                + " and the broker MIS square-off deadline is approaching at " + deadline
+                                + ". Strict protection prevents a lower SELL limit. Manual intervention is required; the broker may force-square-off."
+                        : "Position is still open as the broker MIS square-off deadline approaches at " + deadline
+                                + ". Check the outstanding SELL order and intervene manually if it remains unfilled; the broker may force-square-off.";
+                alert(position, "MIS_SQUAREOFF_DEADLINE_APPROACHING", deadlineMessage);
             }
         }
 
