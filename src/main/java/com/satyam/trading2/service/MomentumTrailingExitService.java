@@ -303,7 +303,7 @@ public class MomentumTrailingExitService {
             return;
         }
 
-        if (state.isExitTriggered()) {
+        if (isExitTriggered(state)) {
             manageExitOrder(position, state, ltp, breakEven, true);
             return;
         }
@@ -468,7 +468,7 @@ public class MomentumTrailingExitService {
 
     private void ensureProtectiveStop(Position position, MomentumTrailingState state,
                                       double breakEven, double ltp) {
-        if (state.isExitTriggered()) {
+        if (isExitTriggered(state)) {
             manageExitOrder(position, state, LatestPriceHelper.getLatestPrice(position.getSymbol()), breakEven, true);
             return;
         }
@@ -531,7 +531,7 @@ public class MomentumTrailingExitService {
                 return;
             }
             clearCurrentExitOrder(position, state);
-            if (state.isExitTriggered()) {
+            if (isExitTriggered(state)) {
                 manageExitOrder(position, state, LatestPriceHelper.getLatestPrice(position.getSymbol()), breakEven, true);
                 return;
             }
@@ -791,6 +791,12 @@ public class MomentumTrailingExitService {
 
     private LocalTime parseTime(String text, LocalTime fallback) {
         try { return LocalTime.parse(text); } catch (Exception e) { return fallback; }
+    }
+
+    private boolean isExitTriggered(MomentumTrailingState state) {
+        synchronized (state) {
+            return state.isExitTriggered();
+        }
     }
 
     private MomentumTrailingState getOrCreateState(Position position, String tradingDate) {
