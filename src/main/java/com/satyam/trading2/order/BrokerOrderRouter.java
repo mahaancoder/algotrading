@@ -348,6 +348,13 @@ public class BrokerOrderRouter {
         }
     }
 
+    /** True only when the owning broker adapter explicitly supports SELL SL-LIMIT. */
+    public boolean supportsSellStopLossLimit(Position position) {
+        if (position == null) return false;
+        Broker broker = brokerRouter.getBroker(routeOf(position));
+        return broker != null && broker.supportsSellStopLossLimit();
+    }
+
     /**
      * Place a broker-native SELL SL-LIMIT order after the same inventory and
      * outstanding-order checks used by ordinary SELLs. This is deliberately
