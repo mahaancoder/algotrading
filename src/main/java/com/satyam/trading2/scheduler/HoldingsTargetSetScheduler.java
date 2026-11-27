@@ -96,6 +96,12 @@ public class HoldingsTargetSetScheduler {
             // Update in position manager
             positionManager.addPosition(holding);
 
+            // Momentum positions use their own exit policy and must never receive
+            // a fixed holding target from the morning holdings scheduler.
+            if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(holding.getStrategy())) {
+                continue;
+            }
+
             // Place target order with specified multiplier
             placeTargetForHolding(holding, targetMultiplier);
 
