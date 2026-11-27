@@ -25,6 +25,9 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class HoldingsTargetSetScheduler {
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
+    private boolean momentumTrailingLiveEnabled;
+
     private final PositionManager positionManager;
     private final OrderServiceV2 orderServiceV2;
     private final ExecutionEngine executionEngine;
@@ -98,7 +101,7 @@ public class HoldingsTargetSetScheduler {
 
             // Momentum positions use their own exit policy and must never receive
             // a fixed holding target from the morning holdings scheduler.
-            if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(holding.getStrategy())) {
+            if (momentumTrailingLiveEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(holding.getStrategy())) {
                 continue;
             }
 
@@ -119,7 +122,7 @@ public class HoldingsTargetSetScheduler {
         refreshNonKiteHoldings();
 
         for (Position holding : positionManager.getAllHoldings()) {
-            if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(holding.getStrategy())) {
+            if (momentumTrailingLiveEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(holding.getStrategy())) {
                 continue; // Momentum exit policy never installs fixed holding targets.
             }
             if (brokerOrderRouter.isKite(holding)) {
