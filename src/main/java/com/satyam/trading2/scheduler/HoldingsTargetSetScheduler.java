@@ -20,6 +20,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -112,9 +114,17 @@ public class HoldingsTargetSetScheduler {
         // targets are silently skipped.
         refreshNonKiteHoldings();
 
+        Set<ExecutionRoute> refreshedBrokers = refreshNonKiteHoldings();
+
         for (Position holding : positionManager.getAllHoldings()) {
             if (brokerOrderRouter.isKite(holding)) {
                 continue; // KITE holdings already handled from the broker API above
+            }
+            ExecutionRoute route = holding.getExecutionRoute();
+            if (route == null || !refreshedBrokers.contains(route)) {
+                System.err.println("🛑 [HoldingsTargetSetScheduler] Skipping " + holding.getSymbol()
+                        + " — owning broker holdings snapshot was not confirmed for " + route);
+                continue;
             }
             placeTargetForHolding(holding, targetMultiplier);
         }
@@ -126,18 +136,23 @@ public class HoldingsTargetSetScheduler {
      * PositionManager before we place targets. Safe to call independently of the
      * periodic reconciliation cycle; each broker skips itself if not authenticated.
      */
-    private void refreshNonKiteHoldings() {
+    private Set<ExecutionRoute> refreshNonKiteHoldings() {
+        Set<ExecutionRoute> refreshed = new HashSet<>();
         for (Broker broker : brokerRouter.getAllBrokers()) {
-            if (broker.getRoute() == ExecutionRoute.KITE) {
-                continue; // KITE holdings come straight from orderServiceV2.getHoldings()
-            }
+            if (broker.getRoute() == ExecutionRoute.KITE) continue;
             try {
-                broker.reconcileOrders();
+                if (broker.refreshHoldingsForTargetScheduler()) {
+                    refreshed.add(broker.getRoute());
+                } else {
+                    System.err.println("🛑 [HoldingsTargetSetScheduler] " + broker.getBrokerName()
+                            + " holdings snapshot not confirmed; skipping its target pass.");
+                }
             } catch (Exception e) {
-                System.out.println("⚠️ [HoldingsTargetSetScheduler] Failed to refresh holdings for "
+                System.err.println("🛑 [HoldingsTargetSetScheduler] Failed to refresh holdings for "
                         + broker.getBrokerName() + ": " + e.getMessage());
             }
         }
+        return refreshed;
     }
 
     /**
