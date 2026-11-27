@@ -55,6 +55,7 @@ public class MomentumTrailingExitService {
     private final Map<String, Long> buyCancelAttemptAt = new ConcurrentHashMap<>();
     private final Map<String, Long> buyCancelAlertAt = new ConcurrentHashMap<>();
     private final Map<String, Long> alertFallbackAt = new ConcurrentHashMap<>();
+    private volatile boolean stateStoreUnavailableLogged;
 
     @Value("${momentum.trailing.enabled:false}")
     private boolean enabled;
@@ -127,9 +128,13 @@ public class MomentumTrailingExitService {
     public void manageMomentumPositions() {
         if (!enabled) return;
         if (!MomentumTrailingPolicy.isStateStoreWritable(environment)) {
-            log.warn("[MomentumTrailing] State store is not writable; leaving legacy exit management active.");
+            if (!stateStoreUnavailableLogged) {
+                log.warn("[MomentumTrailing] State store is not writable; leaving legacy exit management active.");
+                stateStoreUnavailableLogged = true;
+            }
             return;
         }
+        stateStoreUnavailableLogged = false;
         LocalTime now = LocalTime.now(ZONE);
         LocalTime entryCutoff = parseTime(entryCutoffText, LocalTime.of(14, 55));
         LocalTime eodCutoff = parseTime(eodCutoffText, LocalTime.of(15, 0));
