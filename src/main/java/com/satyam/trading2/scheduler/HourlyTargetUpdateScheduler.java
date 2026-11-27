@@ -22,6 +22,9 @@ import static com.satyam.trading2.datamodel.Position.PositionType.INTRADAY;
 @RequiredArgsConstructor
 public class HourlyTargetUpdateScheduler {
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
+    private boolean momentumTrailingLiveEnabled;
+
     private final PositionManager positionManager;
     private final BroadcastService broadcastService;
     private final PendingOrderRepository pendingOrderRepository;
@@ -110,7 +113,7 @@ public class HourlyTargetUpdateScheduler {
             }
             List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.getPositionType() == INTRADAY)
-                    .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
+                    .filter(p -> !momentumTrailingLiveEnabled || !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
