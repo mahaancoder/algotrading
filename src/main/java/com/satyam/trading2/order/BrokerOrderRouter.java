@@ -369,6 +369,11 @@ public class BrokerOrderRouter {
             }
             Broker broker = brokerRouter.getBroker(routeOf(position));
             if (broker == null) return null;
+            if (!broker.supportsSellStopLossLimit()) {
+                System.err.println("[BrokerOrderRouter] " + routeOf(position)
+                        + " has no verified SELL SL-LIMIT adapter; refusing protective stop for " + symbol);
+                return null;
+            }
             OrderRequest request = OrderRequest.builder()
                     .symbol(symbol)
                     .exchange("NSE")
