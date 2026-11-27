@@ -40,6 +40,11 @@ public class ReconciliationService {
     private final Map<String, Integer> consecutiveMissingSnapshots = new ConcurrentHashMap<>();
     private static final int MISSING_SNAPSHOTS_BEFORE_REMOVAL = 2;
 
+    // A manually submitted Kite MARKET SELL means the operator is actively
+    // managing exits. Do not recreate automated target SELLs later in the same
+    // session after the manual reconciliation has updated inventory.
+    private volatile boolean manualKiteMarketSellObserved;
+
     // ─────────────────────────────────────────────────────────────────────
     // Kite is the ONLY positions/holdings source (getPositions()/getHoldings()
     // hit the Kite API). Reconciliation must therefore only touch KITE positions
@@ -76,6 +81,15 @@ public class ReconciliationService {
                 return;
             }
 
+            // Manual MARKET SELLs are an explicit operator exit workflow.
+            // Position quantities and terminal target references are reconciled
+            // above, but automatically recreating target SELLs would fight the
+            // operator's cancel-and-market-exit sequence.
+            if (manualKiteMarketSellObserved) {
+                log.warn("[Reconciliation] Manual Kite MARKET SELL activity detected; broker positions reconciled, automated target recreation paused for this session.");
+                return;
+            }
+
             // Step 3: Ensure every open position has a target SELL order
             ensureTargetOrdersForOpenPositions();
 
@@ -108,6 +122,24 @@ public class ReconciliationService {
                 log.error("[Reconciliation] Kite holdings snapshot unavailable; retaining all local positions.");
                 return false;
             }
+
+            // Fetch one strict order-book snapshot for the whole reconciliation cycle.
+            // It is needed to settle manually cancelled target orders and to avoid
+            // releasing a reservation based on a position snapshot alone.
+            List<Order> orderSnapshot = orderServiceV2.fetchOrdersSnapshot();
+            if (orderSnapshot == null) {
+                log.error("[Reconciliation] Kite order-book snapshot unavailable; retaining local order references and skipping automation.");
+                return false;
+            }
+            manualKiteMarketSellObserved = orderSnapshot.stream()
+                    .filter(java.util.Objects::nonNull)
+                    .filter(o -> o.getOrderId() != null)
+                    .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
+                    .filter(o -> "MARKET".equalsIgnoreCase(o.getOrderType()))
+                    .filter(o -> "MIS".equalsIgnoreCase(o.getProduct())
+                            || "CNC".equalsIgnoreCase(o.getProduct()))
+                    .anyMatch(o -> !pendingOrderRepository
+                            .findByBrokerAndBrokerOrderId("KITE", o.getOrderId()).isPresent());
 
             List<Position> allBrokerPositions = new ArrayList<>();
             allBrokerPositions.addAll(brokerPositions.stream()
@@ -158,9 +190,67 @@ public class ReconciliationService {
                             brokerPos.getSymbol(), brokerPos.getPositionType(), brokerPos.getTotalQuantity(),
                             brokerPos.getAveragePrice(), brokerPos.getStrategy());
                 } else {
-                    log.error("[Reconciliation] Cannot allocate aggregate Kite quantity for {} {} across {} local strategies; preserving all local allocations.",
-                            brokerPos.getSymbol(), brokerPos.getPositionType(), localMatches.size());
-                    for (Position local : localMatches) consecutiveMissingSnapshots.remove(missingKey(local));
+                    // Kite exposes one aggregate net quantity per symbol/product, while
+                    // this application can hold several strategy allocations for that
+                    // same broker position. Attribute broker-confirmed remaining shares
+                    // FIFO SELL consumption depletes the oldest strategy allocation
+                    // first. Therefore, after an aggregate reduction, the newer local
+                    // allocations retain the remaining shares.
+                    List<Position> fifo = localMatches.stream()
+                            .sorted(java.util.Comparator
+                                    .comparingLong((Position p) -> p.getCreatedAt() > 0
+                                            ? p.getCreatedAt() : p.getUpdatedAt())
+                                    .thenComparing(p -> p.getStrategy() == null ? "" : p.getStrategy()))
+                            .collect(Collectors.toList());
+                    int totalLocalQty = fifo.stream()
+                            .mapToInt(p -> Math.max(0, p.getTotalQuantity())).sum();
+                    int quantityToConsume = Math.max(0, totalLocalQty - brokerPos.getTotalQuantity());
+                    int unallocatedBrokerQty = Math.max(0, brokerPos.getTotalQuantity() - totalLocalQty);
+                    for (Position local : fifo) {
+                        consecutiveMissingSnapshots.remove(missingKey(local));
+                        synchronized (SellLifecycleLockRegistry.lockFor(local)) {
+                            int originalQty = Math.max(0, local.getTotalQuantity());
+                            // FIFO SELL consumption removes shares from the oldest
+                            // strategy allocation first; remaining shares therefore
+                            // belong to the newer strategy allocations.
+                            int consumedQty = Math.min(originalQty, quantityToConsume);
+                            quantityToConsume -= consumedQty;
+                            int allocatedQty = originalQty - consumedQty;
+                            if (local.getTotalQuantity() != allocatedQty) {
+                                log.warn("[Reconciliation][FIFO] {} {} strategy={} localQty={} -> brokerAllocatedQty={} (aggregate Kite qty={})",
+                                        local.getSymbol(), local.getPositionType(), local.getStrategy(),
+                                        local.getTotalQuantity(), allocatedQty, brokerPos.getTotalQuantity());
+                                local.setTotalQuantity(allocatedQty);
+                            }
+                            if (allocatedQty == 0) {
+                                local.setOpen(false);
+                                local.setExitProcessed(true);
+                                local.setTargetPlaced(false);
+                                local.setTargetOrderId(null);
+                                local.setSecondaryTargetPlaced(false);
+                                local.setSecondaryTargetOrderId(null);
+                                local.setSecondaryTargetQty(0);
+                            } else {
+                                local.setOpen(true);
+                                local.setExitProcessed(false);
+                            }
+                            positionRepository.updatePosition(local);
+                        }
+                    }
+                    if (unallocatedBrokerQty > 0) {
+                        // Broker reports more inventory than the sum of local strategy
+                        // allocations. Preserve it as an explicit recovery allocation;
+                        // never silently inflate an existing strategy's position.
+                        Position recovered = new Position(
+                                brokerPos.getSymbol(), unallocatedBrokerQty, brokerPos.getAveragePrice(),
+                                0, true, "MANUAL-RECONCILIATION", null, null, null,
+                                brokerPos.getPositionType());
+                        recovered.setBroker("KITE");
+                        recovered.setExecutionRoute(com.satyam.trading2.broker.ExecutionRoute.KITE);
+                        positionRepository.addPosition(recovered);
+                        log.error("[Reconciliation][FIFO] Kite reports {} unallocated shares for {}; restored under MANUAL-RECONCILIATION for explicit review.",
+                                unallocatedBrokerQty, brokerPos.getSymbol());
+                    }
                 }
             }
 
@@ -173,25 +263,20 @@ public class ReconciliationService {
                                     && p.getPositionType() == local.getPositionType()))
                     .collect(Collectors.toList());
 
-            List<Order> orderSnapshot = null;
-            if (!missingLocals.isEmpty()) {
-                orderSnapshot = orderServiceV2.fetchOrdersSnapshot();
-                if (orderSnapshot == null) {
-                    log.error("[Reconciliation] Missing positions detected but Kite order book is unavailable; retaining local positions.");
-                    return false; // do not let trailing/target logic run on an incomplete reconciliation cycle
-                }
-            }
+            // orderSnapshot was fetched and validated before any local mutation.
 
             List<PendingOrder> unresolvedOrders = pendingOrderRepository.findOrdersRequiringReconciliation();
             for (Position local : missingLocals) {
                 synchronized (SellLifecycleLockRegistry.lockFor(local)) {
                 if (local.isExitProcessed()) continue;
                 String key = missingKey(local);
+                int requiredMissingSnapshots = manualSellFillCoversAggregateInventory(local, ourPositions, orderSnapshot)
+                        ? 1 : MISSING_SNAPSHOTS_BEFORE_REMOVAL;
                 int missingCount = consecutiveMissingSnapshots.merge(key, 1, Integer::sum);
-                if (missingCount < MISSING_SNAPSHOTS_BEFORE_REMOVAL) {
+                if (missingCount < requiredMissingSnapshots) {
                     log.warn("[Reconciliation] Retaining {} {} qty={} after missing broker snapshot {}/{}.",
                             local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
-                            missingCount, MISSING_SNAPSHOTS_BEFORE_REMOVAL);
+                            missingCount, requiredMissingSnapshots);
                     continue;
                 }
 
@@ -228,11 +313,133 @@ public class ReconciliationService {
                 }
             }
 
+            // Broker position quantities have now been applied. Only now can terminal
+            // SELL states be committed and their stale target references released.
+            reconcileTerminalKiteSellOrders(orderSnapshot);
             return true;
         } catch (Exception e) {
             log.error("[Reconciliation] Error syncing broker positions; retaining local positions where possible: {}", e.getMessage(), e);
             return false;
         }
+    }
+
+    /**
+     * Reconcile app-tracked Kite SELL order states against the same validated
+     * order snapshot used for position reconciliation. For terminal orders,
+     * broker net positions have already been applied, so the reservation can
+     * safely be released even when the order was manually cancelled after a
+     * partial fill. Unknown/missing order states remain untouched.
+     */
+    private void reconcileTerminalKiteSellOrders(List<Order> orderSnapshot) throws IOException {
+        Map<String, Order> byId = orderSnapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> o.getOrderId() != null)
+                .collect(Collectors.toMap(Order::getOrderId, o -> o, (first, ignored) -> first));
+
+        for (PendingOrder pending : pendingOrderRepository.findAll()) {
+            if (pending == null || pending.getSide() != TradeSide.SELL
+                    || !"KITE".equalsIgnoreCase(pending.getBroker() == null ? "KITE" : pending.getBroker())) {
+                continue;
+            }
+            String orderId = pending.getBrokerOrderId() != null
+                    ? pending.getBrokerOrderId() : pending.getOrderId();
+            Order brokerOrder = orderId == null ? null : byId.get(orderId);
+            if (brokerOrder == null || brokerOrder.getStatus() == null
+                    || brokerOrder.getFilledQuantity() == null) {
+                continue;
+            }
+            String status = brokerOrder.getStatus().trim().toUpperCase(java.util.Locale.ROOT);
+            boolean complete = "COMPLETE".equals(status) || "FILLED".equals(status);
+            boolean cancelled = "CANCELLED".equals(status) || "CANCELED".equals(status)
+                    || "EXPIRED".equals(status);
+            boolean rejected = "REJECTED".equals(status);
+            if (!complete && !cancelled && !rejected) {
+                continue;
+            }
+
+            pending.setFilledQty(Math.max(0, brokerOrder.getFilledQuantity()));
+            if (brokerOrder.getAveragePrice() != null && brokerOrder.getAveragePrice() > 0) {
+                pending.setAvgPrice(brokerOrder.getAveragePrice());
+            }
+            pending.setState(complete ? PendingOrderState.COMPLETE
+                    : (rejected ? PendingOrderState.REJECTED : PendingOrderState.CANCELLED));
+            // Position inventory was reconciled from Kite before this marker is
+            // persisted; this prevents replaying a terminal partial fill on restart.
+            pending.setCompletionProcessed(true);
+            pending.setUpdatedTime(System.currentTimeMillis());
+            pendingOrderRepository.save(pending);
+        }
+
+        for (Position position : positionRepository.getAllPositions()) {
+            if (position == null || !isKite(position)) continue;
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                boolean changed = false;
+                String primary = position.getTargetOrderId();
+                String secondary = position.getSecondaryTargetOrderId();
+                if (isConfirmedTerminalSell(primary, position, byId)) {
+                    position.setTargetOrderId(null);
+                    position.setTargetPlaced(false);
+                    changed = true;
+                }
+                if (isConfirmedTerminalSell(secondary, position, byId)) {
+                    position.setSecondaryTargetOrderId(null);
+                    position.setSecondaryTargetPlaced(false);
+                    position.setSecondaryTargetQty(0);
+                    changed = true;
+                }
+                if (changed) positionRepository.updatePosition(position);
+            }
+        }
+    }
+
+    private boolean isConfirmedTerminalSell(String orderId, Position position, Map<String, Order> byId) {
+        if (orderId == null) return false;
+        Order order = byId.get(orderId);
+        if (order == null || order.getStatus() == null || order.getFilledQuantity() == null) return false;
+        if (!position.getSymbol().equalsIgnoreCase(order.getTradingSymbol())
+                || !"SELL".equalsIgnoreCase(order.getTransactionType())
+                || !(position.getPositionType() == Position.PositionType.HOLDING
+                    ? "CNC" : "MIS").equalsIgnoreCase(order.getProduct())) return false;
+        String status = order.getStatus().trim().toUpperCase(java.util.Locale.ROOT);
+        return "COMPLETE".equals(status) || "FILLED".equals(status)
+                || "CANCELLED".equals(status) || "CANCELED".equals(status)
+                || "REJECTED".equals(status) || "EXPIRED".equals(status);
+    }
+
+    /**
+     * A complete Kite positions snapshot omits zero-net positions. When an
+     * untracked manual MARKET SELL's broker-confirmed filled quantity covers
+     * the entire local symbol/product inventory, one such snapshot is enough
+     * to close the local allocations. Partial manual exits still use the
+     * normal two-snapshot confirmation rule.
+     */
+    private boolean manualSellFillCoversAggregateInventory(Position local,
+                                                             List<Position> localSnapshot,
+                                                             List<Order> orderSnapshot) {
+        if (!manualKiteMarketSellObserved) return false;
+        int localInventory = localSnapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(p -> isKite(p))
+                .filter(p -> p.getSymbol().equalsIgnoreCase(local.getSymbol()))
+                .filter(p -> p.getPositionType() == local.getPositionType())
+                .mapToInt(p -> Math.max(0, p.getTotalQuantity()))
+                .sum();
+        if (localInventory <= 0) return false;
+
+        int manualFilledQty = orderSnapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> o.getOrderId() != null)
+                .filter(o -> local.getSymbol().equalsIgnoreCase(o.getTradingSymbol()))
+                .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
+                .filter(o -> "MARKET".equalsIgnoreCase(o.getOrderType()))
+                .filter(o -> (local.getPositionType() == Position.PositionType.HOLDING
+                        ? "CNC" : "MIS").equalsIgnoreCase(o.getProduct()))
+                .filter(o -> o.getFilledQuantity() != null && o.getFilledQuantity() > 0)
+                .filter(o -> !pendingOrderRepository
+                        .findByBrokerAndBrokerOrderId("KITE", o.getOrderId()).isPresent())
+                .mapToInt(Order::getFilledQuantity)
+                .sum();
+        return manualFilledQty >= localInventory;
     }
 
     private static String missingKey(Position position) {
