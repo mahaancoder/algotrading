@@ -170,9 +170,9 @@ public class ReconciliationService {
                     // Kite exposes one aggregate net quantity per symbol/product, while
                     // this application can hold several strategy allocations for that
                     // same broker position. Attribute broker-confirmed remaining shares
-                    // FIFO: oldest strategy allocation consumes the remaining inventory
-                    // first. This is deterministic and prevents stale local quantities
-                    // from authorizing a SELL after a manual market exit.
+                    // FIFO SELL consumption depletes the oldest strategy allocation
+                    // first. Therefore, after an aggregate reduction, the newer local
+                    // allocations retain the remaining shares.
                     List<Position> fifo = localMatches.stream()
                             .sorted(java.util.Comparator
                                     .comparingLong((Position p) -> p.getCreatedAt() > 0
