@@ -33,6 +33,7 @@ public class TrailingStopScheduler {
     private final com.satyam.trading2.service.KillSwitchService killSwitchService;
     private final PendingOrderRepository pendingOrderRepository;
     private final BrokerOrderRouter brokerOrderRouter;
+    private final com.satyam.trading2.service.MomentumTrailingStateRepository momentumTrailingStateRepository;
 
     private volatile long lastPositionSyncAtMillis = 0L;
     private static final long POSITION_SYNC_INTERVAL_MILLIS = 60_000L;
@@ -96,7 +97,7 @@ public class TrailingStopScheduler {
                     // Momentum has its own SL-LIMIT trailing lifecycle; never let the
                     // legacy target-price scheduler replace that protective order.
                     .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
-                            p, pendingOrderRepository, environment, brokerOrderRouter.supportsSellStopLossLimit(p)))
+                            p, pendingOrderRepository, environment, brokerOrderRouter.supportsSellStopLossLimit(p), momentumTrailingStateRepository))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
