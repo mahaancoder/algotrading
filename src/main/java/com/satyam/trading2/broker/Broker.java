@@ -54,4 +54,13 @@ public interface Broker {
     void startOrderUpdates();
     void stopOrderUpdates();
     void reconcileOrders();
+
+    /**
+     * Refresh and validate the broker's demat/overnight holdings snapshot for
+     * the morning holdings-target pass. True means a valid broker response was
+     * applied to PositionManager. Fail closed for unsupported adapters.
+     */
+    default boolean refreshHoldingsForTargetScheduler() {
+        return false;
+    }
 }
