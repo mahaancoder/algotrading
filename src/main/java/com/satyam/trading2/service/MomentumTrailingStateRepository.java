@@ -93,7 +93,7 @@ public class MomentumTrailingStateRepository {
                 java.util.List<java.util.Map.Entry<String, MomentumTrailingState>> matches = states.entrySet().stream()
                         .filter(entry -> {
                             String[] parts = entry.getKey().split("::", 3);
-                            return parts.length == 3 && broker.equals(parts[0])
+                            return parts.length == 3 && broker.equals(parts[0].trim().toUpperCase(java.util.Locale.ROOT))
                                     && baseStrategy.equals(baseStrategy(parts[1]))
                                     && symbol != null && symbol.equalsIgnoreCase(parts[2])
                                     && tradingDate.equals(entry.getValue().getTradingDate());
