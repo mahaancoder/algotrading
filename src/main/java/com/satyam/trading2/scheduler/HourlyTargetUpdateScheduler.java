@@ -110,6 +110,7 @@ public class HourlyTargetUpdateScheduler {
             }
             List<Position> intradayPositions = positionManager.getAllOpenPositions().stream()
                     .filter(p -> p.getPositionType() == INTRADAY)
+                    .filter(p -> !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
                     .filter(p -> !p.isExitProcessed())
                     .collect(Collectors.toList());
 
