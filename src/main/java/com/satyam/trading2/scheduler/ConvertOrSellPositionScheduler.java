@@ -78,6 +78,14 @@ public class ConvertOrSellPositionScheduler {
         List<Position> intradayPositions = new ArrayList<>();
         for (Position position : positionManager.getAllOpenPositions()) {
             if (position.getPositionType() == HOLDING) continue;
+            if (Boolean.parseBoolean(environment.getProperty("momentum.trailing.enabled", "false"))
+                    && Boolean.parseBoolean(environment.getProperty("momentum.trailing.live-enabled", "false"))
+                    && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())
+                    && com.satyam.trading2.service.MomentumTrailingPolicy.hasUnresolvedMomentumBuy(position, pendingOrderRepository)) {
+                System.err.println("[EOD Scheduler] Blocking " + position.getSymbol()
+                        + " liquidation: momentum BUY cancellation/fill reconciliation is unresolved.");
+                continue;
+            }
             // Momentum positions are closed by the dedicated trailing EOD manager.
             // Do not convert them into holdings or replace their protective SELL here.
             if (com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
