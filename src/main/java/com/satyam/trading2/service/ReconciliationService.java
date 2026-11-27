@@ -158,9 +158,59 @@ public class ReconciliationService {
                             brokerPos.getSymbol(), brokerPos.getPositionType(), brokerPos.getTotalQuantity(),
                             brokerPos.getAveragePrice(), brokerPos.getStrategy());
                 } else {
-                    log.error("[Reconciliation] Cannot allocate aggregate Kite quantity for {} {} across {} local strategies; preserving all local allocations.",
-                            brokerPos.getSymbol(), brokerPos.getPositionType(), localMatches.size());
-                    for (Position local : localMatches) consecutiveMissingSnapshots.remove(missingKey(local));
+                    // Kite exposes one aggregate net quantity per symbol/product, while
+                    // this application can hold several strategy allocations for that
+                    // same broker position. Attribute broker-confirmed remaining shares
+                    // FIFO: oldest strategy allocation consumes the remaining inventory
+                    // first. This is deterministic and prevents stale local quantities
+                    // from authorizing a SELL after a manual market exit.
+                    List<Position> fifo = localMatches.stream()
+                            .sorted(java.util.Comparator
+                                    .comparingLong((Position p) -> p.getCreatedAt() > 0
+                                            ? p.getCreatedAt() : p.getUpdatedAt())
+                                    .thenComparing(p -> p.getStrategy() == null ? "" : p.getStrategy()))
+                            .collect(Collectors.toList());
+                    int remainingBrokerQty = Math.max(0, brokerPos.getTotalQuantity());
+                    for (Position local : fifo) {
+                        consecutiveMissingSnapshots.remove(missingKey(local));
+                        synchronized (SellLifecycleLockRegistry.lockFor(local)) {
+                            int allocatedQty = Math.min(Math.max(0, local.getTotalQuantity()), remainingBrokerQty);
+                            remainingBrokerQty -= allocatedQty;
+                            if (local.getTotalQuantity() != allocatedQty) {
+                                log.warn("[Reconciliation][FIFO] {} {} strategy={} localQty={} -> brokerAllocatedQty={} (aggregate Kite qty={})",
+                                        local.getSymbol(), local.getPositionType(), local.getStrategy(),
+                                        local.getTotalQuantity(), allocatedQty, brokerPos.getTotalQuantity());
+                                local.setTotalQuantity(allocatedQty);
+                            }
+                            if (allocatedQty == 0) {
+                                local.setOpen(false);
+                                local.setExitProcessed(true);
+                                local.setTargetPlaced(false);
+                                local.setTargetOrderId(null);
+                                local.setSecondaryTargetPlaced(false);
+                                local.setSecondaryTargetOrderId(null);
+                                local.setSecondaryTargetQty(0);
+                            } else {
+                                local.setOpen(true);
+                                local.setExitProcessed(false);
+                            }
+                            positionRepository.updatePosition(local);
+                        }
+                    }
+                    if (remainingBrokerQty > 0) {
+                        // Broker reports more inventory than the sum of local strategy
+                        // allocations. Preserve it as an explicit recovery allocation;
+                        // never silently inflate an existing strategy's position.
+                        Position recovered = new Position(
+                                brokerPos.getSymbol(), remainingBrokerQty, brokerPos.getAveragePrice(),
+                                0, true, "MANUAL-RECONCILIATION", null, null, null,
+                                brokerPos.getPositionType());
+                        recovered.setBroker("KITE");
+                        recovered.setExecutionRoute(com.satyam.trading2.broker.ExecutionRoute.KITE);
+                        positionRepository.addPosition(recovered);
+                        log.error("[Reconciliation][FIFO] Kite reports {} unallocated shares for {}; restored under MANUAL-RECONCILIATION for explicit review.",
+                                remainingBrokerQty, brokerPos.getSymbol());
+                    }
                 }
             }
 
