@@ -44,6 +44,7 @@ public class ConvertOrSellPositionScheduler {
     private final HoldingMetadataRepository holdingMetadataRepository;
     private final com.satyam.trading2.service.EntryTypeAnalyticsService entryTypeAnalytics;
     private final BrokerOrderRouter brokerOrderRouter;
+    private final com.satyam.trading2.service.MomentumTrailingStateRepository momentumTrailingStateRepository;
 
     // ===== FIX: Use ExecutionEngine's locks to prevent race conditions =====
     // Suffix on a forced-MIS leg (MIS-only mode). The leg is tracked under
@@ -90,7 +91,7 @@ public class ConvertOrSellPositionScheduler {
             // Do not convert them into holdings or replace their protective SELL here.
             if (com.satyam.trading2.service.MomentumTrailingPolicy.isLivePolicyReady(
                     position, pendingOrderRepository, environment,
-                    brokerOrderRouter.supportsSellStopLossLimit(position))) continue;
+                    brokerOrderRouter.supportsSellStopLossLimit(position), momentumTrailingStateRepository)) continue;
             intradayPositions.add(position);
         }
 
