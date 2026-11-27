@@ -563,6 +563,15 @@ public class ShoonyaBroker extends AbstractRestBroker {
                         return false;
                     }
                 }
+                int sellableQty = Math.max(0, strictInt(row, "holdqty")
+                        + strictInt(row, "unplgdqty") + strictInt(row, "benqty")
+                        + strictInt(row, "dpqty") + strictInt(row, "btstqty")
+                        - strictInt(row, "usedqty"));
+                if (sellableQty > 0 && parseDoubleSafe(textOr(row, "upldprc", "0")) <= 0) {
+                    log.error("[ShoonyaBroker] Morning holdings row {} has sellable quantity but invalid upldprc",
+                            tsym);
+                    return false;
+                }
             }
             if (!syncHoldingsIntoManager(response)) return false;
             log.info("[ShoonyaBroker] Morning holdings refresh successful: {} rows", response.size());
