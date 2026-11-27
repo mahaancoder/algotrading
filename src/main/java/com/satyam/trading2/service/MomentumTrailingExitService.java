@@ -300,20 +300,20 @@ public class MomentumTrailingExitService {
 
         // Keep the state monitor only around in-memory/tiny persistence updates.
         // Never hold it while a broker cancel/reconciliation call is waiting.
-        synchronized (state) {
-            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            synchronized (state) {
                 synchronizePositionBasis(state, position);
-            }
-            updateTrailingLevels(state, position, ltp);
+                updateTrailingLevels(state, position, ltp);
 
-            if (!state.isEodExitRequested() && !now.isBefore(eodCutoff)) {
-                state.setEodExitRequested(true);
-                state.setPhase("EOD_EXIT");
-                stateRepository.save(state);
-                alert(position, "EOD_EXIT_STARTED",
-                        liveEnabled
-                                ? "New entries must stop. Momentum position is being managed for EOD exit; no holding conversion is permitted."
-                                : "Shadow tracking reached EOD. No trailing order was sent; legacy exit management remains active.");
+                if (!state.isEodExitRequested() && !now.isBefore(eodCutoff)) {
+                    state.setEodExitRequested(true);
+                    state.setPhase("EOD_EXIT");
+                    stateRepository.save(state);
+                    alert(position, "EOD_EXIT_STARTED",
+                            liveEnabled
+                                    ? "New entries must stop. Momentum position is being managed for EOD exit; no holding conversion is permitted."
+                                    : "Shadow tracking reached EOD. No trailing order was sent; legacy exit management remains active.");
+                }
             }
         }
 
@@ -641,27 +641,36 @@ public class MomentumTrailingExitService {
                     "Tick-size rounding cannot produce a valid SELL SL-LIMIT with limit at/above net break-even.");
             return;
         }
-        String orderId = brokerOrderRouter.placeStopLossSell(position, position.getSymbol(),
-                prices.trigger, prices.limit, position.getTotalQuantity(), position.getStrategy());
-        if (orderId == null) {
-            alert(position, "SL_LIMIT_SUBMISSION_FAILED",
-                    "Broker did not confirm acceptance of the protective SELL SL-LIMIT order.");
-            return;
+        // Hold the shared position lock from broker acceptance through local order
+        // linking and pending-ledger persistence. A fast broker fill callback must
+        // not arrive before stopLossOrderId and its PendingOrder record are visible.
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (!position.isOpen() || position.getTotalQuantity() <= 0) return;
+            int quantity = position.getTotalQuantity();
+            String orderId = brokerOrderRouter.placeStopLossSell(position, position.getSymbol(),
+                    prices.trigger, prices.limit, quantity, position.getStrategy());
+            if (orderId == null) {
+                alert(position, "SL_LIMIT_SUBMISSION_FAILED",
+                        "Broker did not confirm acceptance of the protective SELL SL-LIMIT order.");
+                return;
+            }
+            position.setStopLossOrderId(orderId);
+            positionManager.updatePosition(position);
+            synchronized (state) {
+                state.setExitOrderId(orderId);
+                state.setExitOrderIsStopLoss(true);
+                state.setWorkingTriggerPrice(prices.trigger);
+                state.setWorkingLimitPrice(prices.limit);
+                state.setWorkingOrderQuantity(quantity);
+                state.setOrderResizeRequired(false);
+                state.setLastOrderActionAt(System.currentTimeMillis());
+                state.setPhase(state.isExitTriggered() ? "EXIT_TRIGGERED" : "ACTIVE");
+                stateRepository.save(state);
+            }
+            persistPendingOrder(position, orderId, prices.limit, quantity);
+            log.info("[MomentumTrailing] Protective SL-LIMIT placed {} qty={} trigger={} limit={}",
+                    position.getSymbol(), quantity, prices.trigger, prices.limit);
         }
-        position.setStopLossOrderId(orderId);
-        positionManager.updatePosition(position);
-        state.setExitOrderId(orderId);
-        state.setExitOrderIsStopLoss(true);
-        state.setWorkingTriggerPrice(prices.trigger);
-        state.setWorkingLimitPrice(prices.limit);
-        state.setWorkingOrderQuantity(position.getTotalQuantity());
-        state.setOrderResizeRequired(false);
-        state.setLastOrderActionAt(System.currentTimeMillis());
-        state.setPhase("ACTIVE");
-        stateRepository.save(state);
-        persistPendingOrder(position, orderId, prices.limit, state.getWorkingOrderQuantity());
-        log.info("[MomentumTrailing] Protective SL-LIMIT placed {} qty={} trigger={} limit={}",
-                position.getSymbol(), position.getTotalQuantity(), prices.trigger, prices.limit);
     }
 
     private void manageExitOrder(Position position, MomentumTrailingState state,
@@ -751,36 +760,52 @@ public class MomentumTrailingExitService {
         // LTP is therefore only a quote proxy. Live enablement is OFF by default until
         // bid-depth sourcing and broker-specific fills are independently verified.
         double limit = desiredLimit;
-        String orderId = brokerOrderRouter.placeLimitSell(position, position.getSymbol(),
-                limit, position.getTotalQuantity(), false, position.getStrategy());
-        if (orderId == null) {
-            alert(position, "EXIT_LIMIT_SUBMISSION_FAILED",
-                    "Broker did not confirm acceptance of the repriced remaining-quantity SELL.");
-            return;
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            if (!position.isOpen() || position.getTotalQuantity() <= 0) {
+                state.setPhase("CLOSED");
+                stateRepository.save(state);
+                return;
+            }
+            int remainingQuantity = position.getTotalQuantity();
+            String orderId = brokerOrderRouter.placeLimitSell(position, position.getSymbol(),
+                    limit, remainingQuantity, false, position.getStrategy());
+            if (orderId == null) {
+                alert(position, "EXIT_LIMIT_SUBMISSION_FAILED",
+                        "Broker did not confirm acceptance of the repriced remaining-quantity SELL.");
+                return;
+            }
+            // Publish the order-to-position link before releasing the shared lock,
+            // so an immediate broker fill event can resolve this position safely.
+            position.setStopLossOrderId(orderId);
+            positionManager.updatePosition(position);
+            synchronized (state) {
+                state.setExitOrderId(orderId);
+                state.setExitOrderIsStopLoss(false);
+                state.setWorkingTriggerPrice(0);
+                state.setWorkingLimitPrice(limit);
+                state.setWorkingOrderQuantity(remainingQuantity);
+                state.setLastOrderActionAt(now);
+                state.setPhase(state.isEodExitRequested() ? "EOD_EXIT" : "EXIT_REPRICING");
+                stateRepository.save(state);
+            }
+            persistPendingOrder(position, orderId, limit, remainingQuantity);
         }
-        position.setStopLossOrderId(orderId);
-        positionManager.updatePosition(position);
-        state.setExitOrderId(orderId);
-        state.setExitOrderIsStopLoss(false);
-        state.setWorkingTriggerPrice(0);
-        state.setWorkingLimitPrice(limit);
-        state.setWorkingOrderQuantity(position.getTotalQuantity());
-        state.setLastOrderActionAt(now);
-        state.setPhase(state.isEodExitRequested() ? "EOD_EXIT" : "EXIT_REPRICING");
-        stateRepository.save(state);
-        persistPendingOrder(position, orderId, limit, state.getWorkingOrderQuantity());
     }
 
     private void clearCurrentExitOrder(Position position, MomentumTrailingState state) {
-        position.setStopLossOrderId(null);
-        positionManager.updatePosition(position);
-        state.setExitOrderId(null);
-        state.setExitOrderIsStopLoss(false);
-        state.setWorkingTriggerPrice(0);
-        state.setWorkingLimitPrice(0);
-        state.setWorkingOrderQuantity(0);
-        state.setLastOrderActionAt(System.currentTimeMillis());
-        stateRepository.save(state);
+        synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+            position.setStopLossOrderId(null);
+            positionManager.updatePosition(position);
+            synchronized (state) {
+                state.setExitOrderId(null);
+                state.setExitOrderIsStopLoss(false);
+                state.setWorkingTriggerPrice(0);
+                state.setWorkingLimitPrice(0);
+                state.setWorkingOrderQuantity(0);
+                state.setLastOrderActionAt(System.currentTimeMillis());
+                stateRepository.save(state);
+            }
+        }
     }
 
     private void ensurePendingOrderRecord(Position position, MomentumTrailingState state) {
