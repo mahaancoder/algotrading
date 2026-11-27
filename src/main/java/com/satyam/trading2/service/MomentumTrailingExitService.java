@@ -628,7 +628,8 @@ public class MomentumTrailingExitService {
     private PricePair stopPrices(String symbol, double rawTrigger, double rawLimit, double breakEven) {
         double tick = tickSize(symbol);
         if (tick <= 0 || rawTrigger <= 0 || rawLimit <= 0) return null;
-        double trigger = roundToTick(rawTrigger, tick, RoundingMode.HALF_UP);
+        // Round a SELL stop trigger upward so tick rounding does not weaken the intended protection.
+        double trigger = roundToTick(rawTrigger, tick, RoundingMode.CEILING);
         double limit = roundToTick(rawLimit, tick, RoundingMode.CEILING);
         if (limit >= trigger) limit = roundToTick(trigger - tick, tick, RoundingMode.FLOOR);
         if (limit < breakEven || limit <= 0 || trigger <= limit) return null;
