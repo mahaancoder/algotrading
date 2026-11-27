@@ -349,7 +349,7 @@ public class MomentumTrailingExitService {
             }
 
             Long lastAttempt = buyCancelAttemptAt.get(key);
-            if (lastAttempt != null && now - lastAttempt < buyCancelRetryMillis) continue;
+            if (lastAttempt != null && now - lastAttempt < Math.max(1000L, buyCancelRetryMillis)) continue;
             try {
                 if (brokerOrderRouter.requestBuyCancellation(pending)) {
                     buyCancelAttemptAt.put(key, now);
