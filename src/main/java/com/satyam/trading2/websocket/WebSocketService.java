@@ -42,6 +42,7 @@ public class WebSocketService {
     private final TradeMetricsCollector tradeMetricsCollector;
     private final com.satyam.trading2.domain.service.PositionManager positionManager;
     private final KillSwitchService killSwitchService;
+    private final com.satyam.trading2.service.MomentumTrailingExitService momentumTrailingExitService;
 
     // Per-symbol throttle for strategy evaluation. Price updates, candle
     // aggregation and ATR checks still run on every tick; only the heavier
@@ -145,6 +146,10 @@ public class WebSocketService {
 
     private void updatePriceEverywhere(String symbol, double price) {
         LatestPriceHelper.updatePrice(symbol, price);
+        // Capture every market tick for the momentum trailing high-water mark.
+        // This callback performs state updates only; broker REST operations run
+        // asynchronously in MomentumTrailingExitService's scheduled worker.
+        momentumTrailingExitService.onPriceTick(symbol, price);
         StockSelectionService.updateLtp(symbol, price);
         TickWindow.addTickWindow(symbol, price);
         broadcastService.DoBroadcashOnEachTickReceiving(symbol, price);
