@@ -134,6 +134,11 @@ public class MomentumTrailingExitService {
             return;
         }
 
+        if (state.isEodExitRequested() && liveEnabled
+                && !cancelPendingMomentumBuys(position, state)) {
+            return; // Never SELL against an unresolved or still-live BUY.
+        }
+
         if (liveEnabled && !brokerOrderRouter.supportsSellStopLossLimit(position)) {
             alert(position, "BROKER_SL_LIMIT_UNSUPPORTED",
                     "This broker adapter does not support a verified SELL SL-LIMIT. Legacy fixed-target/EOD management remains active.");
@@ -212,6 +217,60 @@ public class MomentumTrailingExitService {
             return;
         }
         ensureProtectiveStop(position, state, breakEven, ltp);
+    }
+
+    /**
+     * Stop late BUY fills before beginning EOD liquidation. A terminal partial BUY
+     * is not considered drained until its cumulative fill has been applied to the
+     * local position by the existing broker event/reconciliation lifecycle.
+     */
+    private boolean cancelPendingMomentumBuys(Position position, MomentumTrailingState state) {
+        String broker = brokerOrderRouter.brokerOf(position);
+        List<PendingOrder> buys = pendingOrderRepository.findAll().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(po -> po.getSide() == com.satyam.trading2.datamodel.TradeSide.BUY)
+                .filter(po -> MomentumTrailingPolicy.isManagedStrategy(po.getStrategy()))
+                .filter(po -> position.getSymbol().equalsIgnoreCase(po.getSymbol()))
+                .filter(po -> broker.equals(po.getBroker() != null ? po.getBroker() : "KITE"))
+                .collect(java.util.stream.Collectors.toList());
+
+        boolean drained = true;
+        long now = System.currentTimeMillis();
+        for (PendingOrder buy : buys) {
+            boolean terminal = buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.COMPLETE
+                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.CANCELLED
+                    || buy.getState() == com.satyam.trading2.datamodel.PendingOrderState.REJECTED;
+            if (!terminal) {
+                drained = false;
+                if (now - state.getLastOrderActionAt() >= actionIntervalMillis) {
+                    try {
+                        if (!brokerOrderRouter.requestBuyCancellation(buy)) {
+                            alert(position, "EOD_BUY_CANCEL_REQUEST_FAILED",
+                                    "Could not route cancellation for pending BUY " + buy.getOrderId()
+                                            + "; SELL liquidation is blocked.");
+                        } else {
+                            state.setEodBuyCancelRequested(true);
+                            state.setLastOrderActionAt(now);
+                            stateRepository.save(state);
+                        }
+                    } catch (Exception e) {
+                        alert(position, "EOD_BUY_CANCEL_REQUEST_FAILED",
+                                "Cancellation request failed for BUY " + buy.getOrderId() + ": " + e.getMessage());
+                    }
+                }
+                continue;
+            }
+            if (buy.getFilledQty() > 0 && !buy.isCompletionProcessed()) {
+                drained = false;
+                alert(position, "EOD_BUY_FILL_RECONCILIATION_PENDING",
+                        "Terminal BUY " + buy.getOrderId() + " has fills not yet applied to position accounting. SELL liquidation is blocked.");
+            }
+        }
+        if (!drained) {
+            alert(position, "EOD_WAITING_FOR_BUY_DRAIN",
+                    "Pending momentum BUYs are being cancelled/reconciled. No SELL will be submitted until final BUY quantity is known.");
+        }
+        return drained;
     }
 
     private void synchronizePositionBasis(MomentumTrailingState state, Position position) {
