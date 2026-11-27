@@ -127,14 +127,6 @@ public class MomentumTrailingExitService {
     @Scheduled(fixedDelayString = "${momentum.trailing.poll-ms:1000}")
     public void manageMomentumPositions() {
         if (!enabled) return;
-        if (!MomentumTrailingPolicy.isStateStoreWritable(environment)) {
-            if (!stateStoreUnavailableLogged) {
-                log.warn("[MomentumTrailing] State store is not writable; leaving legacy exit management active.");
-                stateStoreUnavailableLogged = true;
-            }
-            return;
-        }
-        stateStoreUnavailableLogged = false;
         LocalTime now = LocalTime.now(ZONE);
         LocalTime entryCutoff = parseTime(entryCutoffText, LocalTime.of(14, 55));
         LocalTime eodCutoff = parseTime(eodCutoffText, LocalTime.of(15, 0));
@@ -143,6 +135,14 @@ public class MomentumTrailingExitService {
             // terminal events and partial-fill reconciliation before EOD liquidation.
             cancelAllPendingMomentumBuys();
         }
+        if (!MomentumTrailingPolicy.isStateStoreWritable(environment)) {
+            if (!stateStoreUnavailableLogged) {
+                log.warn("[MomentumTrailing] State store is not writable; leaving legacy exit management active.");
+                stateStoreUnavailableLogged = true;
+            }
+            return;
+        }
+        stateStoreUnavailableLogged = false;
         List<Position> positions = positionManager.getAllOpenPositions();
         for (Position position : positions) {
             if (position == null || !position.isOpen()
