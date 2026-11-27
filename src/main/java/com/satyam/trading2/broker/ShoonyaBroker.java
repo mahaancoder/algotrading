@@ -56,6 +56,9 @@ public class ShoonyaBroker extends AbstractRestBroker {
     @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
     private boolean momentumTrailingLiveEnabled;
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
+    private boolean momentumTrailingEnabled;
+
     private final ShoonyaConfig shoonyaConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
     private final PositionManager positionManager;
@@ -617,7 +620,7 @@ public class ShoonyaBroker extends AbstractRestBroker {
 
             for (Position pos : positionManager.getAllIntradayPositions()) {
                 if (pos == null || !"SHOONYA".equals(pos.getBroker())) continue;
-                if (momentumTrailingLiveEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(pos.getStrategy())) continue;
+                if (momentumTrailingLiveEnabled && momentumTrailingEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(pos.getStrategy())) continue;
                 if (pos.getTotalQuantity() <= 0) continue;
                 if (symbolsWithOpenSell.contains(pos.getSymbol())) {
                     continue; // already has a resting target sell — nothing to recover
