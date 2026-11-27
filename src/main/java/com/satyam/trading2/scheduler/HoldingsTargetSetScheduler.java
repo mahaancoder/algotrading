@@ -113,6 +113,9 @@ public class HoldingsTargetSetScheduler {
         refreshNonKiteHoldings();
 
         for (Position holding : positionManager.getAllHoldings()) {
+            if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(holding.getStrategy())) {
+                continue; // Momentum exit policy never installs fixed holding targets.
+            }
             if (brokerOrderRouter.isKite(holding)) {
                 continue; // KITE holdings already handled from the broker API above
             }
