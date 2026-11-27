@@ -30,7 +30,7 @@ momentum.trailing.alert-repeat-ms=60000
 momentum.trailing.ltp-stale-ms=5000
 ```
 
-To collect trailing state without placing broker orders, set `momentum.trailing.enabled=true` and keep `momentum.trailing.live-enabled=false`.
+To collect trailing state without placing broker orders, set `momentum.trailing.enabled=true` and keep `momentum.trailing.live-enabled=false`. In this shadow mode, existing fixed-target and legacy EOD handling remain active; the new service only records the trailing state.
 
 Live order placement requires both flags to be explicitly enabled and a broker-specific estimated all-in round-trip cost percentage, for example:
 
