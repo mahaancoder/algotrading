@@ -298,6 +298,16 @@ public class PositionManager {
     // findBySecondaryTargetOrderId — for dual sell-order CNC positions.
     // Searches all positions for one whose secondaryTargetOrderId matches.
     // ─────────────────────────────────────────────────────────────────────
+    /** Locate a position by its broker-routed protective/exit order ID. */
+    public Position findByStopLossOrderId(String stopLossOrderId) {
+        if (stopLossOrderId == null) return null;
+        return positionMap.values().stream()
+                .flatMap(strategyMap -> strategyMap.values().stream())
+                .filter(p -> p != null && stopLossOrderId.equals(p.getStopLossOrderId()))
+                .findFirst()
+                .orElse(null);
+    }
+
     public Position findBySecondaryTargetOrderId(String secondaryTargetOrderId) {
         if (secondaryTargetOrderId == null) {
             return null;
