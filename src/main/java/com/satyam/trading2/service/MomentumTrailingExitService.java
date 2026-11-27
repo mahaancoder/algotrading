@@ -463,11 +463,9 @@ public class MomentumTrailingExitService {
     }
 
     private double tickSize(String symbol) {
-        for (Instrument instrument : Nifty500Stocks.Nifty500tokenToInstrument.values()) {
-            if (instrument != null && symbol.equalsIgnoreCase(instrument.getTradingSymbol())
-                    && instrument.getTickSize() > 0) return instrument.getTickSize();
-        }
-        return 0;
+        Instrument instrument = Nifty500Stocks.Nifty500SymbolToInstrument.get(
+                symbol == null ? "" : symbol.toUpperCase(java.util.Locale.ROOT));
+        return instrument != null && instrument.getTickSize() > 0 ? instrument.getTickSize() : 0;
     }
 
     private double ceilToTick(String symbol, double price) {
