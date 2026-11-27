@@ -8,6 +8,7 @@ import com.satyam.trading2.domain.service.PositionManager;
 import com.satyam.trading2.helpers.LatestPriceHelper;
 import com.satyam.trading2.order.BrokerOrderRouter;
 import com.satyam.trading2.order.PendingOrderRepository;
+import com.satyam.trading2.order.SellLifecycleLockRegistry;
 import com.satyam.trading2.service.TelegramNotificationService;
 import com.satyam.trading2.datamodel.Nifty500Stocks;
 import lombok.RequiredArgsConstructor;
@@ -137,14 +138,16 @@ public class MomentumTrailingExitService {
             return;
         }
         if (state.getExitOrderId() != null) {
-            if (position.getStopLossOrderId() == null) {
-                // Restore the order-to-position link before broker events are handled.
-                position.setStopLossOrderId(state.getExitOrderId());
-                positionManager.updatePosition(position);
-            } else if (!state.getExitOrderId().equals(position.getStopLossOrderId())) {
-                alert(position, "TRAILING_ORDER_ID_MISMATCH",
-                        "Persisted trailing order ID differs from the position's SELL reference. No automated replacement is safe.");
-                return;
+            synchronized (SellLifecycleLockRegistry.lockFor(position)) {
+                if (position.getStopLossOrderId() == null) {
+                    // Restore the order-to-position link before broker events are handled.
+                    position.setStopLossOrderId(state.getExitOrderId());
+                    positionManager.updatePosition(position);
+                } else if (!state.getExitOrderId().equals(position.getStopLossOrderId())) {
+                    alert(position, "TRAILING_ORDER_ID_MISMATCH",
+                            "Persisted trailing order ID differs from the position's SELL reference. No automated replacement is safe.");
+                    return;
+                }
             }
         }
         if (!state.isActivated() && (state.getExitOrderId() != null || position.getStopLossOrderId() != null)) {
