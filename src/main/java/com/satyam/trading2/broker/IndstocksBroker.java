@@ -65,6 +65,9 @@ public class IndstocksBroker extends AbstractRestBroker {
     @org.springframework.beans.factory.annotation.Value("${momentum.trailing.live-enabled:false}")
     private boolean momentumTrailingLiveEnabled;
 
+    @org.springframework.beans.factory.annotation.Value("${momentum.trailing.enabled:false}")
+    private boolean momentumTrailingEnabled;
+
     private final IndstocksConfig indstocksConfig;
     private final BrokerOrderEventProcessor brokerOrderEventProcessor;
     private final PositionManager positionManager;
@@ -659,7 +662,7 @@ public class IndstocksBroker extends AbstractRestBroker {
 
             for (Position pos : positionManager.getAllIntradayPositions()) {
                 if (pos == null || !"INDSTOCKS".equals(pos.getBroker())) continue;
-                if (momentumTrailingLiveEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(pos.getStrategy())) continue;
+                if (momentumTrailingLiveEnabled && momentumTrailingEnabled && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(pos.getStrategy())) continue;
                 if (pos.getTotalQuantity() <= 0) continue;
 
                 String secId = resolveSecurityId(pos.getSymbol());
