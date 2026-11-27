@@ -95,10 +95,20 @@ public final class MomentumTrailingPolicy {
     public static boolean isLivePolicyReady(Position position, PendingOrderRepository orders,
                                             Environment environment, boolean brokerSupportsStopLimit,
                                             MomentumTrailingStateRepository stateRepository) {
-        if (position != null && stateRepository != null) {
-            synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(position)) {
-                stateRepository.restoreBuyOrderIds(position,
-                        java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString());
+        boolean liveOptIn = environment != null
+                && Boolean.parseBoolean(environment.getProperty("momentum.trailing.enabled", "false"))
+                && Boolean.parseBoolean(environment.getProperty("momentum.trailing.live-enabled", "false"));
+        if (liveOptIn && position != null && stateRepository != null
+                && isManagedStrategy(position.getStrategy())) {
+            try {
+                synchronized (com.satyam.trading2.order.SellLifecycleLockRegistry.lockFor(position)) {
+                    stateRepository.restoreBuyOrderIds(position,
+                            java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString());
+                }
+            } catch (RuntimeException restoreFailure) {
+                // A failed state restore must never let a legacy scheduler infer
+                // that a momentum position is safe to target/convert.
+                return false;
             }
         }
         return isLivePolicyReady(position, orders, environment, brokerSupportsStopLimit);
