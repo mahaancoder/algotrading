@@ -83,6 +83,11 @@ public class KiteBroker implements Broker {
     }
 
     @Override
+    public boolean supportsSellStopLossLimit() {
+        return true;
+    }
+
+    @Override
     public void cancelOrder(String brokerOrderId) {
         orderServiceV2.cancelOrder(brokerOrderId);
     }
