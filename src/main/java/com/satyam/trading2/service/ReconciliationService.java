@@ -271,7 +271,9 @@ public class ReconciliationService {
                 .filter(ReconciliationService::isKite)
                 // Momentum SELL SL-LIMITs are reconciled through stopLossOrderId;
                 // never adopt or replace them as fixed target orders.
-                .filter(p -> !(momentumTrailingLiveEnabled && momentumTrailingEnabled) || !com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy()))
+                .filter(p -> !((momentumTrailingLiveEnabled && momentumTrailingEnabled)
+                        && com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(p.getStrategy())
+                        && brokerOrderRouter.supportsSellStopLossLimit(p)))
                 .filter(p -> !p.isExitProcessed())
                 .collect(Collectors.toList());
 
