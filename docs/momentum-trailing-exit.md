@@ -1,6 +1,6 @@
 # Momentum trailing exit (feature-flagged)
 
-This policy applies only to `Dip-Accumulator-Momentum`. Other strategies retain their existing fixed-target behaviour.
+This policy applies only to broker-confirmed `Dip-Accumulator-Momentum` INTRADAY positions whose recorded BUY order IDs resolve to completed momentum BUYs in the pending-order ledger. Unattributed/manual positions and momentum HOLDING positions retain their existing fixed-target behaviour. Other strategies are unchanged.
 
 ## Strategy parameters
 
