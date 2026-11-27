@@ -270,11 +270,13 @@ public class ReconciliationService {
                 synchronized (SellLifecycleLockRegistry.lockFor(local)) {
                 if (local.isExitProcessed()) continue;
                 String key = missingKey(local);
+                int requiredMissingSnapshots = manualSellFillCoversAggregateInventory(local, ourPositions, orderSnapshot)
+                        ? 1 : MISSING_SNAPSHOTS_BEFORE_REMOVAL;
                 int missingCount = consecutiveMissingSnapshots.merge(key, 1, Integer::sum);
-                if (missingCount < MISSING_SNAPSHOTS_BEFORE_REMOVAL) {
+                if (missingCount < requiredMissingSnapshots) {
                     log.warn("[Reconciliation] Retaining {} {} qty={} after missing broker snapshot {}/{}.",
                             local.getSymbol(), local.getPositionType(), local.getTotalQuantity(),
-                            missingCount, MISSING_SNAPSHOTS_BEFORE_REMOVAL);
+                            missingCount, requiredMissingSnapshots);
                     continue;
                 }
 
@@ -402,6 +404,42 @@ public class ReconciliationService {
         return "COMPLETE".equals(status) || "FILLED".equals(status)
                 || "CANCELLED".equals(status) || "CANCELED".equals(status)
                 || "REJECTED".equals(status) || "EXPIRED".equals(status);
+    }
+
+    /**
+     * A complete Kite positions snapshot omits zero-net positions. When an
+     * untracked manual MARKET SELL's broker-confirmed filled quantity covers
+     * the entire local symbol/product inventory, one such snapshot is enough
+     * to close the local allocations. Partial manual exits still use the
+     * normal two-snapshot confirmation rule.
+     */
+    private boolean manualSellFillCoversAggregateInventory(Position local,
+                                                             List<Position> localSnapshot,
+                                                             List<Order> orderSnapshot) {
+        if (!manualKiteMarketSellObserved) return false;
+        int localInventory = localSnapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(p -> isKite(p))
+                .filter(p -> p.getSymbol().equalsIgnoreCase(local.getSymbol()))
+                .filter(p -> p.getPositionType() == local.getPositionType())
+                .mapToInt(p -> Math.max(0, p.getTotalQuantity()))
+                .sum();
+        if (localInventory <= 0) return false;
+
+        int manualFilledQty = orderSnapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(o -> o.getOrderId() != null)
+                .filter(o -> local.getSymbol().equalsIgnoreCase(o.getTradingSymbol()))
+                .filter(o -> "SELL".equalsIgnoreCase(o.getTransactionType()))
+                .filter(o -> "MARKET".equalsIgnoreCase(o.getOrderType()))
+                .filter(o -> (local.getPositionType() == Position.PositionType.HOLDING
+                        ? "CNC" : "MIS").equalsIgnoreCase(o.getProduct()))
+                .filter(o -> o.getFilledQuantity() != null && o.getFilledQuantity() > 0)
+                .filter(o -> !pendingOrderRepository
+                        .findByBrokerAndBrokerOrderId("KITE", o.getOrderId()).isPresent())
+                .mapToInt(Order::getFilledQuantity)
+                .sum();
+        return manualFilledQty >= localInventory;
     }
 
     private static String missingKey(Position position) {
