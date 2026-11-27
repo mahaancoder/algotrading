@@ -190,7 +190,7 @@ public class MomentumTrailingExitService {
             }
             alert(position, "EOD_EXIT_STARTED",
                     liveEnabled
-                            ? "New entries are blocked. Momentum position is being managed for EOD exit; no holding conversion is permitted."
+                            ? "New entries are blocked. The trailing EOD exit is requested; if any live prerequisite is incomplete, the existing legacy exit path remains the fallback."
                             : "Shadow tracking reached EOD. No trailing order was sent; legacy exit management remains active.");
         }
 
