@@ -634,18 +634,23 @@ public class MomentumTrailingExitService {
     }
 
     private void placeStop(Position position, MomentumTrailingState state, double breakEven) {
-        PricePair prices = stopPrices(position.getSymbol(), state.getDesiredTriggerPrice(),
-                state.getDesiredLimitPrice(), breakEven);
-        if (prices == null) {
-            alert(position, "INVALID_SL_LIMIT_PRICES",
-                    "Tick-size rounding cannot produce a valid SELL SL-LIMIT with limit at/above net break-even.");
-            return;
-        }
-        // Hold the shared position lock from broker acceptance through local order
-        // linking and pending-ledger persistence. A fast broker fill callback must
+        // Hold the shared position lock from basis refresh through broker acceptance,
+        // local order linking and pending-ledger persistence. A fast fill callback must
         // not arrive before stopLossOrderId and its PendingOrder record are visible.
         synchronized (SellLifecycleLockRegistry.lockFor(position)) {
             if (!position.isOpen() || position.getTotalQuantity() <= 0) return;
+            synchronized (state) {
+                synchronizePositionBasis(state, position);
+            }
+            double currentBreakEven = netBreakEven(position);
+            if (currentBreakEven <= 0) currentBreakEven = breakEven;
+            PricePair prices = stopPrices(position.getSymbol(), state.getDesiredTriggerPrice(),
+                    state.getDesiredLimitPrice(), currentBreakEven);
+            if (prices == null) {
+                alert(position, "INVALID_SL_LIMIT_PRICES",
+                        "Tick-size rounding cannot produce a valid SELL SL-LIMIT with limit at/above net break-even.");
+                return;
+            }
             int quantity = position.getTotalQuantity();
             String orderId = brokerOrderRouter.placeStopLossSell(position, position.getSymbol(),
                     prices.trigger, prices.limit, quantity, position.getStrategy());
