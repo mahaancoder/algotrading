@@ -75,6 +75,9 @@ public class ConvertOrSellPositionScheduler {
         List<Position> intradayPositions = new ArrayList<>();
         for (Position position : positionManager.getAllOpenPositions()) {
             if (position.getPositionType() == HOLDING) continue;
+            // Momentum positions are closed by the dedicated trailing EOD manager.
+            // Do not convert them into holdings or replace their protective SELL here.
+            if (com.satyam.trading2.service.MomentumTrailingPolicy.isManagedStrategy(position.getStrategy())) continue;
             intradayPositions.add(position);
         }
 
